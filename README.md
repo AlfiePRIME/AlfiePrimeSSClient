@@ -8,9 +8,15 @@ A party-themed TUI/GUI music player and [SendSpin](https://github.com/music-assi
 - **Dynamic album art colours** — extracts a colour palette from the currently playing album art and themes the entire UI (titles, borders, spectrum gradient, party lights). Falls back to rainbow when no artwork is available
 - **VU meters** — stereo level meters with square-root scaling, peak-hold markers, and shimmer animation
 - **Party lights** — animated light strips and stereo-reactive dots synced to the music
-- **Dance floor** — ASCII art DJ and dancing crowd that bounce to detected beats, with BPM display and depth-layered rows at larger terminal sizes
+- **Dance floor** — ASCII art DJ and 6 dancer types (headbanger, spinner, robot, raver) across 3 rows, energy-reactive to audio level and beat intensity, with BPM display
+- **Braille album art** — renders album artwork as coloured Unicode braille dot art (2x4 pixel grid per character) next to the Now Playing panel
+- **Listening stats** — persistent per-artist and per-track play time tracking, session summary in the status bar, auto-saved to `~/.config/alfieprime-musiciser/stats.json`
+- **OS media integration** — registers with the OS so media keys, lock screen, and desktop widgets can see what's playing and send play/pause/next/previous commands (MPRIS2 on Linux, SMTC on Windows)
+- **Desktop notifications** — shows a notification on track change via `notify-send` (Linux)
+- **Terminal tab title** — sets the terminal tab/window title to the current track via OSC escape sequences
 - **Transport controls** — play/pause, next, previous, shuffle, repeat, volume via keyboard or mouse click
 - **CRT animations** — 3-phase startup (boot, static hold with animated connecting screen, diagonal lights-on sweep) and power-off effects
+- **Standby screensaver** — floating phrases with dim particles after 5 minutes of idle, wakes instantly on playback
 - **System stats** — CPU usage, memory, network throughput, and session uptime in the status bar
 - **Artwork pre-caching** — upcoming track artwork is extracted on background threads for instant theme changes on track switch
 - **Resizable UI** — all sections dynamically scale to fill the terminal or window. The spectrum analyzer expands to use all available vertical space
@@ -108,9 +114,12 @@ colors.py          Color utilities, ColorTheme, album art extraction
 state.py           PlayerState dataclass
 config.py          Config, setup wizard, connection test
 visualizer.py      AudioVisualizer (FFT, beat/BPM detection, delay queue)
-renderer.py        All render_* functions (spectrum, VU, party scene, stats)
-tui.py             BoomBoxTUI (layout, CRT animations, input, run loops)
-receiver.py        SendSpinReceiver (WebSocket, audio, metadata, artwork)
+renderer.py        All render_* functions (spectrum, VU, party scene, braille art, stats)
+tui.py             BoomBoxTUI (layout, CRT animations, standby screensaver, input, run loops)
+receiver.py        SendSpinReceiver (WebSocket, audio, metadata, artwork, notifications)
+stats.py           ListeningStats (persistent per-artist/track play time tracking)
+mpris.py           MPRIS2 D-Bus integration (Linux media keys, lock screen, KDE Connect)
+smtc.py            Windows SMTC integration (media keys, lock screen, taskbar overlay)
 main.py            Entry point, argparse, _run_with_config
 gui.py             tkinter GUI process (separate OS process via Pipe)
 launcher.py        GUI entry point (pythonw on Windows)
@@ -125,15 +134,24 @@ Main Process                          GUI Process (optional)
 |   - WebSocket client            |   | - tag-based colouring  |
 |   - Audio playback              |   | - batch rendering      |
 |   - Metadata/artwork listeners  |   |                        |
-|                                 |   +------------------------+
-| AudioVisualizer                 |        ^           |
-|   - FFT spectrum analysis       |        | segments  | size/keys
-|   - Beat/BPM detection          |        |           v
-|   - Playback-synced delay queue |   +------------------------+
-|                                 |   | multiprocessing.Pipe   |
-| BoomBoxTUI                      |   +------------------------+
+|   - Desktop notifications       |   +------------------------+
+|   - ListeningStats              |        ^           |
+|                                 |        | segments  | size/keys
+| MPRIS2Server (Linux)            |        |           v
+|   or SMTCServer (Windows)       |   +------------------------+
+|   - OS media key routing        |   | multiprocessing.Pipe   |
+|   - Track info to desktop       |   +------------------------+
+|                                 |
+| AudioVisualizer                 |
+|   - FFT spectrum analysis       |
+|   - Beat/BPM detection          |
+|   - Playback-synced delay queue |
+|                                 |
+| BoomBoxTUI                      |
 |   - Rich layout rendering       |
 |   - CRT startup/shutdown anims  |
+|   - Standby screensaver         |
+|   - Braille album art panel     |
 +---------------------------------+
 ```
 
@@ -159,6 +177,8 @@ Album artwork arrives as binary WebSocket messages. Since the client library doe
 | [rich](https://rich.readthedocs.io/) | Terminal UI rendering with 24-bit colour |
 | [Pillow](https://pillow.readthedocs.io/) | Album art colour extraction via median-cut quantization |
 | [psutil](https://psutil.readthedocs.io/) | System stats (CPU, memory, network) — optional |
+| [dbus-next](https://github.com/altdesktop/python-dbus-next) | MPRIS2 media controls — Linux only, auto-installed |
+| [winsdk](https://github.com/pywinrt/python-winsdk) | SMTC media controls — Windows only, auto-installed |
 
 ## License
 

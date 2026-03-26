@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, asdict
+from pathlib import Path
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Prompt
+
+# ─── Config ──────────────────────────────────────────────────────────────────
+
+CONFIG_DIR = Path.home() / ".config" / "alfieprime-musiciser"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+
+
+@dataclass
+class Config:
+    """Persistent configuration."""
+
+    client_name: str = "MKUltra"
+    mode: str = "listen"  # "listen" (mDNS) or "connect" (explicit URL)
+    server_url: str = ""  # only used when mode == "connect"
+    listen_port: int = 8928  # only used when mode == "listen"
+    client_id: str = ""  # stable ID so Music Assistant remembers this device
+
+    def save(self) -> None:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_FILE.write_text(json.dumps(asdict(self), indent=2) + "\n")
+
+    @classmethod
+    def load(cls) -> Config | None:
+        if not CONFIG_FILE.exists():
+            return None
+        try:
+            data = json.loads(CONFIG_FILE.read_text())
+            return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        except (json.JSONDecodeError, TypeError, OSError):
+            return None
+
+
+def run_setup(console: Console, existing: Config | None = None) -> Config:
+    """Interactive first-run setup (or reconfigure)."""
+    console.print()
+    console.print(Panel(
+        "[bold bright_magenta]A L F I E P R I M E   M U S I C I Z E R   S E T U P[/]",
+        border_style="bright_cyan",
+    ))
+    console.print()
+
+    defaults = existing or Config()
+
+    # Client name
+    client_name = Prompt.ask(
+        "[bright_cyan]Client name[/] (how this player appears in Music Assistant)",
+        default=defaults.client_name,
+        console=console,
+    )
+
+    # Connection mode
+    console.print()
+    console.print("[bold]Connection mode:[/]")
+    console.print("  [bright_green]1[/] - Listen (mDNS) — server discovers and connects to us [dim](recommended)[/dim]")
+    console.print("  [bright_green]2[/] - Connect — we connect to a specific server URL")
+    console.print()
+
+    default_mode_num = "1" if defaults.mode == "listen" else "2"
+    mode_choice = Prompt.ask(
+        "[bright_cyan]Choose mode[/]",
+        choices=["1", "2"],
+        default=default_mode_num,
+        console=console,
+    )
+
+    mode = "listen" if mode_choice == "1" else "connect"
+    server_url = ""
+    listen_port = defaults.listen_port
+
+    if mode == "connect":
+        console.print()
+        console.print("[dim]Enter the SendSpin/Music Assistant WebSocket URL.[/]")
+        console.print("[dim]Examples: ws://192.168.1.100:8097/sendspin  or  ws://homeassistant.local:8097/sendspin[/]")
+        console.print()
+        server_url = Prompt.ask(
+            "[bright_cyan]Server URL[/]",
+            default=defaults.server_url or "",
+            console=console,
+        )
+        # Normalise: add ws:// if missing
+        if server_url and not server_url.startswith(("ws://", "wss://")):
+            if ":" in server_url and "/" in server_url:
+                server_url = "ws://" + server_url
+            else:
+                # Bare IP/hostname — add default sendspin port+path
+                server_url = f"ws://{server_url}:8097/sendspin"
+            console.print(f"[dim]Using URL: {server_url}[/]")
+    else:
+        console.print()
+        listen_port = int(Prompt.ask(
+            "[bright_cyan]Listen port[/]",
+            default=str(defaults.listen_port),
+            console=console,
+        ))
+
+    config = Config(
+        client_name=client_name,
+        mode=mode,
+        server_url=server_url,
+        listen_port=listen_port,
+    )
+    config.save()
+
+    console.print()
+    console.print(f"[bright_green]Config saved to {CONFIG_FILE}[/]")
+    console.print()
+    return config
+
+
+def _test_connection(config: Config, console: Console) -> str | None:
+    """Try a quick connection to validate the config. Returns error string or None on success."""
+    if config.mode == "listen":
+        # For listen mode, just check the port is bindable
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(("0.0.0.0", config.listen_port))
+            return None
+        except OSError as e:
+            return f"Cannot bind to port {config.listen_port}: {e}"
+
+    # For connect mode, try a quick WebSocket handshake
+    if not config.server_url:
+        return "No server URL configured"
+
+    import asyncio
+
+    async def _try_connect() -> str | None:
+        try:
+            from aiohttp import ClientSession, ClientError, WSMsgType
+            timeout_s = 5
+            async with ClientSession() as session:
+                async with session.ws_connect(config.server_url, timeout=timeout_s) as ws:
+                    await ws.close()
+            return None
+        except (TimeoutError, OSError, ClientError) as e:
+            return f"{type(e).__name__}: {e}"
+        except Exception as e:
+            return f"{type(e).__name__}: {e}"
+
+    return asyncio.run(_try_connect())

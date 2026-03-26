@@ -6,17 +6,20 @@ A party-themed TUI/GUI music player and [SendSpin](https://github.com/music-assi
 
 - **Real-time spectrum analyzer** — 32-band FFT with automatic gain control, peak hold indicators, and beat detection
 - **Dynamic album art colours** — extracts a colour palette from the currently playing album art and themes the entire UI (titles, borders, spectrum gradient, party lights). Falls back to rainbow when no artwork is available
-- **VU meters** — stereo level meters with themed gradients
+- **VU meters** — stereo level meters with square-root scaling, peak-hold markers, and shimmer animation
 - **Party lights** — animated light strips and stereo-reactive dots synced to the music
-- **Dance floor** — ASCII art DJ and dancing crowd that bounce to detected beats, with depth-layered rows at larger terminal sizes
-- **Transport controls** — play/pause, next, previous, shuffle, repeat via keyboard or mouse click
-- **CRT animations** — old-school CRT power-on/power-off effects on startup and shutdown
+- **Dance floor** — ASCII art DJ and dancing crowd that bounce to detected beats, with BPM display and depth-layered rows at larger terminal sizes
+- **Transport controls** — play/pause, next, previous, shuffle, repeat, volume via keyboard or mouse click
+- **CRT animations** — 3-phase startup (boot, static hold with animated connecting screen, diagonal lights-on sweep) and power-off effects
+- **System stats** — CPU usage, memory, network throughput, and session uptime in the status bar
+- **Artwork pre-caching** — upcoming track artwork is extracted on background threads for instant theme changes on track switch
 - **Resizable UI** — all sections dynamically scale to fill the terminal or window. The spectrum analyzer expands to use all available vertical space
 - **Two connection modes**:
   - **Listen (mDNS)** — advertises via `_sendspin._tcp.local.` so Music Assistant discovers and connects automatically (recommended)
   - **Connect** — connects to a specific SendSpin server URL
 - **Persistent device identity** — remembers its client ID across restarts so Music Assistant recognises it as the same speaker
 - **Standalone GUI mode** — runs in its own tkinter window (separate process) so audio never stutters from rendering load
+- **Daemon mode** — run as a headless service with `--daemon` for background audio playback without any UI
 - **Demo mode** — runs with synthetic audio for testing without a server
 
 ## Requirements
@@ -68,6 +71,9 @@ alfieprime-musiciser --demo
 # Standalone GUI window (no terminal needed)
 alfieprime-musiciser --gui
 
+# Headless daemon (audio only, no display)
+alfieprime-musiciser --daemon
+
 # GUI entry point (uses pythonw on Windows — no console window)
 alfieprime-musiciser-app
 ```
@@ -81,6 +87,8 @@ alfieprime-musiciser-app
 | `B` | Previous track |
 | `S` | Toggle shuffle |
 | `R` | Cycle repeat (off / all / one) |
+| `↑` | Volume up |
+| `↓` | Volume down |
 | `Q` | Quit |
 
 ## Configuration
@@ -92,6 +100,21 @@ alfieprime-musiciser --setup
 ```
 
 ## Architecture
+
+The codebase is split into focused modules with a clean dependency graph:
+
+```
+colors.py          Color utilities, ColorTheme, album art extraction
+state.py           PlayerState dataclass
+config.py          Config, setup wizard, connection test
+visualizer.py      AudioVisualizer (FFT, beat/BPM detection, delay queue)
+renderer.py        All render_* functions (spectrum, VU, party scene, stats)
+tui.py             BoomBoxTUI (layout, CRT animations, input, run loops)
+receiver.py        SendSpinReceiver (WebSocket, audio, metadata, artwork)
+main.py            Entry point, argparse, _run_with_config
+gui.py             tkinter GUI process (separate OS process via Pipe)
+launcher.py        GUI entry point (pythonw on Windows)
+```
 
 ```
 Main Process                          GUI Process (optional)
@@ -105,12 +128,12 @@ Main Process                          GUI Process (optional)
 |                                 |   +------------------------+
 | AudioVisualizer                 |        ^           |
 |   - FFT spectrum analysis       |        | segments  | size/keys
-|   - Beat detection              |        |           v
+|   - Beat/BPM detection          |        |           v
 |   - Playback-synced delay queue |   +------------------------+
 |                                 |   | multiprocessing.Pipe   |
 | BoomBoxTUI                      |   +------------------------+
 |   - Rich layout rendering       |
-|   - CRT animations              |
+|   - CRT startup/shutdown anims  |
 +---------------------------------+
 ```
 
@@ -135,6 +158,7 @@ Album artwork arrives as binary WebSocket messages. Since the client library doe
 | [numpy](https://numpy.org/) | FFT spectrum analysis, audio signal processing |
 | [rich](https://rich.readthedocs.io/) | Terminal UI rendering with 24-bit colour |
 | [Pillow](https://pillow.readthedocs.io/) | Album art colour extraction via median-cut quantization |
+| [psutil](https://psutil.readthedocs.io/) | System stats (CPU, memory, network) — optional |
 
 ## License
 

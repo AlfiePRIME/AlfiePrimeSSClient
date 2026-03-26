@@ -2000,41 +2000,117 @@ class BoomBoxTUI:
     def _crt_static_hold_segments(
         self, term_w: int, term_h: int,
     ) -> list[tuple[str, str | None, str | None, bool]]:
-        """Generate idle static while waiting for server connection."""
+        """Generate idle static with animated ASCII connecting art."""
         segs: list[tuple[str, str | None, str | None, bool]] = []
         t = time.time()
+
+        # ── Build static background into a row list ──
+        static_rows: list[str] = []
         for row in range(term_h):
-            flicker = 0.7 + 0.3 * math.sin(t * 8 + row * 0.7)
-            br = int(min(200, 120 * flicker))
-            r = int(br * 0.75)
-            g = int(min(255, br * 0.95))
-            b = int(min(255, br * 0.85))
-            c = f"#{r:02x}{g:02x}{b:02x}"
             line = "".join(
                 random.choice("░▒▓█▌▐╌╍·.")
                 if random.random() < 0.3
                 else random.choice("·. ·  ")
                 for _ in range(term_w)
             )
-            segs.append((line, c, None, False))
+            static_rows.append(line)
+
+        # ── Animated ASCII art ──
+        spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        spin_ch = spinner[int(t * 10) % len(spinner)]
+
+        # Signal wave animation — ripples outward from dish
+        wave_frame = int(t * 3) % 4
+        waves = [
+            ["       ", "      )", "    ) )", "  ) ) )"],
+            ["       ", "      )", "    ) )", "  ) ) )"],
+            ["       ", "      )", "    ) )", "  ) ) )"],
+            ["       ", "      )", "    ) )", "  ) ) )"],
+        ]
+        # Animate by showing 1-3 waves based on frame
+        wave_count = (wave_frame % 3) + 1
+
+        art = [
+            f"        ╭──────────────────────╮",
+            f"        │  {spin_ch} CONNECTING...    │",
+            f"        ╰──────────────────────╯",
+            f"                  │              ",
+            f"             ┌────┴────┐         ",
+            f"             │ ◉ SEND  │         ",
+            f"             │  SPIN   │         ",
+            f"             └────┬────┘         ",
+            f"                  │              ",
+            f"           ───────┴───────       ",
+        ]
+
+        # Add animated signal waves to the side
+        wave_art = [
+            f"                          {')'  if wave_count >= 1 else ' '}      ",
+            f"                        {')'    if wave_count >= 2 else ' '}      ",
+            f"                      {')'      if wave_count >= 3 else ' '}      ",
+        ]
+
+        # Insert wave lines after the box
+        art.insert(1, wave_art[0] if wave_count >= 1 else "")
+        # Dots animation at the bottom
+        dots = "." * ((int(t * 2) % 3) + 1)
+        art.append(f"        Searching for server{dots:<3}")
+
+        art_h = len(art)
+        art_w = max(len(line) for line in art)
+        mid_row = term_h // 2
+        start_row = mid_row - art_h // 2
+
+        # ── Compose: overlay art on static ──
+        for row in range(term_h):
+            art_row_idx = row - start_row
+            if 0 <= art_row_idx < art_h:
+                art_line = art[art_row_idx]
+                pad_l = max(0, (term_w - art_w) // 2)
+                # Build the row: static | art | static
+                left_static = static_rows[row][:pad_l]
+                right_start = pad_l + len(art_line)
+                right_static = static_rows[row][right_start:term_w]
+                # Pad art to art_w
+                art_padded = art_line.ljust(art_w)[:art_w]
+
+                # Static portions — dim
+                flicker = 0.5 + 0.2 * math.sin(t * 8 + row * 0.7)
+                br = int(min(120, 70 * flicker))
+                static_c = f"#{br:02x}{br:02x}{br:02x}"
+                segs.append((left_static, static_c, None, False))
+
+                # Art portion — bright with pulse
+                pulse = 0.6 + 0.4 * math.sin(t * 2 + art_row_idx * 0.3)
+                art_br = int(120 + 135 * pulse)
+                # Box chars in cyan-ish, text in white
+                for ch in art_padded:
+                    if ch in "╭╮╰╯│─┌┐└┘├┤┬┴┼":
+                        c_br = int(art_br * 0.6)
+                        segs.append((ch, f"#{c_br:02x}{min(255, int(c_br * 1.3)):02x}{min(255, int(c_br * 1.2)):02x}", None, False))
+                    elif ch in "◉⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏":
+                        segs.append((ch, f"#{art_br:02x}{min(255, art_br):02x}{max(0, art_br - 40):02x}", None, True))
+                    elif ch == ")":
+                        # Signal waves — animated brightness
+                        wave_pulse = 0.4 + 0.6 * math.sin(t * 6)
+                        w_br = int(art_br * wave_pulse)
+                        segs.append((ch, f"#{max(20, w_br):02x}{min(255, int(w_br * 1.2)):02x}{min(255, int(w_br * 1.1)):02x}", None, True))
+                    elif ch.isalpha() or ch in ".:!":
+                        segs.append((ch, f"#{art_br:02x}{art_br:02x}{min(255, art_br + 20):02x}", None, True))
+                    else:
+                        segs.append((ch, None, None, False))
+
+                segs.append((right_static, static_c, None, False))
+            else:
+                # Pure static row
+                flicker = 0.5 + 0.3 * math.sin(t * 8 + row * 0.7)
+                br = int(min(150, 90 * flicker))
+                static_c = f"#{br:02x}{br:02x}{br:02x}"
+                segs.append((static_rows[row][:term_w], static_c, None, False))
+
             if row < term_h - 1:
                 segs.append(("\n", None, None, False))
 
-        # Overlay "WAITING FOR SIGNAL..." text in center
-        msg = "WAITING FOR SIGNAL..."
-        mid_row = term_h // 2
-        pulse = 0.5 + 0.5 * math.sin(t * 2)
-        msg_br = int(60 + 140 * pulse)
-        msg_c = f"#{msg_br:02x}{msg_br:02x}{min(255, msg_br + 20):02x}"
-        # Rebuild center row with message
-        pad_l = max(0, (term_w - len(msg)) // 2)
-        pad_r = max(0, term_w - pad_l - len(msg))
-        # Find the segment for mid_row and replace it
-        seg_idx = mid_row * 2  # each row has content + newline
-        if seg_idx < len(segs):
-            segs[seg_idx] = (" " * pad_l, None, None, False)
-            segs.insert(seg_idx + 1, (msg, msg_c, None, True))
-            segs.insert(seg_idx + 2, (" " * pad_r, None, None, False))
         return segs
 
     def _crt_lights_on_segments(

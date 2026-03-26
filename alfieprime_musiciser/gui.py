@@ -123,8 +123,7 @@ def _gui_process_main(conn: Connection, title: str) -> None:
 
     root.protocol("WM_DELETE_WINDOW", on_close)
 
-    _arrow_keysyms = {"Up": "arrow_up", "Down": "arrow_down",
-                      "Left": "arrow_left", "Right": "arrow_right"}
+    _arrow_keysyms = {"Up": "arrow_up", "Down": "arrow_down"}
 
     def on_key(event: tk.Event) -> None:
         # Map arrow keys to named strings

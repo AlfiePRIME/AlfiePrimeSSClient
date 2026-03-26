@@ -831,8 +831,7 @@ def render_transport_controls(
     text.append("[P]lay ", Style(color="#444444"))
     text.append("[N]ext ", Style(color="#444444"))
     text.append("[R]epeat ", Style(color="#444444"))
-    text.append("[↑↓]Vol ", Style(color="#444444"))
-    text.append("[←→]Seek", Style(color="#444444"))
+    text.append("[↑↓]Vol", Style(color="#444444"))
 
     return text, buttons
 
@@ -1385,9 +1384,6 @@ class BoomBoxTUI:
         # Cached terminal dimensions, updated each frame
         self._term_width: int = 120
         self._term_height: int = 50
-        # Seek acceleration tracking
-        self._seek_last_time: float = 0.0
-        self._seek_hold_count: int = 0
 
     def set_command_callback(self, callback: Callable[[str], None]) -> None:
         """Set callback for transport commands (play_pause, next, previous, shuffle, repeat)."""
@@ -1580,25 +1576,6 @@ class BoomBoxTUI:
             self._fire_command("volume_up")
         elif k == "arrow_down":
             self._fire_command("volume_down")
-        elif k == "arrow_right":
-            # Seek forward — accelerates when held
-            now = time.monotonic()
-            if now - self._seek_last_time < 0.25:
-                self._seek_hold_count += 1
-            else:
-                self._seek_hold_count = 0
-            self._seek_last_time = now
-            seek_ms = 5000 + min(self._seek_hold_count, 20) * 2500  # 5s → 55s
-            self._fire_command(f"seek_forward:{seek_ms}")
-        elif k == "arrow_left":
-            now = time.monotonic()
-            if now - self._seek_last_time < 0.25:
-                self._seek_hold_count += 1
-            else:
-                self._seek_hold_count = 0
-            self._seek_last_time = now
-            seek_ms = 5000 + min(self._seek_hold_count, 20) * 2500
-            self._fire_command(f"seek_backward:{seek_ms}")
 
     def _handle_mouse_click(self, col: int, row: int) -> None:
         """Handle a mouse click at terminal coordinates (1-based)."""
@@ -1639,12 +1616,6 @@ class BoomBoxTUI:
                 i += 3
             elif data[i:i + 3] == b"\x1b[B":
                 self._handle_key("arrow_down")
-                i += 3
-            elif data[i:i + 3] == b"\x1b[C":
-                self._handle_key("arrow_right")
-                i += 3
-            elif data[i:i + 3] == b"\x1b[D":
-                self._handle_key("arrow_left")
                 i += 3
             elif data[i:i + 1] == b"\x1b":
                 # Skip other escape sequences
@@ -2206,7 +2177,7 @@ class SendSpinReceiver:
     """
 
     def __init__(
-        self, tui: BoomBoxTUI, visualizer: AudioVisualizer,
+        self, tui: BoomBoxTUI | None, visualizer: AudioVisualizer,
         server_url: str | None = None, listen_port: int = 8928,
         client_name: str = "MKUltra", config: Config | None = None,
     ) -> None:
@@ -2236,8 +2207,20 @@ class SendSpinReceiver:
         self._running = False
         self._loop: asyncio.AbstractEventLoop | None = None
 
-        # Wire up transport control commands from TUI
-        self._tui.set_command_callback(self._on_transport_command)
+        # In daemon mode there is no TUI — use a standalone state object
+        if self._tui is None:
+            self._daemon_state = PlayerState()
+        else:
+            self._daemon_state = None
+            # Wire up transport control commands from TUI
+            self._tui.set_command_callback(self._on_transport_command)
+
+    @property
+    def _state(self) -> PlayerState:
+        """Player state — from TUI when available, standalone in daemon mode."""
+        if self._daemon_state is not None:
+            return self._daemon_state
+        return self._state  # type: ignore[union-attr]
 
     async def start(self) -> None:
         self._running = True
@@ -2344,8 +2327,8 @@ class SendSpinReceiver:
         )
         await self._listener.start()
 
-        self._tui.state.server_name = f"Listening on :{self._listen_port}"
-        self._tui.state.connected = False
+        self._state.server_name = f"Listening on :{self._listen_port}"
+        self._state.connected = False
         logger.info(
             "Listening on port %d, advertising via mDNS (_sendspin._tcp.local.)",
             self._listen_port,
@@ -2378,8 +2361,8 @@ class SendSpinReceiver:
             # Clean up previous client if any
             if self._client is not None:
                 logger.info("Disconnecting from previous server")
-                self._tui.state.connected = False
-                self._tui.state.is_playing = False
+                self._state.connected = False
+                self._state.is_playing = False
                 await self._audio_handler.handle_disconnect()
                 if self._client.connected:
                     with contextlib.suppress(Exception):
@@ -2413,8 +2396,8 @@ class SendSpinReceiver:
         # Handshake complete - update TUI
         server_info = client.server_info
         server_name = server_info.name if server_info else "Server"
-        self._tui.state.connected = True
-        self._tui.state.server_name = server_name
+        self._state.connected = True
+        self._state.server_name = server_name
         logger.info("Connected to server: %s", server_name)
 
         # Wait for disconnect
@@ -2428,9 +2411,9 @@ class SendSpinReceiver:
             logger.exception("Error waiting for server disconnect")
         finally:
             if self._client is client:
-                self._tui.state.connected = False
-                self._tui.state.is_playing = False
-                self._tui.state.server_name = f"Listening on :{self._listen_port}"
+                self._state.connected = False
+                self._state.is_playing = False
+                self._state.server_name = f"Listening on :{self._listen_port}"
                 await self._audio_handler.handle_disconnect()
                 self._visualizer.reset()
 
@@ -2440,8 +2423,8 @@ class SendSpinReceiver:
         """Connect to a specific URL with reconnection."""
         from aiohttp import ClientError
 
-        self._tui.state.server_name = url
-        self._tui.state.connected = False
+        self._state.server_name = url
+        self._state.connected = False
         backoff = 1.0
 
         while self._running:
@@ -2449,8 +2432,8 @@ class SendSpinReceiver:
                 logger.info("Connecting to %s", url)
                 assert self._client is not None
                 await self._client.connect(url)
-                self._tui.state.connected = True
-                self._tui.state.server_name = url
+                self._state.connected = True
+                self._state.server_name = url
                 backoff = 1.0
 
                 # Wait for disconnect
@@ -2459,15 +2442,15 @@ class SendSpinReceiver:
                 await disconnect_event.wait()
                 unsub()
 
-                self._tui.state.connected = False
-                self._tui.state.is_playing = False
+                self._state.connected = False
+                self._state.is_playing = False
                 if self._audio_handler:
                     await self._audio_handler.handle_disconnect()
                 logger.info("Disconnected, reconnecting...")
 
             except (TimeoutError, OSError, ClientError) as e:
                 logger.warning("Connection error (%s), retrying in %.0fs", type(e).__name__, backoff)
-                self._tui.state.connected = False
+                self._state.connected = False
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 300.0)
             except Exception:
@@ -2499,7 +2482,7 @@ class SendSpinReceiver:
         """Handle metadata updates from server."""
         from aiosendspin.models.types import RepeatMode, UndefinedField
 
-        state = self._tui.state
+        state = self._state
         meta = payload.metadata
         if meta is None:
             return
@@ -2547,7 +2530,7 @@ class SendSpinReceiver:
         """Handle group update messages."""
         from aiosendspin.models.types import PlaybackStateType
 
-        state = self._tui.state
+        state = self._state
         if payload.group_name:
             state.group_name = payload.group_name
         if payload.playback_state:
@@ -2566,14 +2549,14 @@ class SendSpinReceiver:
         self, codec: str | None, sample_rate: int, bit_depth: int, channels: int,
     ) -> None:
         """Handle audio format changes."""
-        self._tui.state.codec = codec or "PCM"
-        self._tui.state.sample_rate = sample_rate
-        self._tui.state.bit_depth = bit_depth
+        self._state.codec = codec or "PCM"
+        self._state.sample_rate = sample_rate
+        self._state.bit_depth = bit_depth
         self._visualizer.set_format(sample_rate, bit_depth, channels)
 
     def _on_stream_event(self, event: str) -> None:
         """Handle stream start/stop events."""
-        self._tui.state.is_playing = event == "start"
+        self._state.is_playing = event == "start"
         self._visualizer.set_paused(event != "start")
         if event == "stop":
             # Only reset the audio pipeline — keep the visual state (bands,
@@ -2588,7 +2571,7 @@ class SendSpinReceiver:
 
     def _on_controller_state(self, payload) -> None:
         """Handle controller state updates (supported commands, volume, mute)."""
-        state = self._tui.state
+        state = self._state
         ctrl = payload.controller
         if ctrl is None:
             return
@@ -2604,13 +2587,13 @@ class SendSpinReceiver:
             return
         cmd = payload.player
         if cmd.command == PlayerCommand.VOLUME and cmd.volume is not None:
-            self._tui.state.volume = cmd.volume
+            self._state.volume = cmd.volume
             if self._audio_handler is not None:
-                self._audio_handler.set_volume(cmd.volume, muted=self._tui.state.muted)
+                self._audio_handler.set_volume(cmd.volume, muted=self._state.muted)
         elif cmd.command == PlayerCommand.MUTE and cmd.mute is not None:
-            self._tui.state.muted = cmd.mute
+            self._state.muted = cmd.mute
             if self._audio_handler is not None:
-                self._audio_handler.set_volume(self._tui.state.volume, muted=cmd.mute)
+                self._audio_handler.set_volume(self._state.volume, muted=cmd.mute)
 
     def _patch_artwork_handler(self, client) -> None:
         """Monkey-patch the client's binary message handler to capture artwork."""
@@ -2646,23 +2629,23 @@ class SendSpinReceiver:
         logger.debug("Received artwork for channel %d (%d bytes)", channel, len(image_data))
         theme = _extract_theme_from_image(image_data)
         if theme is not None:
-            self._tui.state.theme = theme
+            self._state.theme = theme
             logger.info(
                 "Updated theme from album art: primary=%s secondary=%s accent=%s",
                 theme.primary, theme.secondary, theme.accent,
             )
         else:
             # Extraction failed (too dark, greyscale, etc.) - revert to defaults
-            self._tui.state.theme = ColorTheme()
+            self._state.theme = ColorTheme()
 
     def _on_artwork_cleared(self, channel: int) -> None:
         """Handle artwork cleared - revert to default colours."""
         logger.debug("Artwork cleared for channel %d", channel)
-        self._tui.state.theme = ColorTheme()
+        self._state.theme = ColorTheme()
 
     def _on_transport_command(self, command: str) -> None:
         """Handle a transport command from the TUI (called from input thread)."""
-        state = self._tui.state
+        state = self._state
 
         # Volume changes are local — apply immediately even without server
         if command == "volume_up":
@@ -2676,25 +2659,6 @@ class SendSpinReceiver:
             state.volume = new_vol
             if self._audio_handler is not None:
                 self._audio_handler.set_volume(new_vol, muted=state.muted)
-            return
-
-        # Seek commands — local progress update only
-        # Note: the SendSpin protocol does not expose a seek command, so we can
-        # only move the progress bar locally.  The actual playback position on
-        # the server is unchanged.
-        if command.startswith("seek_forward:"):
-            seek_ms = int(command.split(":")[1])
-            new_prog = min(state.duration_ms, state.get_interpolated_progress() + seek_ms)
-            state.progress_ms = new_prog
-            state.progress_update_time = time.monotonic()
-            logger.debug("Seek forward %d ms (local only, no server seek support)", seek_ms)
-            return
-        elif command.startswith("seek_backward:"):
-            seek_ms = int(command.split(":")[1])
-            new_prog = max(0, state.get_interpolated_progress() - seek_ms)
-            state.progress_ms = new_prog
-            state.progress_update_time = time.monotonic()
-            logger.debug("Seek backward %d ms (local only, no server seek support)", seek_ms)
             return
 
         if self._client is None or not self._client.connected:
@@ -2742,13 +2706,13 @@ class SendSpinReceiver:
 
     async def _run_demo_mode(self) -> None:
         """Demo mode with simulated audio."""
-        self._tui.state.connected = True
-        self._tui.state.server_name = "Demo Mode"
-        self._tui.state.group_name = "Party Room"
-        self._tui.state.is_playing = True
-        self._tui.state.codec = "PCM"
-        self._tui.state.sample_rate = 48000
-        self._tui.state.bit_depth = 16
+        self._state.connected = True
+        self._state.server_name = "Demo Mode"
+        self._state.group_name = "Party Room"
+        self._state.is_playing = True
+        self._state.codec = "PCM"
+        self._state.sample_rate = 48000
+        self._state.bit_depth = 16
         self._visualizer.set_format(48000, 16, 2)
 
         tracks = [
@@ -2760,11 +2724,11 @@ class SendSpinReceiver:
         ]
         track_idx = 0
         t_title, t_artist, t_album, t_duration = tracks[track_idx]
-        self._tui.state.title = t_title
-        self._tui.state.artist = t_artist
-        self._tui.state.album = t_album
-        self._tui.state.duration_ms = t_duration
-        self._tui.state.progress_ms = 0
+        self._state.title = t_title
+        self._state.artist = t_artist
+        self._state.album = t_album
+        self._state.duration_ms = t_duration
+        self._state.progress_ms = 0
 
         sample_rate = 48000
         chunk_size = 2048
@@ -2804,14 +2768,14 @@ class SendSpinReceiver:
             self._visualizer.feed_audio(bytes(audio_data))
             time_pos += dt
 
-            self._tui.state.progress_ms = int(time_pos * 1000) % t_duration
-            if self._tui.state.progress_ms < 100 and time_pos > 1.0:
+            self._state.progress_ms = int(time_pos * 1000) % t_duration
+            if self._state.progress_ms < 100 and time_pos > 1.0:
                 track_idx = (track_idx + 1) % len(tracks)
                 t_title, t_artist, t_album, t_duration = tracks[track_idx]
-                self._tui.state.title = t_title
-                self._tui.state.artist = t_artist
-                self._tui.state.album = t_album
-                self._tui.state.duration_ms = t_duration
+                self._state.title = t_title
+                self._state.artist = t_artist
+                self._state.album = t_album
+                self._state.duration_ms = t_duration
 
             await asyncio.sleep(chunk_size / sample_rate * 0.5)
 
@@ -2822,9 +2786,35 @@ class SendSpinReceiver:
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 
-async def _run_with_config(config: Config, demo: bool = False, gui: bool = False) -> None:
+async def _run_with_config(
+    config: Config, demo: bool = False, gui: bool = False, daemon: bool = False,
+) -> None:
     """Run the TUI + receiver using the given config."""
     visualizer = AudioVisualizer()
+
+    if daemon:
+        # Headless daemon mode — no TUI/GUI, audio only
+        server_url = config.server_url if config.mode == "connect" else None
+        receiver = SendSpinReceiver(
+            None, visualizer,  # type: ignore[arg-type]
+            server_url=server_url,
+            listen_port=config.listen_port,
+            client_name=config.client_name,
+            config=config,
+        )
+        loop = asyncio.get_running_loop()
+        stop_event = asyncio.Event()
+        if IS_WINDOWS:
+            signal.signal(signal.SIGINT, lambda *_: (receiver.stop(), stop_event.set()))
+            signal.signal(signal.SIGTERM, lambda *_: (receiver.stop(), stop_event.set()))
+        else:
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, lambda: (receiver.stop(), stop_event.set()))
+
+        logger.info("Running in daemon mode (audio only, no display)")
+        await asyncio.gather(receiver.start(), stop_event.wait())
+        return
+
     tui = BoomBoxTUI(visualizer, gui=gui)
 
     server_url = config.server_url if config.mode == "connect" else None
@@ -2839,7 +2829,6 @@ async def _run_with_config(config: Config, demo: bool = False, gui: bool = False
 
     loop = asyncio.get_running_loop()
     if IS_WINDOWS:
-        # Windows doesn't support loop.add_signal_handler; use signal module directly
         signal.signal(signal.SIGINT, lambda *_: (receiver.stop(), tui.stop()))
     else:
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -2899,6 +2888,7 @@ def main() -> None:
     parser.add_argument("--setup", action="store_true", help="Re-run the setup wizard")
     parser.add_argument("--demo", action="store_true", help="Run in demo mode without a server")
     parser.add_argument("--gui", action="store_true", help="Run in a standalone GUI window instead of the terminal")
+    parser.add_argument("--daemon", "-d", action="store_true", help="Run as a headless service (no GUI/TUI, audio only)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
@@ -2926,6 +2916,28 @@ def main() -> None:
             asyncio.run(_run_with_config(config, gui=True))
         except KeyboardInterrupt:
             pass
+        return
+
+    # Daemon mode — headless service, audio only
+    if args.daemon:
+        if args.verbose:
+            logging.basicConfig(level=logging.DEBUG, format="%(name)s: %(message)s", force=True)
+        else:
+            logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s", force=True)
+        config = Config.load()
+        if config is None:
+            print("No config found. Run once without --daemon to set up.", file=sys.stderr)
+            sys.exit(1)
+        if not config.client_id:
+            config.client_id = str(uuid.uuid4())
+            config.save()
+        logger.info("AlfiePRIME Musiciser daemon starting")
+        logger.info("Mode: %s | Client: %s", config.mode, config.client_name)
+        try:
+            asyncio.run(_run_with_config(config, daemon=True))
+        except KeyboardInterrupt:
+            pass
+        logger.info("Daemon stopped")
         return
 
     console = Console()

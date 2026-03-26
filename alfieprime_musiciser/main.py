@@ -316,11 +316,11 @@ def _extract_theme_from_image(image_data: bytes) -> ColorTheme | None:
             h /= 6.0
             s = diff / mx if mx > 0 else 0.0
             v = mx / 255.0
-            # Shift hue by a meaningful amount and tweak saturation
-            shift = 0.18 + 0.12 * len(candidates)  # ~0.30, 0.42, 0.54
+            # Small hue shifts to stay in the same colour family
+            shift = 0.06 + 0.05 * len(candidates)  # ~0.11, 0.16, 0.21
             new_h = (h + shift) % 1.0
-            new_s = min(1.0, s * 0.9 + 0.2)
-            new_v = min(1.0, max(0.35, v * 0.85 + 0.1))
+            new_s = min(1.0, max(0.2, s + 0.1 * (1 - len(candidates) % 2 * 2)))  # nudge sat up/down
+            new_v = min(1.0, max(0.35, v + 0.12 * (len(candidates) % 2 * 2 - 1)))
             nr, ng, nb = _hsv_to_rgb(new_h, new_s, new_v)
             candidates.append((int(nr * 255), int(ng * 255), int(nb * 255)))
 

@@ -2030,31 +2030,27 @@ class BoomBoxTUI:
         # Animate by showing 1-3 waves based on frame
         wave_count = (wave_frame % 3) + 1
 
-        art = [
-            f"        ╭──────────────────────╮",
-            f"        │  {spin_ch} CONNECTING...    │",
-            f"        ╰──────────────────────╯",
-            f"                  │              ",
-            f"             ┌────┴────┐         ",
-            f"             │ ◉ SEND  │         ",
-            f"             │  SPIN   │         ",
-            f"             └────┬────┘         ",
-            f"                  │              ",
-            f"           ───────┴───────       ",
-        ]
-
-        # Add animated signal waves to the side
-        wave_art = [
-            f"                          {')'  if wave_count >= 1 else ' '}      ",
-            f"                        {')'    if wave_count >= 2 else ' '}      ",
-            f"                      {')'      if wave_count >= 3 else ' '}      ",
-        ]
-
-        # Insert wave lines after the box
-        art.insert(1, wave_art[0] if wave_count >= 1 else "")
-        # Dots animation at the bottom
+        w1 = ")" if wave_count >= 1 else " "
+        w2 = ")" if wave_count >= 2 else " "
+        w3 = ")" if wave_count >= 3 else " "
         dots = "." * ((int(t * 2) % 3) + 1)
-        art.append(f"        Searching for server{dots:<3}")
+
+        art = [
+            f"              .─────.            ",
+            f"             /       \\      {w3}    ",
+            f"            │  ◉   ◉  │    {w2}     ",
+            f"            │    ▽    │   {w1}      ",
+            f"             \\       /           ",
+            f"              '──┬──'            ",
+            f"                 │               ",
+            f"            ┌────┴────┐          ",
+            f"            │ ═══════ │          ",
+            f"            │ ═══════ │          ",
+            f"            └─────────┘          ",
+            f"           ──────┬──────         ",
+            f"                 │               ",
+            f"     {spin_ch} Connecting{dots:<3}           ",
+        ]
 
         art_h = len(art)
         art_w = max(len(line) for line in art)

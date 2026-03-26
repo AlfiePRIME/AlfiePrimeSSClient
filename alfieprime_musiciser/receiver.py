@@ -26,6 +26,7 @@ from alfieprime_musiciser.config import Config
 from alfieprime_musiciser.renderer import reset_vu_peaks
 from alfieprime_musiciser.state import PlayerState
 from alfieprime_musiciser.mpris import MPRIS2Server, clear_art_cache, write_art_cache
+from alfieprime_musiciser.smtc import SMTCServer
 from alfieprime_musiciser.stats import ListeningStats
 from alfieprime_musiciser.visualizer import AudioVisualizer
 
@@ -128,9 +129,12 @@ class SendSpinReceiver:
         self._running = True
         self._loop = asyncio.get_running_loop()
 
-        # Register MPRIS2 on the session D-Bus (Linux only, graceful no-op otherwise)
+        # Register with OS media controls (MPRIS2 on Linux, SMTC on Windows)
         if sys.platform == "linux":
             self._mpris = MPRIS2Server(self._state, self._on_transport_command)
+            await self._mpris.start()
+        elif sys.platform == "win32":
+            self._mpris = SMTCServer(self._state, self._on_transport_command)  # type: ignore[assignment]
             await self._mpris.start()
 
         from sendspin.audio_devices import detect_supported_audio_formats, query_devices

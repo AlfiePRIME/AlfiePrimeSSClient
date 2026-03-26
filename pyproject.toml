@@ -9,6 +9,7 @@ dependencies = [
     "rich>=13.0.0",
     "Pillow>=10.0.0",
     "dbus-next>=0.2.3; sys_platform == 'linux'",
+    "winsdk>=1.0.0b10; sys_platform == 'win32'",
 ]
 
 [project.scripts]

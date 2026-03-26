@@ -72,6 +72,37 @@ def _rich_256_color(n: int) -> str:
     return f"#{v:02x}{v:02x}{v:02x}"
 
 
+_STANDBY_PHRASES = [
+    "Standing by for further ear massages",
+    "Waiting for the next sonic hug",
+    "Ears on standby, ready for action",
+    "The dance floor misses you",
+    "Recharging the vibe capacitors",
+    "Silence is just a long intro",
+    "Your speakers called, they're bored",
+    "Ready to drop beats at a moment's notice",
+    "The party is just sleeping, not dead",
+    "Buffering good vibes for later",
+    "Sound check complete, awaiting deployment",
+    "The bass is patiently waiting",
+    "On hold for auditory adventures",
+    "Shhh... the woofers are napping",
+    "Standing by to convert electricity into joy",
+    "The DJ stepped out for a coffee",
+    "Your ears deserve a break too",
+    "Loading next session of audio therapy",
+    "Idle hands make no music, press play",
+    "The speakers whisper: feed us",
+    "Paused but not forgotten",
+    "Music break in progress, stay tuned",
+    "The rhythm will return shortly",
+    "Conserving energy for maximum party output",
+    "Awaiting orders from the groove commander",
+]
+
+STANDBY_TIMEOUT = 5 * 60  # seconds
+
+
 class BoomBoxTUI:
     """The party-themed boom box terminal UI."""
 
@@ -89,6 +120,11 @@ class BoomBoxTUI:
         # Cached terminal dimensions, updated each frame
         self._term_width: int = 120
         self._term_height: int = 50
+        # Standby screensaver
+        self._last_playing_time: float = time.monotonic()
+        self._standby_active: bool = False
+        self._standby_phrase_idx: int = 0
+        self._standby_phrase_time: float = 0.0
 
     def set_command_callback(self, callback: Callable[[str], None]) -> None:
         """Set callback for transport commands (play_pause, next, previous, shuffle, repeat)."""
@@ -491,6 +527,125 @@ class BoomBoxTUI:
             result.append((text, fg_hex, bg_hex, bold))
 
         return result
+
+    # ── Standby Screensaver ─────────────────────────────────────────────
+
+    def _check_standby(self) -> bool:
+        """Return True if the standby screensaver should be active."""
+        if self.state.is_playing:
+            self._last_playing_time = time.monotonic()
+            if self._standby_active:
+                self._standby_active = False
+            return False
+        idle = time.monotonic() - self._last_playing_time
+        if idle >= STANDBY_TIMEOUT and self.state.connected:
+            if not self._standby_active:
+                self._standby_active = True
+                self._standby_phrase_idx = random.randint(0, len(_STANDBY_PHRASES) - 1)
+                self._standby_phrase_time = time.monotonic()
+            return True
+        return False
+
+    def _standby_segments(
+        self, term_w: int, term_h: int,
+    ) -> list[tuple[str, str | None, str | None, bool]]:
+        """Render a gentle standby screensaver with rotating phrases."""
+        segs: list[tuple[str, str | None, str | None, bool]] = []
+        t = time.monotonic()
+
+        # Rotate phrase every 8 seconds
+        if t - self._standby_phrase_time > 8.0:
+            self._standby_phrase_idx = (self._standby_phrase_idx + 1) % len(_STANDBY_PHRASES)
+            self._standby_phrase_time = t
+
+        phrase = _STANDBY_PHRASES[self._standby_phrase_idx]
+
+        # Floating position — gentle drift across screen
+        drift_x = int((math.sin(t * 0.15) * 0.3 + 0.5) * max(term_w - len(phrase) - 4, 0))
+        drift_y = int((math.sin(t * 0.1 + 1.0) * 0.3 + 0.5) * max(term_h - 6, 0))
+
+        # Title
+        title = "A L F I E P R I M E"
+        title_x = max(0, (term_w - len(title)) // 2)
+
+        # Zzz animation
+        zzz_frames = ["z", "zz", "zzz", "zz"]
+        zzz = zzz_frames[int(t * 0.8) % len(zzz_frames)]
+
+        for row in range(term_h):
+            line_segs: list[tuple[str, str | None, str | None, bool]] = []
+
+            if row == drift_y:
+                # Phrase row with gentle color animation
+                pad_l = drift_x
+                line_segs.append((" " * pad_l, None, None, False))
+                # Fade-in effect based on time since phrase changed
+                age = min(1.0, (t - self._standby_phrase_time) / 1.5)
+                for i, ch in enumerate(phrase):
+                    hue = (t * 0.05 + i * 0.02) % 1.0
+                    from alfieprime_musiciser.colors import _hsv_to_rgb
+                    r, g, b = _hsv_to_rgb(hue, 0.4, 0.3 + 0.2 * age)
+                    c = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+                    line_segs.append((ch, c, None, False))
+                pad_r = term_w - pad_l - len(phrase)
+                if pad_r > 0:
+                    line_segs.append((" " * pad_r, None, None, False))
+            elif row == drift_y - 2:
+                # Zzz above the phrase
+                zzz_x = drift_x + len(phrase) + 1
+                if zzz_x + len(zzz) < term_w:
+                    line_segs.append((" " * zzz_x, None, None, False))
+                    pulse = 0.2 + 0.15 * math.sin(t * 2)
+                    br = int(255 * pulse)
+                    line_segs.append((zzz, f"#{br:02x}{br:02x}{min(255, br + 30):02x}", None, False))
+                    pad_r = term_w - zzz_x - len(zzz)
+                    if pad_r > 0:
+                        line_segs.append((" " * pad_r, None, None, False))
+                else:
+                    line_segs.append((" " * term_w, None, None, False))
+            elif row == 1:
+                # Title at top center, very dim
+                line_segs.append((" " * title_x, None, None, False))
+                pulse = 0.08 + 0.04 * math.sin(t * 0.5)
+                br = int(255 * pulse)
+                c = f"#{br:02x}{br:02x}{br:02x}"
+                line_segs.append((title, c, None, False))
+                pad_r = term_w - title_x - len(title)
+                if pad_r > 0:
+                    line_segs.append((" " * pad_r, None, None, False))
+            elif row == term_h - 2:
+                # Subtle hint at the bottom
+                hint = "press play to wake up"
+                hint_x = (term_w - len(hint)) // 2
+                blink = 0.06 + 0.04 * math.sin(t * 1.5)
+                br = int(255 * blink)
+                c = f"#{br:02x}{br:02x}{br:02x}"
+                line_segs.append((" " * hint_x, None, None, False))
+                line_segs.append((hint, c, None, False))
+                pad_r = term_w - hint_x - len(hint)
+                if pad_r > 0:
+                    line_segs.append((" " * pad_r, None, None, False))
+            else:
+                # Mostly black with occasional dim floating particles
+                if random.random() < 0.005:
+                    star_x = random.randint(0, term_w - 1)
+                    twinkle = 0.03 + 0.03 * math.sin(t * 3 + star_x)
+                    br = int(255 * twinkle)
+                    c = f"#{br:02x}{br:02x}{br:02x}"
+                    if star_x > 0:
+                        line_segs.append((" " * star_x, None, None, False))
+                    line_segs.append(("·", c, None, False))
+                    pad_r = term_w - star_x - 1
+                    if pad_r > 0:
+                        line_segs.append((" " * pad_r, None, None, False))
+                else:
+                    line_segs.append((" " * term_w, None, None, False))
+
+            segs.extend(line_segs)
+            if row < term_h - 1:
+                segs.append(("\n", None, None, False))
+
+        return segs
 
     # ── CRT Animation ──────────────────────────────────────────────────────
 
@@ -933,10 +1088,18 @@ class BoomBoxTUI:
 
             # ── Main render loop ──
             while self._running:
-                frame = self._render_frame()
-                sys.stdout.write(f"\x1b[H{frame}")
-                sys.stdout.flush()
-                await asyncio.sleep(1 / 30)
+                if self._check_standby():
+                    term_w, term_h = self._get_terminal_size()
+                    segs = self._standby_segments(term_w, term_h)
+                    frame = self._crt_to_ansi(segs, term_w, term_h)
+                    sys.stdout.write(f"\x1b[H{frame}")
+                    sys.stdout.flush()
+                    await asyncio.sleep(1 / 15)  # slower refresh in standby
+                else:
+                    frame = self._render_frame()
+                    sys.stdout.write(f"\x1b[H{frame}")
+                    sys.stdout.flush()
+                    await asyncio.sleep(1 / 30)
 
         finally:
             # ── CRT shutdown animation ──
@@ -1008,9 +1171,15 @@ class BoomBoxTUI:
             # ── Main render loop ──
             while self._running and gui.alive:
                 gui.process_events()
-                segments = self._render_frame_gui()
-                gui.send_segments(segments)
-                await asyncio.sleep(1 / 30)
+                if self._check_standby():
+                    term_w, term_h = self._get_terminal_size()
+                    segments = self._standby_segments(term_w, term_h)
+                    gui.send_segments(segments)
+                    await asyncio.sleep(1 / 15)
+                else:
+                    segments = self._render_frame_gui()
+                    gui.send_segments(segments)
+                    await asyncio.sleep(1 / 30)
 
         finally:
             # ── CRT shutdown animation ──

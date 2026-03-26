@@ -47,6 +47,13 @@ from typing import TYPE_CHECKING
 import io as _io
 import shutil
 
+try:
+    import psutil
+    _process = psutil.Process()
+except ImportError:
+    psutil = None  # type: ignore[assignment]
+    _process = None  # type: ignore[assignment]
+
 import numpy as np
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -921,29 +928,74 @@ def render_spectrum(
     return lines
 
 
+# Per-channel VU peak hold state (survives across frames)
+_vu_peaks: dict[str, tuple[float, float]] = {}  # label → (peak_level, peak_time)
+
+
 def render_vu_meter(
     level: float, width: int, label: str, color: str,
     theme: ColorTheme | None = None,
 ) -> Text:
     th = theme or _default_theme
-    # VU meter gradient: use theme accent → warm → primary for low → mid → high
-    vu_low = th.accent
-    vu_mid = th.warm
-    vu_high = th.primary
+    t = time.time()
     meter_width = max(width - 6, 10)
-    filled = min(int(level * meter_width), meter_width)
+
+    # ── Apply non-linear scaling so quiet audio still shows movement ──
+    # Square root scaling compresses loud signals, expands quiet ones
+    display_level = math.sqrt(min(max(level, 0.0), 1.0))
+    filled = min(int(display_level * meter_width), meter_width)
+
+    # ── Peak hold: sticky marker that slowly falls ──
+    peak_key = label
+    prev_peak, prev_time = _vu_peaks.get(peak_key, (0.0, 0.0))
+    if display_level >= prev_peak:
+        peak_val, peak_time = display_level, t
+    else:
+        # Hold for 0.6s then fall
+        hold = 0.6
+        elapsed = t - prev_time
+        if elapsed < hold:
+            peak_val, peak_time = prev_peak, prev_time
+        else:
+            fall_rate = 1.5  # units/sec
+            peak_val = max(display_level, prev_peak - (elapsed - hold) * fall_rate)
+            peak_time = prev_time
+    _vu_peaks[peak_key] = (peak_val, peak_time)
+    peak_pos = min(int(peak_val * meter_width), meter_width - 1)
 
     text = Text()
     text.append(f" {label} ", Style(color=color, bold=True))
     text.append("\u2590", Style(color="#444444"))
 
     for i in range(meter_width):
-        if i < filled:
-            ratio = i / meter_width
-            c = vu_low if ratio < 0.6 else (vu_mid if ratio < 0.8 else vu_high)
-            text.append("\u2588", Style(color=c))
+        ratio = i / max(meter_width - 1, 1)
+        if i == peak_pos and peak_val > 0.01:
+            # Peak marker — bright white/yellow flash
+            flash = 0.7 + 0.3 * math.sin(t * 8)
+            br = int(255 * flash)
+            text.append("\u2588", Style(color=f"#{br:02x}{br:02x}{min(255, br):02x}", bold=True))
+        elif i < filled:
+            # Smooth gradient across full width with shimmer
+            if ratio < 0.4:
+                c = _lerp_color(th.accent, th.warm, ratio / 0.4)
+            elif ratio < 0.7:
+                c = _lerp_color(th.warm, th.primary, (ratio - 0.4) / 0.3)
+            elif ratio < 0.85:
+                c = _lerp_color(th.primary, th.highlight, (ratio - 0.7) / 0.15)
+            else:
+                c = _lerp_color(th.highlight, "#ff2222", (ratio - 0.85) / 0.15)
+            # Subtle shimmer on active bars
+            shimmer = 0.85 + 0.15 * math.sin(t * 6 + i * 0.4)
+            cr, cg, cb = _hex_to_rgb(c)
+            cr = min(255, int(cr * shimmer))
+            cg = min(255, int(cg * shimmer))
+            cb = min(255, int(cb * shimmer))
+            text.append("\u2588", Style(color=_rgb_to_hex(cr, cg, cb)))
         else:
-            text.append("\u2591", Style(color="#222222"))
+            # Dark background with faint gradient hint
+            bg_bright = 0.06 + 0.04 * ratio
+            v = int(255 * bg_bright)
+            text.append("\u2591", Style(color=f"#{v:02x}{v:02x}{v:02x}"))
 
     text.append("\u258c", Style(color="#444444"))
     return text
@@ -1300,6 +1352,81 @@ def render_codec_info(
     return text
 
 
+# Smoothed stats to avoid jitter (updated lazily)
+_stats_cache: dict[str, object] = {"last_update": 0.0, "cpu": 0.0, "mem": 0.0, "net_rx": 0, "net_tx": 0, "net_prev_rx": 0, "net_prev_tx": 0, "net_time": 0.0, "uptime": 0.0}
+_stats_start_time: float = time.monotonic()
+
+
+def render_stats_info(theme: ColorTheme | None = None) -> Text:
+    """Render system stats: CPU, memory, network, uptime."""
+    th = theme or _default_theme
+    t_now = time.monotonic()
+    text = Text()
+    cache = _stats_cache
+
+    # Update stats every 0.5s to avoid overhead
+    if _process is not None and t_now - float(cache["last_update"]) > 0.5:
+        try:
+            cache["cpu"] = _process.cpu_percent(interval=None)
+            mem_info = _process.memory_info()
+            cache["mem"] = mem_info.rss / (1024 * 1024)  # MB
+
+            # Network I/O (system-wide — per-process not available on all platforms)
+            net = psutil.net_io_counters()
+            if net:
+                now_rx, now_tx = net.bytes_recv, net.bytes_sent
+                dt = t_now - float(cache["net_time"]) if float(cache["net_time"]) > 0 else 1.0
+                if dt > 0:
+                    cache["net_rx"] = int((now_rx - int(cache["net_prev_rx"])) / dt) if int(cache["net_prev_rx"]) > 0 else 0
+                    cache["net_tx"] = int((now_tx - int(cache["net_prev_tx"])) / dt) if int(cache["net_prev_tx"]) > 0 else 0
+                cache["net_prev_rx"] = now_rx
+                cache["net_prev_tx"] = now_tx
+                cache["net_time"] = t_now
+        except Exception:
+            pass
+        cache["last_update"] = t_now
+
+    uptime_s = t_now - _stats_start_time
+    hours = int(uptime_s // 3600)
+    mins = int((uptime_s % 3600) // 60)
+    secs = int(uptime_s % 60)
+
+    # CPU
+    cpu_val = float(cache.get("cpu", 0))
+    cpu_color = "#00cc00" if cpu_val < 30 else ("#ff8800" if cpu_val < 70 else "#ff2222")
+    text.append(" CPU:", Style(color="#666666"))
+    text.append(f"{cpu_val:4.1f}%", Style(color=cpu_color))
+
+    # Memory
+    mem_val = float(cache.get("mem", 0))
+    text.append("  MEM:", Style(color="#666666"))
+    text.append(f"{mem_val:.0f}MB", Style(color=th.secondary))
+
+    # Network throughput
+    rx_bytes = int(cache.get("net_rx", 0))
+    tx_bytes = int(cache.get("net_tx", 0))
+
+    def _fmt_rate(b: int) -> str:
+        if b > 1024 * 1024:
+            return f"{b / (1024 * 1024):.1f}MB/s"
+        elif b > 1024:
+            return f"{b / 1024:.0f}KB/s"
+        return f"{b}B/s"
+
+    text.append("  NET:", Style(color="#666666"))
+    text.append(f"\u2193{_fmt_rate(rx_bytes)}", Style(color=th.accent))
+    text.append(f" \u2191{_fmt_rate(tx_bytes)}", Style(color=th.warm))
+
+    # Uptime
+    text.append("  UP:", Style(color="#666666"))
+    if hours > 0:
+        text.append(f"{hours}h{mins:02d}m", Style(color="#888888"))
+    else:
+        text.append(f"{mins}m{secs:02d}s", Style(color="#888888"))
+
+    return text
+
+
 # ─── Player State ────────────────────────────────────────────────────────────
 
 
@@ -1462,7 +1589,7 @@ class BoomBoxTUI:
         #   + VU(4) + party_lights(4) + status(3) + frame_bot(1)
         #   + spectrum borders(2) + dance_floor borders(2)
         np_rows = np_panel_content_lines + 2
-        fixed_rows = 1 + 3 + np_rows + 4 + 4 + 3 + 1 + 2 + 2
+        fixed_rows = 1 + 3 + np_rows + 4 + 4 + 4 + 1 + 2 + 2
         available = max(self._term_height - fixed_rows, 8)
         # Dance floor gets a fixed size; spectrum expands to fill all remaining space
         dance_height = max(5, min(8, available // 3))
@@ -1529,7 +1656,7 @@ class BoomBoxTUI:
             title_align="center", border_style=th.border_dance, padding=(0, 0),
         ))
 
-        # Status bar
+        # Status bar — connection info + codec on row 1, system stats on row 2
         status_table = Table.grid(padding=0, expand=True)
         status_table.add_column(ratio=1)
         status_table.add_column(ratio=1)
@@ -1537,6 +1664,7 @@ class BoomBoxTUI:
             render_server_info(self.state.server_name, self.state.group_name, self.state.connected, theme=th),
             render_codec_info(self.state.codec, self.state.sample_rate, self.state.bit_depth, theme=th),
         )
+        status_table.add_row(render_stats_info(theme=th), Text(""))
         parts.append(Panel(status_table, border_style="#444444", padding=(0, 0)))
 
         # Boom box frame accents
@@ -2206,6 +2334,8 @@ class SendSpinReceiver:
         self._flac_fmt = None
         self._running = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Pre-cached themes per artwork channel (channel 0 = current, 1+ = upcoming)
+        self._artwork_themes: dict[int, ColorTheme] = {}
 
         # In daemon mode there is no TUI — use a standalone state object
         if self._tui is None:
@@ -2487,12 +2617,24 @@ class SendSpinReceiver:
         if meta is None:
             return
 
+        old_title = state.title
         if not isinstance(getattr(meta, "title", UndefinedField()), UndefinedField):
             state.title = meta.title or ""
         if not isinstance(getattr(meta, "artist", UndefinedField()), UndefinedField):
             state.artist = meta.artist or ""
         if not isinstance(getattr(meta, "album", UndefinedField()), UndefinedField):
             state.album = meta.album or ""
+
+        # On track change, apply pre-cached artwork theme if available
+        if state.title != old_title and state.title:
+            for ch in (1, 2, 3):
+                cached = self._artwork_themes.get(ch)
+                if cached is not None and cached.primary != _default_theme.primary:
+                    state.theme = cached
+                    logger.info("Applied pre-cached theme from channel %d for new track", ch)
+                    self._artwork_themes[0] = cached
+                    self._artwork_themes.pop(ch, None)
+                    break
 
         repeat = getattr(meta, "repeat", UndefinedField())
         if not isinstance(repeat, UndefinedField) and repeat is not None:
@@ -2625,23 +2767,32 @@ class SendSpinReceiver:
         client._handle_binary_message = patched_handler  # noqa: SLF001
 
     def _on_artwork(self, channel: int, image_data: bytes) -> None:
-        """Handle received album artwork - extract colors and update theme."""
+        """Handle received album artwork - extract colors and cache theme.
+
+        Channel 0 = current track (apply immediately).
+        Channels 1+ = upcoming tracks (pre-cache for instant switch).
+        """
         logger.debug("Received artwork for channel %d (%d bytes)", channel, len(image_data))
-        theme = _extract_theme_from_image(image_data)
-        if theme is not None:
-            self._state.theme = theme
-            logger.info(
-                "Updated theme from album art: primary=%s secondary=%s accent=%s",
-                theme.primary, theme.secondary, theme.accent,
-            )
-        else:
-            # Extraction failed (too dark, greyscale, etc.) - revert to defaults
-            self._state.theme = ColorTheme()
+
+        def _extract_and_apply() -> None:
+            theme = _extract_theme_from_image(image_data)
+            self._artwork_themes[channel] = theme or ColorTheme()
+            if channel == 0:
+                self._state.theme = self._artwork_themes[channel]
+                logger.info(
+                    "Updated theme from album art ch%d: primary=%s",
+                    channel, self._artwork_themes[channel].primary,
+                )
+
+        # Extract on a thread to avoid blocking the event loop
+        threading.Thread(target=_extract_and_apply, daemon=True).start()
 
     def _on_artwork_cleared(self, channel: int) -> None:
         """Handle artwork cleared - revert to default colours."""
         logger.debug("Artwork cleared for channel %d", channel)
-        self._state.theme = ColorTheme()
+        self._artwork_themes.pop(channel, None)
+        if channel == 0:
+            self._state.theme = ColorTheme()
 
     def _on_transport_command(self, command: str) -> None:
         """Handle a transport command from the TUI (called from input thread)."""

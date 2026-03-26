@@ -123,10 +123,16 @@ def _gui_process_main(conn: Connection, title: str) -> None:
 
     root.protocol("WM_DELETE_WINDOW", on_close)
 
+    _arrow_keysyms = {"Up": "arrow_up", "Down": "arrow_down",
+                      "Left": "arrow_left", "Right": "arrow_right"}
+
     def on_key(event: tk.Event) -> None:
-        if event.char:
+        # Map arrow keys to named strings
+        mapped = _arrow_keysyms.get(event.keysym)
+        key = mapped or event.char
+        if key:
             try:
-                conn.send((MSG_KEY, event.char))
+                conn.send((MSG_KEY, key))
             except (BrokenPipeError, OSError):
                 pass
 

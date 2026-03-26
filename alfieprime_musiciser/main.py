@@ -376,6 +376,9 @@ class AudioVisualizer:
         self._prev_bass_spectrum = None  # previous frame's bass FFT bins
         self._flux_history = np.zeros(20, dtype=np.float64)  # ~0.67s at 30fps
         self._flux_hist_pos = 0
+        # BPM estimation from beat timestamps
+        self._beat_times: deque[float] = deque(maxlen=20)  # last 20 beat timestamps
+        self._bpm = 0.0
         # Pause freeze
         self._paused = False
         # Playback-synced delay queue: hold audio until it's time to "play" it
@@ -504,8 +507,9 @@ class AudioVisualizer:
         self._paused = paused
 
     def get_spectrum(self) -> tuple[list[float], list[float], float, float]:
-        # When paused, return frozen state - no decay, no updates
+        # When paused, decay gracefully instead of freezing
         if self._paused:
+            self._decay()
             return (self._bands.tolist(), self._peaks.tolist(), self._vu_left, self._vu_right)
 
         with self._lock:
@@ -594,6 +598,23 @@ class AudioVisualizer:
             self._beat_count += 1
             self._beat_intensity = 1.0
             self._beat_cooldown = 3  # ~100ms at 30fps
+            # Record beat time for BPM estimation
+            now = time.monotonic()
+            self._beat_times.append(now)
+            if len(self._beat_times) >= 4:
+                # Average interval over recent beats
+                intervals = [
+                    self._beat_times[i] - self._beat_times[i - 1]
+                    for i in range(1, len(self._beat_times))
+                ]
+                # Filter outliers (keep intervals within 2x of median)
+                intervals.sort()
+                median = intervals[len(intervals) // 2]
+                valid = [iv for iv in intervals if 0.3 * median < iv < 2.5 * median]
+                if valid:
+                    avg_interval = sum(valid) / len(valid)
+                    if avg_interval > 0:
+                        self._bpm = 60.0 / avg_interval
 
         # Decay beat intensity
         self._beat_intensity *= 0.6
@@ -610,7 +631,16 @@ class AudioVisualizer:
         """Return (beat_count, beat_intensity). Count increments on each beat."""
         return self._beat_count, self._beat_intensity
 
-    def reset(self) -> None:
+    def get_bpm(self) -> float:
+        """Return estimated BPM from recent beat detection. 0 if unknown."""
+        # If no beats in last 3 seconds, BPM is stale
+        if self._beat_times and (time.monotonic() - self._beat_times[-1]) > 3.0:
+            self._bpm = 0.0
+        return self._bpm
+
+    def reset_pipeline(self) -> None:
+        """Reset the audio pipeline (ring buffer, delay queue) but keep visual state
+        so spectrum/VU can decay naturally."""
         with self._lock:
             self._ring_buffer[:] = 0
             self._write_pos = 0
@@ -619,6 +649,10 @@ class AudioVisualizer:
             self._total_samples_queued = 0
             self._total_samples_drained = 0
             self._stream_start_time = 0.0
+
+    def reset(self) -> None:
+        """Full reset — pipeline + visual state."""
+        self.reset_pipeline()
         self._bands[:] = 0
         self._peaks[:] = 0
         self._vu_left = 0.0
@@ -629,6 +663,8 @@ class AudioVisualizer:
         self._flux_hist_pos = 0
         self._beat_cooldown = 0
         self._beat_intensity = 0.0
+        self._beat_times.clear()
+        self._bpm = 0.0
 
 
 # ─── Renderer ────────────────────────────────────────────────────────────────
@@ -755,7 +791,9 @@ def render_transport_controls(
     text.append("[B]ack ", Style(color="#444444"))
     text.append("[P]lay ", Style(color="#444444"))
     text.append("[N]ext ", Style(color="#444444"))
-    text.append("[R]epeat", Style(color="#444444"))
+    text.append("[R]epeat ", Style(color="#444444"))
+    text.append("[↑↓]Vol ", Style(color="#444444"))
+    text.append("[←→]Seek", Style(color="#444444"))
 
     return text, buttons
 
@@ -873,6 +911,115 @@ def render_vu_meter(
     return text
 
 
+def render_volume_gauge(
+    volume: int, muted: bool, width: int, height: int = 2,
+    theme: ColorTheme | None = None,
+) -> list[Text]:
+    """Render an animated volume gauge with arc-style dial and level indicator."""
+    th = theme or _default_theme
+    t = time.time()
+    lines: list[Text] = []
+    vol = max(0, min(100, volume))
+    ratio = vol / 100.0
+
+    # ── Row 1: Arc dial ──
+    # Layout: " VOL ╭───dial───╮" row1, "     ╰───dial───╯ 100%" row2
+    # Row1: 5 + 1 + dial_w + 1 = dial_w + 7
+    # Row2: 5 + 1 + dial_w + 1 + 5 = dial_w + 12   (longest due to " 100%")
+    dial_w = max(width - 14, 8)
+    needle_pos = int(ratio * (dial_w - 1))
+
+    line = Text()
+    line.append(" VOL ", Style(color=th.warm, bold=True))
+    line.append("╭", Style(color="#555555"))
+
+    for i in range(dial_w):
+        tick_ratio = i / max(dial_w - 1, 1)
+        if i == needle_pos and not muted:
+            # Needle — pulsing brightness
+            pulse = 0.7 + 0.3 * math.sin(t * 4)
+            br = int(255 * pulse)
+            c = f"#{br:02x}{br:02x}{min(255, br + 40):02x}"
+            line.append("▼", Style(color=c, bold=True))
+        elif tick_ratio <= ratio and not muted:
+            # Filled portion — gradient from accent → warm → primary
+            if tick_ratio < 0.5:
+                c = _lerp_color(th.accent, th.warm, tick_ratio * 2)
+            elif tick_ratio < 0.8:
+                c = _lerp_color(th.warm, th.primary, (tick_ratio - 0.5) / 0.3)
+            else:
+                # Red zone
+                c = _lerp_color(th.primary, "#ff2222", (tick_ratio - 0.8) / 0.2)
+            line.append("━", Style(color=c))
+        else:
+            line.append("─", Style(color="#333333"))
+
+    line.append("╮", Style(color="#555555"))
+    lines.append(line)
+
+    # ── Row 2: Scale markings + percentage ──
+    line2 = Text()
+    line2.append("     ", Style())  # align with "VOL " above
+    line2.append("╰", Style(color="#555555"))
+
+    # Scale ticks at 0, 25, 50, 75, 100
+    scale_chars: list[tuple[str, str]] = []
+    for i in range(dial_w):
+        tick_ratio = i / max(dial_w - 1, 1)
+        pct = int(tick_ratio * 100)
+        if pct in (0, 25, 50, 75, 100) and abs(tick_ratio * (dial_w - 1) - i) < 0.5:
+            scale_chars.append(("┼", "#666666"))
+        else:
+            scale_chars.append(("─", "#333333"))
+
+    for ch, c in scale_chars:
+        line2.append(ch, Style(color=c))
+    line2.append("╯", Style(color="#555555"))
+
+    # Volume percentage / muted indicator
+    if muted:
+        # Flashing mute indicator
+        flash = int(t * 3) % 2 == 0
+        if flash:
+            line2.append(" MUTE", Style(color="#ff2222", bold=True))
+        else:
+            line2.append(" MUTE", Style(color="#661111", bold=True))
+    else:
+        vol_color = th.accent if vol < 50 else (th.warm if vol < 80 else th.primary)
+        line2.append(f" {vol}%", Style(color=vol_color, bold=True))
+
+    lines.append(line2)
+
+    # ── Extra rows if height > 2: animated level bar ──
+    if height > 2:
+        bar_w = max(width - 4, 10)
+        filled = int(ratio * bar_w) if not muted else 0
+        bar = Text()
+        bar.append("  ", Style())
+        for i in range(bar_w):
+            if i < filled:
+                tick_r = i / max(bar_w - 1, 1)
+                # Animated shimmer
+                shimmer = 0.7 + 0.3 * math.sin(t * 6 + i * 0.3)
+                if tick_r < 0.5:
+                    base = _lerp_color(th.accent, th.warm, tick_r * 2)
+                elif tick_r < 0.8:
+                    base = _lerp_color(th.warm, th.primary, (tick_r - 0.5) / 0.3)
+                else:
+                    base = _lerp_color(th.primary, "#ff2222", (tick_r - 0.8) / 0.2)
+                # Apply shimmer to brightness
+                br, bg, bb = _hex_to_rgb(base)
+                br = int(min(255, br * shimmer))
+                bg = int(min(255, bg * shimmer))
+                bb = int(min(255, bb * shimmer))
+                bar.append("█", Style(color=_rgb_to_hex(br, bg, bb)))
+            else:
+                bar.append("░", Style(color="#1a1a1a"))
+        lines.append(bar)
+
+    return lines
+
+
 def render_party_lights(width: int, vu_left: float, vu_right: float) -> Text:
     t = time.time()
     avg_level = (vu_left + vu_right) / 2.0
@@ -926,6 +1073,7 @@ def render_party_scene(
     width: int, vu_left: float, vu_right: float,
     beat_count: int = 0, beat_intensity: float = 0.0,
     theme: ColorTheme | None = None, height: int = 4,
+    bpm: float = 0.0,
 ) -> list[Text]:
     """Render an ASCII art party scene with a DJ and dancing crowd, synced to beat.
 
@@ -937,11 +1085,18 @@ def render_party_scene(
     bounce = beat_count % 4  # animation frame driven by detected beats
 
     # DJ frames (3 rows each) - mixing the decks
+    # Row 3 includes BPM readout on the deck
+    if bpm > 0:
+        bpm_str = f"{bpm:5.1f}"
+        bpm_deck = f"/|_{bpm_str}|"
+    else:
+        bpm_deck = r"/|_____|"
+    dj_w = max(10, len(bpm_deck) + 2)
     dj_frames = [
-        [r" o/ ___|", r"/|  |==|", r"/|__|==|"],
-        [r"\o/ ___|", r" |  |==|", r"/|__|==|"],
-        [r" \o ___|", r"/|\ |==|", r"/|__|==|"],
-        [r"\o/ ___|", r" |  |==|", r"/|__|==|"],
+        [r" o/ ___|", r"/|  |==|", bpm_deck],
+        [r"\o/ ___|", r" |  |==|", bpm_deck],
+        [r" \o ___|", r"/|\ |==|", bpm_deck],
+        [r"\o/ ___|", r" |  |==|", bpm_deck],
     ]
 
     # Dancer frames (3 rows each) - 4 different poses
@@ -980,9 +1135,9 @@ def render_party_scene(
             # DJ booth only on the first (front) group
             if group_idx == 0:
                 dj_line = dj[row_idx] if row_idx < len(dj) else ""
-                dj_line = dj_line.ljust(10)
+                dj_line = dj_line.ljust(dj_w)
                 line_chars.append(dj_line)
-                crowd_start = 10
+                crowd_start = dj_w
             else:
                 # Back rows: indent slightly for depth effect
                 indent = min(group_idx * 2, 6)
@@ -1022,6 +1177,10 @@ def render_party_scene(
                 elif ch in ('=', '_', '~'):
                     th = theme or _default_theme
                     text.append(ch, Style(color=th.secondary))
+                elif ch.isdigit() or ch == '.':
+                    # BPM digits — animated colour like title
+                    color = _theme_color((t * 0.3 + i * 0.06) % 1.0, theme)
+                    text.append(ch, Style(color=color, bold=True))
                 else:
                     text.append(ch, Style(color="#555555"))
 
@@ -1174,6 +1333,9 @@ class BoomBoxTUI:
         # Cached terminal dimensions, updated each frame
         self._term_width: int = 120
         self._term_height: int = 50
+        # Seek acceleration tracking
+        self._seek_last_time: float = 0.0
+        self._seek_hold_count: int = 0
 
     def set_command_callback(self, callback: Callable[[str], None]) -> None:
         """Set callback for transport commands (play_pause, next, previous, shuffle, repeat)."""
@@ -1265,16 +1427,36 @@ class BoomBoxTUI:
             title_align="center", border_style=th.border_spectrum, padding=(0, 0),
         ))
 
-        # VU meters
-        vu_table = Table.grid(padding=0, expand=True)
-        vu_table.add_column(ratio=1)
-        vu_table.add_row(render_vu_meter(vu_left, flush_inner, "L", th.accent, theme=th))
-        vu_table.add_row(render_vu_meter(vu_right, flush_inner, "R", th.warm, theme=th))
+        # VU meters + Volume gauge side by side
+        vu_half = flush_inner // 2
+        vol_half = flush_inner - vu_half
 
-        parts.append(Panel(
-            vu_table, title=" \u25c8 VU METERS \u25c8 ",
-            title_align="center", border_style=th.border_vu, padding=(0, 0),
-        ))
+        vu_vol_table = Table.grid(padding=0, expand=True)
+        vu_vol_table.add_column(ratio=1)
+        vu_vol_table.add_column(ratio=1)
+
+        # Left: VU meters (stacked L/R)
+        vu_inner = Table.grid(padding=0, expand=True)
+        vu_inner.add_column(ratio=1)
+        vu_inner.add_row(render_vu_meter(vu_left, vu_half, "L", th.accent, theme=th))
+        vu_inner.add_row(render_vu_meter(vu_right, vu_half, "R", th.warm, theme=th))
+
+        # Right: Volume gauge
+        vol_lines = render_volume_gauge(
+            self.state.volume, self.state.muted, vol_half, height=2, theme=th,
+        )
+        vol_inner = Table.grid(padding=0, expand=True)
+        vol_inner.add_column(ratio=1)
+        for vl in vol_lines:
+            vol_inner.add_row(vl)
+
+        vu_vol_table.add_row(
+            Panel(vu_inner, title=" \u25c8 VU \u25c8 ", title_align="center",
+                  border_style=th.border_vu, padding=(0, 0)),
+            Panel(vol_inner, title=" \u266b VOLUME \u266b ", title_align="center",
+                  border_style=th.warm, padding=(0, 0)),
+        )
+        parts.append(vu_vol_table)
 
         # Party lights
         parts.append(Panel(
@@ -1288,9 +1470,10 @@ class BoomBoxTUI:
 
         # Party scene animation
         beat_count, beat_intensity = self._visualizer.get_beat()
+        current_bpm = self._visualizer.get_bpm()
         party_lines = render_party_scene(
             flush_inner, vu_left, vu_right, beat_count, beat_intensity,
-            theme=th, height=dance_height,
+            theme=th, height=dance_height, bpm=current_bpm,
         )
         parts.append(Panel(
             Group(*party_lines),
@@ -1329,7 +1512,7 @@ class BoomBoxTUI:
         return Group(frame_top, *parts, frame_bot)
 
     def _handle_key(self, key: str) -> None:
-        """Handle a single keypress."""
+        """Handle a single keypress (including special keys like 'arrow_up')."""
         k = key.lower()
         if k == "p":
             self._fire_command("play_pause")
@@ -1341,6 +1524,29 @@ class BoomBoxTUI:
             self._fire_command("shuffle")
         elif k == "r":
             self._fire_command("repeat")
+        elif k == "arrow_up":
+            self._fire_command("volume_up")
+        elif k == "arrow_down":
+            self._fire_command("volume_down")
+        elif k == "arrow_right":
+            # Seek forward — accelerates when held
+            now = time.monotonic()
+            if now - self._seek_last_time < 0.25:
+                self._seek_hold_count += 1
+            else:
+                self._seek_hold_count = 0
+            self._seek_last_time = now
+            seek_ms = 5000 + min(self._seek_hold_count, 20) * 2500  # 5s → 55s
+            self._fire_command(f"seek_forward:{seek_ms}")
+        elif k == "arrow_left":
+            now = time.monotonic()
+            if now - self._seek_last_time < 0.25:
+                self._seek_hold_count += 1
+            else:
+                self._seek_hold_count = 0
+            self._seek_last_time = now
+            seek_ms = 5000 + min(self._seek_hold_count, 20) * 2500
+            self._fire_command(f"seek_backward:{seek_ms}")
 
     def _handle_mouse_click(self, col: int, row: int) -> None:
         """Handle a mouse click at terminal coordinates (1-based)."""
@@ -1376,6 +1582,18 @@ class BoomBoxTUI:
                             self._handle_mouse_click(col, row)
                     except ValueError:
                         pass
+            elif data[i:i + 3] == b"\x1b[A":
+                self._handle_key("arrow_up")
+                i += 3
+            elif data[i:i + 3] == b"\x1b[B":
+                self._handle_key("arrow_down")
+                i += 3
+            elif data[i:i + 3] == b"\x1b[C":
+                self._handle_key("arrow_right")
+                i += 3
+            elif data[i:i + 3] == b"\x1b[D":
+                self._handle_key("arrow_left")
+                i += 3
             elif data[i:i + 1] == b"\x1b":
                 # Skip other escape sequences
                 i += 1
@@ -2306,11 +2524,11 @@ class SendSpinReceiver:
         self._tui.state.is_playing = event == "start"
         self._visualizer.set_paused(event != "start")
         if event == "stop":
-            self._visualizer.reset()
+            # Only reset the audio pipeline — keep the visual state (bands,
+            # peaks, VU) so the spectrum and meters decay gracefully on pause.
+            self._visualizer.reset_pipeline()
             self._flac_decoder = None
             self._flac_fmt = None
-            # Keep the current theme — artwork is only sent on track change,
-            # so pausing and resuming should retain album colours.
         elif event == "start":
             # Reset decoder on new stream (format may change)
             self._flac_decoder = None
@@ -2392,6 +2610,59 @@ class SendSpinReceiver:
 
     def _on_transport_command(self, command: str) -> None:
         """Handle a transport command from the TUI (called from input thread)."""
+        state = self._tui.state
+
+        # Volume changes are local — apply immediately even without server
+        if command == "volume_up":
+            new_vol = min(100, state.volume + 5)
+            state.volume = new_vol
+            if self._audio_handler is not None:
+                self._audio_handler.set_volume(new_vol, muted=state.muted)
+            return
+        elif command == "volume_down":
+            new_vol = max(0, state.volume - 5)
+            state.volume = new_vol
+            if self._audio_handler is not None:
+                self._audio_handler.set_volume(new_vol, muted=state.muted)
+            return
+
+        # Seek commands — apply to local progress immediately for responsiveness
+        if command.startswith("seek_forward:"):
+            seek_ms = int(command.split(":")[1])
+            new_prog = min(state.duration_ms, state.get_interpolated_progress() + seek_ms)
+            state.progress_ms = new_prog
+            state.progress_update_time = time.monotonic()
+            # Also send to server if connected
+            if self._client and self._client.connected and self._loop:
+                from aiosendspin.models.types import MediaCommand
+                async def _seek_fwd() -> None:
+                    assert self._client is not None
+                    try:
+                        await self._client.send_group_command(
+                            MediaCommand.SEEK, seek_position=new_prog,
+                        )
+                    except Exception:
+                        logger.debug("Seek command not supported or failed")
+                asyncio.run_coroutine_threadsafe(_seek_fwd(), self._loop)
+            return
+        elif command.startswith("seek_backward:"):
+            seek_ms = int(command.split(":")[1])
+            new_prog = max(0, state.get_interpolated_progress() - seek_ms)
+            state.progress_ms = new_prog
+            state.progress_update_time = time.monotonic()
+            if self._client and self._client.connected and self._loop:
+                from aiosendspin.models.types import MediaCommand
+                async def _seek_bwd() -> None:
+                    assert self._client is not None
+                    try:
+                        await self._client.send_group_command(
+                            MediaCommand.SEEK, seek_position=new_prog,
+                        )
+                    except Exception:
+                        logger.debug("Seek command not supported or failed")
+                asyncio.run_coroutine_threadsafe(_seek_bwd(), self._loop)
+            return
+
         if self._client is None or not self._client.connected:
             return
         if self._loop is None:
@@ -2399,7 +2670,6 @@ class SendSpinReceiver:
 
         from aiosendspin.models.types import MediaCommand
 
-        state = self._tui.state
         cmds = set(state.supported_commands)
 
         async def _send() -> None:

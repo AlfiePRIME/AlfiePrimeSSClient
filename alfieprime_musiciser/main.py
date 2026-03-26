@@ -289,17 +289,46 @@ def _extract_theme_from_image(image_data: bytes) -> ColorTheme | None:
             if br > 30 and (sat > 0.15 or br > 150):
                 candidates.append((r, g, b))
 
-        if len(candidates) < 2:
+        if not candidates:
             return None
 
         # Sort by saturation * brightness to prefer vivid colors
         candidates.sort(key=lambda c: _color_saturation(*c) * _color_brightness(*c), reverse=True)
 
+        # When we have fewer than 4 distinct colors, generate extras by
+        # shifting the hue of existing ones so the theme stays vibrant.
+        while len(candidates) < 4:
+            # Take the base color and rotate its hue
+            base = candidates[len(candidates) % len(candidates)]
+            br, bg, bb = base
+            # Convert to HSV, shift hue, convert back
+            mx = max(br, bg, bb)
+            mn = min(br, bg, bb)
+            diff = mx - mn
+            if diff == 0:
+                h = 0.0
+            elif mx == br:
+                h = ((bg - bb) / diff) % 6
+            elif mx == bg:
+                h = (bb - br) / diff + 2
+            else:
+                h = (br - bg) / diff + 4
+            h /= 6.0
+            s = diff / mx if mx > 0 else 0.0
+            v = mx / 255.0
+            # Shift hue by a meaningful amount and tweak saturation
+            shift = 0.18 + 0.12 * len(candidates)  # ~0.30, 0.42, 0.54
+            new_h = (h + shift) % 1.0
+            new_s = min(1.0, s * 0.9 + 0.2)
+            new_v = min(1.0, max(0.35, v * 0.85 + 0.1))
+            nr, ng, nb = _hsv_to_rgb(new_h, new_s, new_v)
+            candidates.append((int(nr * 255), int(ng * 255), int(nb * 255)))
+
         # Pick the top 4 most vivid colors
         primary = _boost_color(*candidates[0])
-        secondary = _boost_color(*candidates[min(1, len(candidates) - 1)])
-        accent = _boost_color(*candidates[min(2, len(candidates) - 1)])
-        warm = _boost_color(*candidates[min(3, len(candidates) - 1)])
+        secondary = _boost_color(*candidates[1])
+        accent = _boost_color(*candidates[2])
+        warm = _boost_color(*candidates[3])
 
         primary_hex = _rgb_to_hex(*primary)
         secondary_hex = _rgb_to_hex(*secondary)

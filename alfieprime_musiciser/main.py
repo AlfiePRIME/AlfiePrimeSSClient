@@ -1083,18 +1083,13 @@ def render_party_scene(
     avg_level = (vu_left + vu_right) / 2.0
     bounce = beat_count % 4  # animation frame driven by detected beats
 
-    # DJ frames (6 rows each) - mixing the decks, spans 2 dancer groups
-    # Rows 1-3: DJ figure + turntable, Rows 4-6: deck base + BPM display
-    if bpm > 0:
-        bpm_val = f"{bpm:5.1f}"
-    else:
-        bpm_val = " --- "
-    dj_w = 12
+    # DJ frames (3 rows each) - head bobbing while mixing
+    dj_w = 9
     dj_frames = [
-        [r" o/ ┌───┐", r"/|  │===│", r" |  │===│", r"/|\ └───┘", f"    BPM:  ", f"    {bpm_val}  "],
-        [r"\o/ ┌───┐", r" |  │===│", r" |  │===│", r" |\ └───┘", f"    BPM:  ", f"    {bpm_val}  "],
-        [r" \o ┌───┐", r"/|\ │===│", r" |  │===│", r"/|  └───┘", f"    BPM:  ", f"    {bpm_val}  "],
-        [r"\o/ ┌───┐", r" |  │===│", r" |  │===│", r" |\ └───┘", f"    BPM:  ", f"    {bpm_val}  "],
+        [r" o/ ___|", r"/|  |==|", r"/|\ ~~~~"],
+        [r"  o ___|", r" /| |==|", r"/|  ~~~~"],
+        [r"\o/ ___|", r" |  |==|", r" |\ ~~~~"],
+        [r" o\ ___|", r" |\ |==|", r"  |\ ~~~"],
     ]
 
     # Dancer frames (3 rows each) - 4 different poses
@@ -1114,15 +1109,37 @@ def render_party_scene(
     ]
 
     scene_width = max(width, 40)
-    # Reserve 1 row for the floor line; remaining rows are for dancer groups
-    dancer_rows = max(height - 1, 3)
-    # Each dancer group is 3 rows tall; compute how many groups stack vertically
-    num_groups = max(1, dancer_rows // 3)
     lines: list[Text] = []
     beat_hue_offset = beat_intensity * 0.08
 
+    # ── BPM meter row at the top ──
+    bpm_line = Text()
+    if bpm > 0:
+        bpm_str = f"BPM:{bpm:5.1f}"
+    else:
+        bpm_str = "BPM: ---"
+    for ci, ch in enumerate(bpm_str):
+        color = _theme_color((t * 0.3 + ci * 0.08) % 1.0, theme)
+        bpm_line.append(ch, Style(color=color, bold=True))
+    # Pad the rest with floor-style animation
+    pad_start = len(bpm_str) + 1
+    bpm_line.append(" ", Style())
+    for i in range(pad_start, scene_width):
+        hue = (t * 0.08 + i / scene_width + beat_hue_offset) % 1.0
+        brightness = 0.12 + 0.15 * avg_level
+        pulse = 0.5 + 0.5 * math.sin(t * 3 + i * 0.6)
+        brightness *= 0.6 + 0.4 * pulse
+        r, g, b = _hsv_to_rgb(hue, 0.6, min(brightness, 0.4))
+        color = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+        bpm_line.append("░", Style(color=color))
+    lines.append(bpm_line)
+
+    # Reserve 1 row for the floor line, 1 for BPM; remaining for dancer groups
+    dancer_rows = max(height - 2, 3)
+    # Each dancer group is 3 rows tall
+    num_groups = max(1, dancer_rows // 3)
+
     dj = dj_frames[bounce % 4]
-    dj_row_counter = 0  # tracks which row of the 6-row DJ we're on
 
     for group_idx in range(num_groups):
         # Offset phase per group so back rows look different
@@ -1132,15 +1149,14 @@ def render_party_scene(
             text = Text()
             line_chars: list[str] = []
 
-            # DJ booth spans first 2 groups (6 rows)
-            if dj_row_counter < len(dj):
-                dj_line = dj[dj_row_counter]
+            # DJ booth on the first (front) group
+            if group_idx == 0:
+                dj_line = dj[row_idx] if row_idx < len(dj) else ""
                 dj_line = dj_line.ljust(dj_w)
                 line_chars.append(dj_line)
                 crowd_start = dj_w
-                dj_row_counter += 1
             else:
-                # Beyond DJ height: indent for depth effect
+                # Back rows: indent slightly for depth effect
                 indent = min(group_idx * 2, 6)
                 line_chars.append(" " * indent)
                 crowd_start = indent
@@ -1175,17 +1191,9 @@ def render_party_scene(
                     r, g, b = _hsv_to_rgb(hue, 0.5, min(brightness, 0.8))
                     color = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
                     text.append(ch, Style(color=color))
-                elif ch in ('=', '_', '~', '┌', '┐', '└', '┘', '│', '─'):
+                elif ch in ('=', '_', '~'):
                     _th = theme or _default_theme
                     text.append(ch, Style(color=_th.secondary))
-                elif ch.isdigit() or ch == '.' or ch == ':':
-                    # BPM digits/label — animated colour like title
-                    color = _theme_color((t * 0.3 + i * 0.06) % 1.0, theme)
-                    text.append(ch, Style(color=color, bold=True))
-                elif ch in ('B', 'P', 'M'):
-                    # BPM label letters
-                    color = _theme_color((t * 0.3 + i * 0.06) % 1.0, theme)
-                    text.append(ch, Style(color=color, bold=True))
                 else:
                     text.append(ch, Style(color="#555555"))
 
@@ -1422,7 +1430,7 @@ class BoomBoxTUI:
         fixed_rows = 1 + 3 + np_rows + 4 + 4 + 3 + 1 + 2 + 2
         available = max(self._term_height - fixed_rows, 8)
         # Dance floor gets a fixed size; spectrum expands to fill all remaining space
-        dance_height = max(7, min(10, available // 3))
+        dance_height = max(5, min(8, available // 3))
         spec_height = max(4, available - dance_height)
 
         # Spectrum analyzer
@@ -2631,41 +2639,23 @@ class SendSpinReceiver:
                 self._audio_handler.set_volume(new_vol, muted=state.muted)
             return
 
-        # Seek commands — apply to local progress immediately for responsiveness
+        # Seek commands — local progress update only
+        # Note: the SendSpin protocol does not expose a seek command, so we can
+        # only move the progress bar locally.  The actual playback position on
+        # the server is unchanged.
         if command.startswith("seek_forward:"):
             seek_ms = int(command.split(":")[1])
             new_prog = min(state.duration_ms, state.get_interpolated_progress() + seek_ms)
             state.progress_ms = new_prog
             state.progress_update_time = time.monotonic()
-            # Also send to server if connected
-            if self._client and self._client.connected and self._loop:
-                from aiosendspin.models.types import MediaCommand
-                async def _seek_fwd() -> None:
-                    assert self._client is not None
-                    try:
-                        await self._client.send_group_command(
-                            MediaCommand.SEEK, seek_position=new_prog,
-                        )
-                    except Exception:
-                        logger.debug("Seek command not supported or failed")
-                asyncio.run_coroutine_threadsafe(_seek_fwd(), self._loop)
+            logger.debug("Seek forward %d ms (local only, no server seek support)", seek_ms)
             return
         elif command.startswith("seek_backward:"):
             seek_ms = int(command.split(":")[1])
             new_prog = max(0, state.get_interpolated_progress() - seek_ms)
             state.progress_ms = new_prog
             state.progress_update_time = time.monotonic()
-            if self._client and self._client.connected and self._loop:
-                from aiosendspin.models.types import MediaCommand
-                async def _seek_bwd() -> None:
-                    assert self._client is not None
-                    try:
-                        await self._client.send_group_command(
-                            MediaCommand.SEEK, seek_position=new_prog,
-                        )
-                    except Exception:
-                        logger.debug("Seek command not supported or failed")
-                asyncio.run_coroutine_threadsafe(_seek_bwd(), self._loop)
+            logger.debug("Seek backward %d ms (local only, no server seek support)", seek_ms)
             return
 
         if self._client is None or not self._client.connected:

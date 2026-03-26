@@ -942,14 +942,13 @@ def render_volume_gauge(
             c = f"#{br:02x}{br:02x}{min(255, br + 40):02x}"
             line.append("▼", Style(color=c, bold=True))
         elif tick_ratio <= ratio and not muted:
-            # Filled portion — gradient from accent → warm → primary
+            # Filled portion — fixed green → yellow → orange → red
             if tick_ratio < 0.5:
-                c = _lerp_color(th.accent, th.warm, tick_ratio * 2)
+                c = _lerp_color("#00cc00", "#cccc00", tick_ratio * 2)
             elif tick_ratio < 0.8:
-                c = _lerp_color(th.warm, th.primary, (tick_ratio - 0.5) / 0.3)
+                c = _lerp_color("#cccc00", "#ff8800", (tick_ratio - 0.5) / 0.3)
             else:
-                # Red zone
-                c = _lerp_color(th.primary, "#ff2222", (tick_ratio - 0.8) / 0.2)
+                c = _lerp_color("#ff8800", "#ff2222", (tick_ratio - 0.8) / 0.2)
             line.append("━", Style(color=c))
         else:
             line.append("─", Style(color="#333333"))
@@ -985,7 +984,7 @@ def render_volume_gauge(
         else:
             line2.append(" MUTE", Style(color="#661111", bold=True))
     else:
-        vol_color = th.accent if vol < 50 else (th.warm if vol < 80 else th.primary)
+        vol_color = "#00cc00" if vol < 50 else ("#ff8800" if vol < 80 else "#ff2222")
         line2.append(f" {vol}%", Style(color=vol_color, bold=True))
 
     lines.append(line2)
@@ -1002,11 +1001,11 @@ def render_volume_gauge(
                 # Animated shimmer
                 shimmer = 0.7 + 0.3 * math.sin(t * 6 + i * 0.3)
                 if tick_r < 0.5:
-                    base = _lerp_color(th.accent, th.warm, tick_r * 2)
+                    base = _lerp_color("#00cc00", "#cccc00", tick_r * 2)
                 elif tick_r < 0.8:
-                    base = _lerp_color(th.warm, th.primary, (tick_r - 0.5) / 0.3)
+                    base = _lerp_color("#cccc00", "#ff8800", (tick_r - 0.5) / 0.3)
                 else:
-                    base = _lerp_color(th.primary, "#ff2222", (tick_r - 0.8) / 0.2)
+                    base = _lerp_color("#ff8800", "#ff2222", (tick_r - 0.8) / 0.2)
                 # Apply shimmer to brightness
                 br, bg, bb = _hex_to_rgb(base)
                 br = int(min(255, br * shimmer))
@@ -1084,19 +1083,18 @@ def render_party_scene(
     avg_level = (vu_left + vu_right) / 2.0
     bounce = beat_count % 4  # animation frame driven by detected beats
 
-    # DJ frames (3 rows each) - mixing the decks
-    # Row 3 includes BPM readout on the deck
+    # DJ frames (6 rows each) - mixing the decks, spans 2 dancer groups
+    # Rows 1-3: DJ figure + turntable, Rows 4-6: deck base + BPM display
     if bpm > 0:
-        bpm_str = f"{bpm:5.1f}"
-        bpm_deck = f"/|_{bpm_str}|"
+        bpm_val = f"{bpm:5.1f}"
     else:
-        bpm_deck = r"/|_____|"
-    dj_w = max(10, len(bpm_deck) + 2)
+        bpm_val = " --- "
+    dj_w = 12
     dj_frames = [
-        [r" o/ ___|", r"/|  |==|", bpm_deck],
-        [r"\o/ ___|", r" |  |==|", bpm_deck],
-        [r" \o ___|", r"/|\ |==|", bpm_deck],
-        [r"\o/ ___|", r" |  |==|", bpm_deck],
+        [r" o/ ┌───┐", r"/|  │===│", r" |  │===│", r"/|\ └───┘", f"    BPM:  ", f"    {bpm_val}  "],
+        [r"\o/ ┌───┐", r" |  │===│", r" |  │===│", r" |\ └───┘", f"    BPM:  ", f"    {bpm_val}  "],
+        [r" \o ┌───┐", r"/|\ │===│", r" |  │===│", r"/|  └───┘", f"    BPM:  ", f"    {bpm_val}  "],
+        [r"\o/ ┌───┐", r" |  │===│", r" |  │===│", r" |\ └───┘", f"    BPM:  ", f"    {bpm_val}  "],
     ]
 
     # Dancer frames (3 rows each) - 4 different poses
@@ -1123,8 +1121,10 @@ def render_party_scene(
     lines: list[Text] = []
     beat_hue_offset = beat_intensity * 0.08
 
+    dj = dj_frames[bounce % 4]
+    dj_row_counter = 0  # tracks which row of the 6-row DJ we're on
+
     for group_idx in range(num_groups):
-        dj = dj_frames[(bounce + group_idx) % 4]
         # Offset phase per group so back rows look different
         group_phase_offset = group_idx * 2
 
@@ -1132,14 +1132,15 @@ def render_party_scene(
             text = Text()
             line_chars: list[str] = []
 
-            # DJ booth only on the first (front) group
-            if group_idx == 0:
-                dj_line = dj[row_idx] if row_idx < len(dj) else ""
+            # DJ booth spans first 2 groups (6 rows)
+            if dj_row_counter < len(dj):
+                dj_line = dj[dj_row_counter]
                 dj_line = dj_line.ljust(dj_w)
                 line_chars.append(dj_line)
                 crowd_start = dj_w
+                dj_row_counter += 1
             else:
-                # Back rows: indent slightly for depth effect
+                # Beyond DJ height: indent for depth effect
                 indent = min(group_idx * 2, 6)
                 line_chars.append(" " * indent)
                 crowd_start = indent
@@ -1174,11 +1175,15 @@ def render_party_scene(
                     r, g, b = _hsv_to_rgb(hue, 0.5, min(brightness, 0.8))
                     color = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
                     text.append(ch, Style(color=color))
-                elif ch in ('=', '_', '~'):
-                    th = theme or _default_theme
-                    text.append(ch, Style(color=th.secondary))
-                elif ch.isdigit() or ch == '.':
-                    # BPM digits — animated colour like title
+                elif ch in ('=', '_', '~', '┌', '┐', '└', '┘', '│', '─'):
+                    _th = theme or _default_theme
+                    text.append(ch, Style(color=_th.secondary))
+                elif ch.isdigit() or ch == '.' or ch == ':':
+                    # BPM digits/label — animated colour like title
+                    color = _theme_color((t * 0.3 + i * 0.06) % 1.0, theme)
+                    text.append(ch, Style(color=color, bold=True))
+                elif ch in ('B', 'P', 'M'):
+                    # BPM label letters
                     color = _theme_color((t * 0.3 + i * 0.06) % 1.0, theme)
                     text.append(ch, Style(color=color, bold=True))
                 else:
@@ -1417,7 +1422,7 @@ class BoomBoxTUI:
         fixed_rows = 1 + 3 + np_rows + 4 + 4 + 3 + 1 + 2 + 2
         available = max(self._term_height - fixed_rows, 8)
         # Dance floor gets a fixed size; spectrum expands to fill all remaining space
-        dance_height = max(4, min(7, available // 3))
+        dance_height = max(7, min(10, available // 3))
         spec_height = max(4, available - dance_height)
 
         # Spectrum analyzer

@@ -8,6 +8,7 @@ dependencies = [
     "numpy>=1.24.0",
     "rich>=13.0.0",
     "Pillow>=10.0.0",
+    "dbus-next>=0.2.3; sys_platform == 'linux'",
 ]
 
 [project.scripts]

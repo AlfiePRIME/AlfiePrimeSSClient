@@ -6,7 +6,10 @@ import logging
 import math
 import platform
 import random
+import shutil
 import struct
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -22,6 +25,8 @@ from alfieprime_musiciser.colors import ColorTheme, _default_theme, _extract_the
 from alfieprime_musiciser.config import Config
 from alfieprime_musiciser.renderer import reset_vu_peaks
 from alfieprime_musiciser.state import PlayerState
+from alfieprime_musiciser.mpris import MPRIS2Server, clear_art_cache, write_art_cache
+from alfieprime_musiciser.stats import ListeningStats
 from alfieprime_musiciser.visualizer import AudioVisualizer
 
 if TYPE_CHECKING:
@@ -101,6 +106,8 @@ class SendSpinReceiver:
         self._loop: asyncio.AbstractEventLoop | None = None
         # Pre-cached themes per artwork channel (channel 0 = current, 1+ = upcoming)
         self._artwork_themes: dict[int, ColorTheme] = {}
+        self._stats = ListeningStats()
+        self._mpris: MPRIS2Server | None = None
 
         # In daemon mode there is no TUI — use a standalone state object
         if self._tui is None:
@@ -120,6 +127,11 @@ class SendSpinReceiver:
     async def start(self) -> None:
         self._running = True
         self._loop = asyncio.get_running_loop()
+
+        # Register MPRIS2 on the session D-Bus (Linux only, graceful no-op otherwise)
+        if sys.platform == "linux":
+            self._mpris = MPRIS2Server(self._state, self._on_transport_command)
+            await self._mpris.start()
 
         from sendspin.audio_devices import detect_supported_audio_formats, query_devices
         from sendspin.audio_connector import AudioStreamHandler
@@ -402,6 +414,9 @@ class SendSpinReceiver:
         # On track change, log and apply pre-cached artwork theme if available
         if state.title != old_title and state.title:
             logger.info("Now playing: %s - %s [%s]", state.artist or "?", state.title, state.album or "?")
+            self._send_desktop_notification(state.title, state.artist, state.album)
+            self._stats.on_track_change(state.artist, state.title)
+            self._state.session_stats = self._stats.get_session_summary()
             for ch in (1, 2, 3):
                 cached = self._artwork_themes.get(ch)
                 if cached is not None and cached.primary != _default_theme.primary:
@@ -443,6 +458,9 @@ class SendSpinReceiver:
                 state.playback_speed = 0.0
                 state.progress_update_time = 0.0
 
+        self._stats.tick()
+        self._state.session_stats = self._stats.get_session_summary()
+
     def _on_group_update(self, payload) -> None:
         """Handle group update messages."""
         from aiosendspin.models.types import PlaybackStateType
@@ -454,6 +472,7 @@ class SendSpinReceiver:
             was_playing = state.is_playing
             state.is_playing = payload.playback_state == PlaybackStateType.PLAYING
             self._visualizer.set_paused(not state.is_playing)
+            self._stats.on_playing(state.is_playing)
             # Log state transitions
             if was_playing and not state.is_playing:
                 state.progress_ms = state.get_interpolated_progress()
@@ -558,6 +577,8 @@ class SendSpinReceiver:
             self._artwork_themes[channel] = theme or ColorTheme()
             if channel == 0:
                 self._state.theme = self._artwork_themes[channel]
+                self._state.artwork_data = image_data
+                write_art_cache(image_data)
                 logger.info(
                     "Updated theme from album art ch%d: primary=%s",
                     channel, self._artwork_themes[channel].primary,
@@ -572,6 +593,8 @@ class SendSpinReceiver:
         self._artwork_themes.pop(channel, None)
         if channel == 0:
             self._state.theme = ColorTheme()
+            self._state.artwork_data = b""
+            clear_art_cache()
 
     def _on_transport_command(self, command: str) -> None:
         """Handle a transport command from the TUI (called from input thread)."""
@@ -644,6 +667,24 @@ class SendSpinReceiver:
                 logger.exception("Error sending command: %s", command)
 
         asyncio.run_coroutine_threadsafe(_send(), self._loop)
+
+    def _send_desktop_notification(self, title: str, artist: str, album: str) -> None:
+        """Send a desktop notification for track change (Linux only)."""
+        if sys.platform != "linux":
+            return
+        if not shutil.which("notify-send"):
+            return
+        summary = f"\u266a {title}"
+        body = artist
+        if album:
+            body += f" \u2014 {album}"
+        try:
+            subprocess.Popen(
+                ["notify-send", "--app-name=AlfiePRIME", "-t", "5000", summary, body],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            pass
 
     async def _run_demo_mode(self) -> None:
         """Demo mode with simulated audio."""
@@ -721,4 +762,7 @@ class SendSpinReceiver:
             await asyncio.sleep(chunk_size / sample_rate * 0.5)
 
     def stop(self) -> None:
+        self._stats.save()
+        if self._mpris is not None and self._loop is not None:
+            asyncio.run_coroutine_threadsafe(self._mpris.stop(), self._loop)
         self._running = False

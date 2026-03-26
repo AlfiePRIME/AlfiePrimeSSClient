@@ -34,6 +34,10 @@ class PlayerState:
     shuffle: bool = False
     # Color theme from album art
     theme: ColorTheme = field(default_factory=ColorTheme)
+    # Raw artwork bytes for braille art rendering (current track)
+    artwork_data: bytes = b""
+    # Session stats summary string (updated periodically by receiver)
+    session_stats: str = ""
 
     def get_interpolated_progress(self) -> int:
         """Get progress interpolated from last server update."""

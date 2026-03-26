@@ -43,6 +43,7 @@ from alfieprime_musiciser.renderer import (
     render_server_info,
     render_codec_info,
     render_stats_info,
+    render_braille_art,
 )
 
 
@@ -144,6 +145,18 @@ class BoomBoxTUI:
         except Exception:
             return 120, 50
 
+    def _update_terminal_title(self) -> None:
+        """Set the terminal tab title via OSC escape sequence."""
+        if self._gui_mode:
+            return
+        if self.state.is_playing and self.state.artist and self.state.title:
+            title = f"\u266a {self.state.artist} - {self.state.title} | AlfiePRIME"
+        elif self.state.connected:
+            title = "\u23f8 AlfiePRIME Musiciser"
+        else:
+            title = "AlfiePRIME Musiciser"
+        sys.stdout.write(f"\x1b]0;{title}\x07")
+
     def _build_layout(self) -> Group:
         # Query real terminal size each frame
         self._term_width, self._term_height = self._get_terminal_size()
@@ -190,8 +203,27 @@ class BoomBoxTUI:
         np_panel_content_lines = len(np_lines) + 1 + 1  # np_lines + blank + controls
         self._controls_row = row + 1 + len(np_lines) + 1  # +1 for panel top border
 
+        np_content = Group(*np_lines, Text(""), controls_text)
+
+        # Braille album art panel alongside now playing
+        art_lines: list[Text] = []
+        if self.state.artwork_data:
+            art_w = 20
+            art_h = 8  # gives 16x32 effective pixel grid
+            art_lines = render_braille_art(self.state.artwork_data, art_w, art_h, theme=th)
+
+        if art_lines:
+            np_grid = Table.grid(padding=0, expand=True)
+            np_grid.add_column(width=22)  # art column: 20 chars + 2 border
+            np_grid.add_column(ratio=1)
+            art_panel = Panel(Group(*art_lines), border_style=th.border_now_playing, padding=(0, 0))
+            np_grid.add_row(art_panel, np_content)
+            np_inner = np_grid
+        else:
+            np_inner = np_content
+
         parts.append(Panel(
-            Group(*np_lines, Text(""), controls_text),
+            np_inner,
             title=f" {reel_l} NOW PLAYING {reel_r} ",
             title_align="center", border_style=th.border_now_playing, padding=(0, 1),
         ))
@@ -206,7 +238,7 @@ class BoomBoxTUI:
         fixed_rows = 1 + 3 + np_rows + 4 + 4 + 4 + 1 + 2 + 2
         available = max(self._term_height - fixed_rows, 8)
         # Dance floor gets a fixed size; spectrum expands to fill all remaining space
-        dance_height = max(5, min(8, available // 3))
+        dance_height = max(11, min(available // 2, 14))
         spec_height = max(4, available - dance_height)
 
         # Spectrum analyzer
@@ -278,7 +310,12 @@ class BoomBoxTUI:
             render_server_info(self.state.server_name, self.state.group_name, self.state.connected, theme=th),
             render_codec_info(self.state.codec, self.state.sample_rate, self.state.bit_depth, theme=th),
         )
-        status_table.add_row(render_stats_info(theme=th), Text(""))
+        stats_row = render_stats_info(theme=th)
+        session_text = Text()
+        if self.state.session_stats:
+            session_text.append(" \U0001f3a7 ", Style(color="#666666"))
+            session_text.append(self.state.session_stats, Style(color=th.secondary))
+        status_table.add_row(stats_row, session_text)
         parts.append(Panel(status_table, border_style="#444444", padding=(0, 0)))
 
         # Boom box frame accents
@@ -1088,6 +1125,7 @@ class BoomBoxTUI:
 
             # ── Main render loop ──
             while self._running:
+                self._update_terminal_title()
                 if self._check_standby():
                     term_w, term_h = self._get_terminal_size()
                     segs = self._standby_segments(term_w, term_h)
@@ -1116,8 +1154,8 @@ class BoomBoxTUI:
                 await asyncio.sleep(1 / 60)
 
             self._running = False
-            # Leave alternate screen and show cursor
-            sys.stdout.write("\x1b[?25h\x1b[?1049l")
+            # Reset terminal title and leave alternate screen
+            sys.stdout.write("\x1b]0;\x07\x1b[?25h\x1b[?1049l")
             sys.stdout.flush()
             input_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

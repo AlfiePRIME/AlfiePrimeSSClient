@@ -13,6 +13,13 @@ except ImportError:
     psutil = None  # type: ignore[assignment]
     _process = None  # type: ignore[assignment]
 
+try:
+    from PIL import Image as _PILImage
+    import io as _io
+except ImportError:
+    _PILImage = None  # type: ignore[assignment,misc]
+    _io = None  # type: ignore[assignment]
+
 from alfieprime_musiciser.colors import (
     ColorTheme, DEFAULT_SPECTRUM_COLORS, _default_theme,
     _hex_to_rgb, _lerp_color, _rgb_to_hex, _hsv_to_rgb,
@@ -459,6 +466,73 @@ def render_stereo_lights(width: int, vu_left: float, vu_right: float) -> Text:
     return text
 
 
+def render_braille_art(
+    image_data: bytes, width: int, height: int,
+    theme: ColorTheme | None = None,
+) -> list[Text]:
+    """Convert raw JPEG image bytes into colored Unicode braille art for terminal display.
+
+    Each braille character encodes a 2x4 pixel grid, so the image is resized to
+    width*2 x height*4 pixels.  Brightness determines dot pattern; color is sampled
+    from the centre of each 2x4 block of the original RGB image.
+    """
+    if _PILImage is None or _io is None:
+        return []
+
+    try:
+        img = _PILImage.open(_io.BytesIO(image_data))
+    except Exception:
+        return []
+
+    px_w = width * 2
+    px_h = height * 4
+    img_rgb = img.resize((px_w, px_h), _PILImage.LANCZOS).convert("RGB")
+    img_gray = img_rgb.convert("L")
+
+    rgb_pixels = img_rgb.load()
+    gray_pixels = img_gray.load()
+
+    # Braille dot bit offsets for a 2-wide x 4-tall grid
+    # (col, row) -> bit
+    _dot_bits = {
+        (0, 0): 0x01, (1, 0): 0x08,
+        (0, 1): 0x02, (1, 1): 0x10,
+        (0, 2): 0x04, (1, 2): 0x20,
+        (0, 3): 0x40, (1, 3): 0x80,
+    }
+
+    lines: list[Text] = []
+    threshold = 128
+
+    for by in range(height):
+        line = Text()
+        for bx in range(width):
+            # Pixel origin for this braille cell
+            ox = bx * 2
+            oy = by * 4
+
+            # Build braille codepoint from luminance
+            code = 0
+            for (dx, dy), bit in _dot_bits.items():
+                px = ox + dx
+                py = oy + dy
+                if px < px_w and py < px_h and gray_pixels[px, py] >= threshold:
+                    code |= bit
+
+            char = chr(0x2800 + code)
+
+            # Sample colour from centre of the 2x4 block
+            cx = min(ox + 1, px_w - 1)
+            cy = min(oy + 2, px_h - 1)
+            r, g, b = rgb_pixels[cx, cy]
+            color = f"#{r:02x}{g:02x}{b:02x}"
+
+            line.append(char, Style(color=color))
+        lines.append(line)
+
+    return lines
+
+
 def render_party_scene(
     width: int, vu_left: float, vu_right: float,
     beat_count: int = 0, beat_intensity: float = 0.0,
@@ -498,6 +572,47 @@ def render_party_scene(
         ["\\o/", " | ", "/ \\"],
         [" o ", "-|-", "/ \\"],
     ]
+
+    # Headbanger (4 frames x 3 rows each)
+    dancer_c = [
+        [" o ", "/|\\", "/ \\"],
+        [" o ", "/|\\", "/ \\"],
+        ["\\o ", " |\\", "/ \\"],
+        [" o/", "/| ", "/ \\"],
+    ]
+
+    # Spinner (4 frames x 3 rows each)
+    dancer_d = [
+        ["\\o/", " | ", "< >"],
+        [" o>", " | ", " >\\"],
+        ["/o\\", " | ", "< >"],
+        ["<o ", " | ", "/< "],
+    ]
+
+    # Robot (4 frames x 3 rows each)
+    dancer_e = [
+        ["[o]", "/|\\", "| |"],
+        ["[o]", "\\|/", "/ \\"],
+        ["[o]", "-|-", "| |"],
+        ["[o]", "_|_", "\\ /"],
+    ]
+
+    # Raver with glowsticks (4 frames x 3 rows each)
+    dancer_f = [
+        ["*o*", "/|\\", "/ \\"],
+        ["°o°", "\\|/", "\\ /"],
+        ["*o*", "/|\\", ">< "],
+        ["°o°", "\\|/", "/ \\"],
+    ]
+
+    # Energy-reactive dancer selection
+    energy = min(1.0, avg_level + beat_intensity * 0.5)
+    if energy < 0.3:
+        dancer_pool = [dancer_a, dancer_b]
+    elif energy <= 0.6:
+        dancer_pool = [dancer_a, dancer_b, dancer_c, dancer_d]
+    else:
+        dancer_pool = [dancer_a, dancer_b, dancer_c, dancer_d, dancer_e, dancer_f]
 
     scene_width = max(width, 40)
     lines: list[Text] = []
@@ -557,10 +672,7 @@ def render_party_scene(
             dancer_idx = group_phase_offset
             while pos < remaining - 4:
                 phase = (bounce + dancer_idx) % 4
-                if dancer_idx % 2 == 0:
-                    src = dancer_a[phase]
-                else:
-                    src = dancer_b[phase]
+                src = dancer_pool[dancer_idx % len(dancer_pool)][phase]
                 d_line = src[row_idx] if row_idx < len(src) else "   "
                 line_chars.append(d_line.ljust(5))
                 pos += 5

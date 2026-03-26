@@ -128,15 +128,11 @@ class AudioVisualizer:
             n_samples = len(data) // 3
             if n_samples == 0:
                 return None
-            arr = np.zeros(n_samples, dtype=np.int32)
-            for i in range(n_samples):
-                b0 = data[i * 3]
-                b1 = data[i * 3 + 1]
-                b2 = data[i * 3 + 2]
-                val = b0 | (b1 << 8) | (b2 << 16)
-                if val & 0x800000:
-                    val -= 0x1000000
-                arr[i] = val
+            # Vectorized 24-bit decode: unpack 3 bytes per sample into int32
+            raw = np.frombuffer(data[:n_samples * 3], dtype=np.uint8).reshape(-1, 3)
+            arr = raw[:, 0].astype(np.int32) | (raw[:, 1].astype(np.int32) << 8) | (raw[:, 2].astype(np.int32) << 16)
+            # Sign-extend from 24-bit
+            arr[arr >= 0x800000] -= 0x1000000
             samples = arr.astype(np.float32) / 8388608.0
             if ch > 1:
                 samples = samples.reshape(-1, ch)

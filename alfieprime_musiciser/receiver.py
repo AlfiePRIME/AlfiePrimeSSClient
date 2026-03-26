@@ -20,6 +20,7 @@ except ImportError:
 
 from alfieprime_musiciser.colors import ColorTheme, _default_theme, _extract_theme_from_image
 from alfieprime_musiciser.config import Config
+from alfieprime_musiciser.renderer import reset_vu_peaks
 from alfieprime_musiciser.state import PlayerState
 from alfieprime_musiciser.visualizer import AudioVisualizer
 
@@ -118,7 +119,7 @@ class SendSpinReceiver:
 
     async def start(self) -> None:
         self._running = True
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
 
         from sendspin.audio_devices import detect_supported_audio_formats, query_devices
         from sendspin.audio_connector import AudioStreamHandler
@@ -318,6 +319,7 @@ class SendSpinReceiver:
                 self._state.server_name = f"Listening on :{self._listen_port}"
                 await self._audio_handler.handle_disconnect()
                 self._visualizer.reset()
+                reset_vu_peaks()
 
     # ── Client-initiated mode (explicit URL) ──
 

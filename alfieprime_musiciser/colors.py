@@ -159,9 +159,10 @@ def _extract_theme_from_image(image_data: bytes) -> ColorTheme | None:
 
         # When we have fewer than 6 distinct colors, generate extras by
         # shifting the hue of existing ones so the theme stays vibrant.
+        n_originals = len(candidates)
         while len(candidates) < 6:
-            # Take the base color and rotate its hue
-            base = candidates[len(candidates) % len(candidates)]
+            # Cycle through original colors as base for interpolation
+            base = candidates[(len(candidates) - n_originals) % n_originals]
             br, bg, bb = base
             # Convert to HSV, shift hue, convert back
             mx = max(br, bg, bb)

@@ -554,7 +554,7 @@ class BoomBoxTUI:
                 dist = abs(row - mid_row)
                 if dist <= visible_half:
                     edge_fade = 1.0 - (dist / max(visible_half, 1)) * 0.6
-                    flicker = 0.85 + 0.15 * math.sin(time.time() * 60 + row * 3)
+                    flicker = 0.85 + 0.15 * math.sin(time.monotonic() * 60 + row * 3)
                     br = int(min(255, 200 * edge_fade * flicker))
                     r = int(br * 0.8)
                     g = int(min(255, br * 1.0))
@@ -597,16 +597,8 @@ class BoomBoxTUI:
         spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
         spin_ch = spinner[int(t * 10) % len(spinner)]
 
-        # Signal wave animation — ripples outward from dish
-        wave_frame = int(t * 3) % 4
-        waves = [
-            ["       ", "      )", "    ) )", "  ) ) )"],
-            ["       ", "      )", "    ) )", "  ) ) )"],
-            ["       ", "      )", "    ) )", "  ) ) )"],
-            ["       ", "      )", "    ) )", "  ) ) )"],
-        ]
-        # Animate by showing 1-3 waves based on frame
-        wave_count = (wave_frame % 3) + 1
+        # Signal wave animation — show 1-3 ripples cycling
+        wave_count = (int(t * 3) % 3) + 1
 
         w1 = ")" if wave_count >= 1 else " "
         w2 = ")" if wave_count >= 2 else " "
@@ -797,7 +789,7 @@ class BoomBoxTUI:
             # Collapse to horizontal line
             p = (progress - 0.20) / 0.35
             visible_half = max(0, int((1.0 - p) * mid_row))
-            flicker = 0.9 + 0.1 * math.sin(time.time() * 80)
+            flicker = 0.9 + 0.1 * math.sin(time.monotonic() * 80)
             for row in range(term_h):
                 dist = abs(row - mid_row)
                 if dist <= visible_half:

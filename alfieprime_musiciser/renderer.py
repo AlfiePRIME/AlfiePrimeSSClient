@@ -187,24 +187,37 @@ def render_spectrum(
     total_bar_width = bar_w * num_bands
     pad_left = max(0, (width - total_bar_width) // 2)
     lines: list[Text] = []
+    n_spec = len(spec_colors) - 1
+    bg_style = Style(color=th.bg_subtle)
+    peak_style = Style(color="#ffffff", bold=True)
+    # Precompute per-row: threshold, color, bar/peak strings
+    bar_str = "\u2588" * bar_w
+    peak_str = "\u2594" * bar_w
+    dot_str = "\u00b7" * bar_w
+    row_colors = [
+        Style(color=spec_colors[min(int((height - 1 - row) / height * n_spec), n_spec)], bold=True)
+        for row in range(height)
+    ]
 
     for row in range(height):
         line = Text()
         if pad_left > 0:
             line.append(" " * pad_left)
         threshold = 1.0 - (row + 1) / height
+        color_style = row_colors[row]
+        peak_threshold = 1.0 - row / height
+        inv_height = 1.0 / height
 
         for b in range(num_bands):
             level = bands[b] if b < len(bands) else 0.0
             peak = peaks[b] if b < len(peaks) else 0.0
 
             if level > threshold:
-                color = spec_colors[min(int((height - 1 - row) / height * (len(spec_colors) - 1)), len(spec_colors) - 1)]
-                line.append("\u2588" * bar_w, Style(color=color, bold=True))
-            elif abs(peak - (1.0 - row / height)) < (1.0 / height):
-                line.append("\u2594" * bar_w, Style(color="#ffffff", bold=True))
+                line.append(bar_str, color_style)
+            elif abs(peak - peak_threshold) < inv_height:
+                line.append(peak_str, peak_style)
             else:
-                line.append("\u00b7" * bar_w, Style(color=th.bg_subtle))
+                line.append(dot_str, bg_style)
 
         lines.append(line)
 
@@ -213,6 +226,11 @@ def render_spectrum(
 
 # Per-channel VU peak hold state (survives across frames)
 _vu_peaks: dict[str, tuple[float, float]] = {}  # label → (peak_level, peak_time)
+
+
+def reset_vu_peaks() -> None:
+    """Clear VU peak hold state (call on stream stop / reconnect)."""
+    _vu_peaks.clear()
 
 
 def render_vu_meter(

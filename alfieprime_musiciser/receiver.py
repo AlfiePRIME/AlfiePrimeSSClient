@@ -249,7 +249,15 @@ class SendSpinReceiver:
         assert self._connection_lock is not None
         assert self._audio_handler is not None
 
-        logger.info("Server connected")
+        # Log the remote IP if available
+        remote = "unknown"
+        try:
+            peer = ws._reader._transport.get_extra_info("peername")  # noqa: SLF001
+            if peer:
+                remote = f"{peer[0]}:{peer[1]}"
+        except Exception:
+            pass
+        logger.info("Server connected from %s", remote)
 
         async with self._connection_lock:
             # Clean up previous client if any
@@ -292,7 +300,7 @@ class SendSpinReceiver:
         server_name = server_info.name if server_info else "Server"
         self._state.connected = True
         self._state.server_name = server_name
-        logger.info("Connected to server: %s", server_name)
+        logger.info("Connected to server: %s (%s)", server_name, remote)
 
         # Wait for disconnect
         try:
@@ -389,8 +397,9 @@ class SendSpinReceiver:
         if not isinstance(getattr(meta, "album", UndefinedField()), UndefinedField):
             state.album = meta.album or ""
 
-        # On track change, apply pre-cached artwork theme if available
+        # On track change, log and apply pre-cached artwork theme if available
         if state.title != old_title and state.title:
+            logger.info("Now playing: %s - %s [%s]", state.artist or "?", state.title, state.album or "?")
             for ch in (1, 2, 3):
                 cached = self._artwork_themes.get(ch)
                 if cached is not None and cached.primary != _default_theme.primary:
@@ -443,13 +452,14 @@ class SendSpinReceiver:
             was_playing = state.is_playing
             state.is_playing = payload.playback_state == PlaybackStateType.PLAYING
             self._visualizer.set_paused(not state.is_playing)
-            # When transitioning to paused, snapshot the interpolated progress
+            # Log state transitions
             if was_playing and not state.is_playing:
                 state.progress_ms = state.get_interpolated_progress()
                 state.progress_update_time = 0.0
-            # When transitioning to playing, ensure interpolation has a start time
+                logger.info("Playback paused")
             elif state.is_playing and not was_playing:
                 state.progress_update_time = time.monotonic()
+                logger.info("Playback started")
 
     def _on_format_change(
         self, codec: str | None, sample_rate: int, bit_depth: int, channels: int,
@@ -458,6 +468,7 @@ class SendSpinReceiver:
         self._state.codec = codec or "PCM"
         self._state.sample_rate = sample_rate
         self._state.bit_depth = bit_depth
+        logger.info("Audio format: %s %dHz %dbit %dch", codec or "PCM", sample_rate, bit_depth, channels)
         self._visualizer.set_format(sample_rate, bit_depth, channels)
 
     def _on_stream_event(self, event: str) -> None:
@@ -494,10 +505,12 @@ class SendSpinReceiver:
         cmd = payload.player
         if cmd.command == PlayerCommand.VOLUME and cmd.volume is not None:
             self._state.volume = cmd.volume
+            logger.info("Volume set to %d%%", cmd.volume)
             if self._audio_handler is not None:
                 self._audio_handler.set_volume(cmd.volume, muted=self._state.muted)
         elif cmd.command == PlayerCommand.MUTE and cmd.mute is not None:
             self._state.muted = cmd.mute
+            logger.info("Mute %s", "on" if cmd.mute else "off")
             if self._audio_handler is not None:
                 self._audio_handler.set_volume(self._state.volume, muted=cmd.mute)
 
@@ -566,12 +579,14 @@ class SendSpinReceiver:
         if command == "volume_up":
             new_vol = min(100, state.volume + 5)
             state.volume = new_vol
+            logger.info("Volume up: %d%%", new_vol)
             if self._audio_handler is not None:
                 self._audio_handler.set_volume(new_vol, muted=state.muted)
             return
         elif command == "volume_down":
             new_vol = max(0, state.volume - 5)
             state.volume = new_vol
+            logger.info("Volume down: %d%%", new_vol)
             if self._audio_handler is not None:
                 self._audio_handler.set_volume(new_vol, muted=state.muted)
             return
@@ -590,29 +605,38 @@ class SendSpinReceiver:
             try:
                 if command == "play_pause":
                     if state.is_playing and "pause" in cmds:
+                        logger.info("Sending command: PAUSE")
                         await self._client.send_group_command(MediaCommand.PAUSE)
                     elif not state.is_playing and "play" in cmds:
+                        logger.info("Sending command: PLAY")
                         await self._client.send_group_command(MediaCommand.PLAY)
                 elif command == "next" and "next" in cmds:
+                    logger.info("Sending command: NEXT")
                     await self._client.send_group_command(MediaCommand.NEXT)
                 elif command == "previous" and "previous" in cmds:
+                    logger.info("Sending command: PREVIOUS")
                     await self._client.send_group_command(MediaCommand.PREVIOUS)
                 elif command == "shuffle":
                     if state.shuffle and "unshuffle" in cmds:
                         state.shuffle = False
+                        logger.info("Sending command: UNSHUFFLE")
                         await self._client.send_group_command(MediaCommand.UNSHUFFLE)
                     elif not state.shuffle and "shuffle" in cmds:
                         state.shuffle = True
+                        logger.info("Sending command: SHUFFLE")
                         await self._client.send_group_command(MediaCommand.SHUFFLE)
                 elif command == "repeat":
                     if state.repeat_mode == "off" and "repeat_all" in cmds:
                         state.repeat_mode = "all"
+                        logger.info("Sending command: REPEAT_ALL")
                         await self._client.send_group_command(MediaCommand.REPEAT_ALL)
                     elif state.repeat_mode == "all" and "repeat_one" in cmds:
                         state.repeat_mode = "one"
+                        logger.info("Sending command: REPEAT_ONE")
                         await self._client.send_group_command(MediaCommand.REPEAT_ONE)
                     elif state.repeat_mode == "one" and "repeat_off" in cmds:
                         state.repeat_mode = "off"
+                        logger.info("Sending command: REPEAT_OFF")
                         await self._client.send_group_command(MediaCommand.REPEAT_OFF)
             except Exception:
                 logger.exception("Error sending command: %s", command)

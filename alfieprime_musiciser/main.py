@@ -1919,20 +1919,19 @@ class BoomBoxTUI:
     def _crt_startup_segments(
         self, progress: float, term_w: int, term_h: int,
     ) -> list[tuple[str, str | None, str | None, bool]]:
-        """Generate CRT power-on animation segments.
+        """Generate CRT power-on animation segments (boot phase only).
 
         progress: 0.0 → 1.0
-          0.00-0.15  Black screen, faint hum glow in center
-          0.15-0.40  Bright horizontal scanline appears at center
-          0.40-0.75  Scanline expands vertically with phosphor bloom
-          0.75-1.00  Static/noise clears into content
+          0.00-0.20  Black screen, faint hum glow in center
+          0.20-0.50  Bright horizontal scanline appears at center
+          0.50-1.00  Scanline expands vertically into full static
         """
         segs: list[tuple[str, str | None, str | None, bool]] = []
         mid_row = term_h // 2
 
-        if progress < 0.15:
+        if progress < 0.20:
             # Black with a faint center dot
-            dot_brightness = int(progress / 0.15 * 60)
+            dot_brightness = int(progress / 0.20 * 60)
             c = f"#{dot_brightness:02x}{dot_brightness:02x}{dot_brightness:02x}"
             for row in range(term_h):
                 if row == mid_row:
@@ -1945,9 +1944,9 @@ class BoomBoxTUI:
                 if row < term_h - 1:
                     segs.append(("\n", None, None, False))
 
-        elif progress < 0.40:
+        elif progress < 0.50:
             # Bright horizontal scanline at center
-            p = (progress - 0.15) / 0.25
+            p = (progress - 0.20) / 0.30
             line_brightness = int(80 + p * 175)
             glow_w = max(4, int(p * term_w))
             pad_l = (term_w - glow_w) // 2
@@ -1969,26 +1968,24 @@ class BoomBoxTUI:
                 if row < term_h - 1:
                     segs.append(("\n", None, None, False))
 
-        elif progress < 0.75:
-            # Expanding vertically — phosphor bloom
-            p = (progress - 0.40) / 0.35
-            visible_half = max(1, int(p * mid_row))
+        else:
+            # Expanding vertically — phosphor bloom into full static
+            p = (progress - 0.50) / 0.50
+            visible_half = max(1, int(p * mid_row * 1.5))
             for row in range(term_h):
                 dist = abs(row - mid_row)
                 if dist <= visible_half:
-                    # Scanline with phosphor glow — brightness fades at edges
                     edge_fade = 1.0 - (dist / max(visible_half, 1)) * 0.6
                     flicker = 0.85 + 0.15 * math.sin(time.time() * 60 + row * 3)
                     br = int(min(255, 200 * edge_fade * flicker))
-                    # Slight green/blue phosphor tint
                     r = int(br * 0.8)
                     g = int(min(255, br * 1.0))
                     b = int(min(255, br * 0.9))
                     c = f"#{r:02x}{g:02x}{b:02x}"
-                    # Static noise chars
+                    noise_density = max(0.2, (1.0 - p) * 0.6)
                     line = "".join(
                         random.choice("░▒▓█▌▐─━╌╍")
-                        if random.random() < (1.0 - p) * 0.6
+                        if random.random() < noise_density
                         else random.choice("·. ")
                         for _ in range(term_w)
                     )
@@ -1998,23 +1995,110 @@ class BoomBoxTUI:
                 if row < term_h - 1:
                     segs.append(("\n", None, None, False))
 
-        else:
-            # Static clearing — render real content with noise overlay fading out
-            p = (progress - 0.75) / 0.25  # 0→1
-            real_segs = self._render_frame_gui()
-            noise_chance = (1.0 - p) * 0.4
-            for text, fg, bg, bold in real_segs:
-                if "\n" in text or not text.strip():
-                    segs.append((text, fg, bg, bold))
-                    continue
-                # Randomly replace some chars with static
-                out = []
+        return segs
+
+    def _crt_static_hold_segments(
+        self, term_w: int, term_h: int,
+    ) -> list[tuple[str, str | None, str | None, bool]]:
+        """Generate idle static while waiting for server connection."""
+        segs: list[tuple[str, str | None, str | None, bool]] = []
+        t = time.time()
+        for row in range(term_h):
+            flicker = 0.7 + 0.3 * math.sin(t * 8 + row * 0.7)
+            br = int(min(200, 120 * flicker))
+            r = int(br * 0.75)
+            g = int(min(255, br * 0.95))
+            b = int(min(255, br * 0.85))
+            c = f"#{r:02x}{g:02x}{b:02x}"
+            line = "".join(
+                random.choice("░▒▓█▌▐╌╍·.")
+                if random.random() < 0.3
+                else random.choice("·. ·  ")
+                for _ in range(term_w)
+            )
+            segs.append((line, c, None, False))
+            if row < term_h - 1:
+                segs.append(("\n", None, None, False))
+
+        # Overlay "WAITING FOR SIGNAL..." text in center
+        msg = "WAITING FOR SIGNAL..."
+        mid_row = term_h // 2
+        pulse = 0.5 + 0.5 * math.sin(t * 2)
+        msg_br = int(60 + 140 * pulse)
+        msg_c = f"#{msg_br:02x}{msg_br:02x}{min(255, msg_br + 20):02x}"
+        # Rebuild center row with message
+        pad_l = max(0, (term_w - len(msg)) // 2)
+        pad_r = max(0, term_w - pad_l - len(msg))
+        # Find the segment for mid_row and replace it
+        seg_idx = mid_row * 2  # each row has content + newline
+        if seg_idx < len(segs):
+            segs[seg_idx] = (" " * pad_l, None, None, False)
+            segs.insert(seg_idx + 1, (msg, msg_c, None, True))
+            segs.insert(seg_idx + 2, (" " * pad_r, None, None, False))
+        return segs
+
+    def _crt_lights_on_segments(
+        self, progress: float, term_w: int, term_h: int,
+    ) -> list[tuple[str, str | None, str | None, bool]]:
+        """Panels light up from top-left to bottom-right like venue lights.
+
+        progress: 0.0 → 1.0
+        Real content fades in with a diagonal sweep, replacing static.
+        """
+        segs: list[tuple[str, str | None, str | None, bool]] = []
+        real_segs = self._render_frame_gui()
+
+        # Build a 2D grid of real content chars with their styles
+        # real_segs is a flat list; we need to walk it row by row
+        real_rows: list[list[tuple[str, str | None, str | None, bool]]] = [[]]
+        for text, fg, bg, bold in real_segs:
+            if "\n" in text:
+                real_rows.append([])
+            else:
                 for ch in text:
-                    if random.random() < noise_chance and ch.strip():
-                        out.append(random.choice("░▒▓"))
+                    real_rows[-1].append((ch, fg, bg, bold))
+
+        t = time.time()
+        # Diagonal threshold: top-left (0,0) lights first, bottom-right last
+        max_dist = term_h + term_w
+        threshold = progress * max_dist * 1.3  # overshoot so trailing edge completes
+
+        for row_idx in range(term_h):
+            real_row = real_rows[row_idx] if row_idx < len(real_rows) else []
+            for col_idx in range(term_w):
+                # Distance from top-left corner (diagonal sweep)
+                dist = row_idx + col_idx * 0.7
+                if dist < threshold:
+                    # This cell is "lit" — show real content
+                    if col_idx < len(real_row):
+                        ch, fg, bg, bold = real_row[col_idx]
+                        # Brightness ramp: recently lit cells glow brighter
+                        lit_age = (threshold - dist) / max(max_dist * 0.15, 1)
+                        if lit_age < 1.0 and fg:
+                            # Fade in: brighten towards full
+                            fr, fg_c, fb = _hex_to_rgb(fg)
+                            fade = min(1.0, lit_age)
+                            fr = int(fr * fade)
+                            fg_c = int(fg_c * fade)
+                            fb = int(fb * fade)
+                            segs.append((ch, _rgb_to_hex(fr, fg_c, fb), bg, bold))
+                        else:
+                            segs.append((ch, fg, bg, bold))
                     else:
-                        out.append(ch)
-                segs.append(("".join(out), fg, bg, bold))
+                        segs.append((" ", None, None, False))
+                else:
+                    # Still dark — show fading static
+                    fade_to_edge = max(0.0, 1.0 - (dist - threshold) / max(max_dist * 0.1, 1))
+                    if random.random() < 0.15 * fade_to_edge:
+                        flicker = 0.5 + 0.5 * math.sin(t * 12 + row_idx + col_idx)
+                        br = int(50 * flicker * fade_to_edge)
+                        c = f"#{br:02x}{br:02x}{br:02x}"
+                        segs.append((random.choice("░▒·"), c, None, False))
+                    else:
+                        segs.append((" ", None, None, False))
+
+            if row_idx < term_h - 1:
+                segs.append(("\n", None, None, False))
 
         return segs
 
@@ -2172,8 +2256,8 @@ class BoomBoxTUI:
         try:
             term_w, term_h = self._get_terminal_size()
 
-            # ── CRT startup animation ──
-            duration = 1.8
+            # ── Phase 1: CRT boot animation (1.5s) ──
+            duration = 1.5
             start = time.monotonic()
             while time.monotonic() - start < duration:
                 progress = (time.monotonic() - start) / duration
@@ -2182,6 +2266,28 @@ class BoomBoxTUI:
                 sys.stdout.write(f"\x1b[H{frame}")
                 sys.stdout.flush()
                 await asyncio.sleep(1 / 60)
+
+            # ── Phase 2: Hold on static until connected ──
+            while self._running and not self.state.connected:
+                term_w, term_h = self._get_terminal_size()
+                segs = self._crt_static_hold_segments(term_w, term_h)
+                frame = self._crt_to_ansi(segs, term_w, term_h)
+                sys.stdout.write(f"\x1b[H{frame}")
+                sys.stdout.flush()
+                await asyncio.sleep(1 / 30)
+
+            # ── Phase 3: Lights-on sweep (1.8s) ──
+            if self._running:
+                duration = 1.8
+                start = time.monotonic()
+                while time.monotonic() - start < duration and self._running:
+                    term_w, term_h = self._get_terminal_size()
+                    progress = (time.monotonic() - start) / duration
+                    segs = self._crt_lights_on_segments(progress, term_w, term_h)
+                    frame = self._crt_to_ansi(segs, term_w, term_h)
+                    sys.stdout.write(f"\x1b[H{frame}")
+                    sys.stdout.flush()
+                    await asyncio.sleep(1 / 60)
 
             # ── Main render loop ──
             while self._running:
@@ -2226,8 +2332,8 @@ class BoomBoxTUI:
         self._gui_window = gui
 
         try:
-            # ── CRT startup animation ──
-            duration = 1.8
+            # ── Phase 1: CRT boot animation (1.5s) ──
+            duration = 1.5
             start = time.monotonic()
             while time.monotonic() - start < duration and gui.alive:
                 gui.process_events()
@@ -2236,6 +2342,26 @@ class BoomBoxTUI:
                 segs = self._crt_startup_segments(progress, term_w, term_h)
                 gui.send_segments(segs)
                 await asyncio.sleep(1 / 60)
+
+            # ── Phase 2: Hold on static until connected ──
+            while self._running and gui.alive and not self.state.connected:
+                gui.process_events()
+                term_w, term_h = self._get_terminal_size()
+                segs = self._crt_static_hold_segments(term_w, term_h)
+                gui.send_segments(segs)
+                await asyncio.sleep(1 / 30)
+
+            # ── Phase 3: Lights-on sweep (1.8s) ──
+            if self._running and gui.alive:
+                duration = 1.8
+                start = time.monotonic()
+                while time.monotonic() - start < duration and gui.alive and self._running:
+                    gui.process_events()
+                    progress = (time.monotonic() - start) / duration
+                    term_w, term_h = self._get_terminal_size()
+                    segs = self._crt_lights_on_segments(progress, term_w, term_h)
+                    gui.send_segments(segs)
+                    await asyncio.sleep(1 / 60)
 
             # ── Main render loop ──
             while self._running and gui.alive:

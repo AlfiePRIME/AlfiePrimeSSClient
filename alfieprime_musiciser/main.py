@@ -221,11 +221,13 @@ def _lerp_color(hex1: str, hex2: str, t: float) -> str:
 class ColorTheme:
     """Dynamic color theme extracted from album art."""
 
-    # Primary colors extracted from artwork
+    # Primary colors extracted from artwork (6 slots)
     primary: str = "#ff00ff"       # dominant color → borders, accents
     secondary: str = "#00ccff"     # second most dominant → text highlights
     accent: str = "#00ff88"        # third → active buttons, progress bar
     warm: str = "#ffaa00"          # fourth → warm accents (group name, etc.)
+    highlight: str = "#ff6644"     # fifth → extra variety
+    cool: str = "#8855ff"          # sixth → extra variety
     # Derived colors
     primary_dim: str = "#666666"   # dimmed variant of primary
     bg_subtle: str = "#1a1a1a"     # subtle background tint
@@ -295,9 +297,9 @@ def _extract_theme_from_image(image_data: bytes) -> ColorTheme | None:
         # Sort by saturation * brightness to prefer vivid colors
         candidates.sort(key=lambda c: _color_saturation(*c) * _color_brightness(*c), reverse=True)
 
-        # When we have fewer than 4 distinct colors, generate extras by
+        # When we have fewer than 6 distinct colors, generate extras by
         # shifting the hue of existing ones so the theme stays vibrant.
-        while len(candidates) < 4:
+        while len(candidates) < 6:
             # Take the base color and rotate its hue
             base = candidates[len(candidates) % len(candidates)]
             br, bg, bb = base
@@ -324,25 +326,31 @@ def _extract_theme_from_image(image_data: bytes) -> ColorTheme | None:
             nr, ng, nb = _hsv_to_rgb(new_h, new_s, new_v)
             candidates.append((int(nr * 255), int(ng * 255), int(nb * 255)))
 
-        # Pick the top 4 most vivid colors
+        # Pick the top 6 most vivid colors
         primary = _boost_color(*candidates[0])
         secondary = _boost_color(*candidates[1])
         accent = _boost_color(*candidates[2])
         warm = _boost_color(*candidates[3])
+        highlight = _boost_color(*candidates[4])
+        cool = _boost_color(*candidates[5])
 
         primary_hex = _rgb_to_hex(*primary)
         secondary_hex = _rgb_to_hex(*secondary)
         accent_hex = _rgb_to_hex(*accent)
         warm_hex = _rgb_to_hex(*warm)
+        highlight_hex = _rgb_to_hex(*highlight)
+        cool_hex = _rgb_to_hex(*cool)
 
-        # Generate spectrum gradient: accent → warm → primary
+        # Generate spectrum gradient through all 6 colors
+        anchors = [accent_hex, warm_hex, highlight_hex, primary_hex, cool_hex, secondary_hex]
         spectrum = []
         for i in range(16):
             t = i / 15.0
-            if t < 0.5:
-                spectrum.append(_lerp_color(accent_hex, warm_hex, t * 2))
-            else:
-                spectrum.append(_lerp_color(warm_hex, primary_hex, (t - 0.5) * 2))
+            seg = t * (len(anchors) - 1)
+            lo = int(seg)
+            hi = min(lo + 1, len(anchors) - 1)
+            frac = seg - lo
+            spectrum.append(_lerp_color(anchors[lo], anchors[hi], frac))
 
         # Dim variant of primary
         pr, pg, pb = primary
@@ -353,6 +361,8 @@ def _extract_theme_from_image(image_data: bytes) -> ColorTheme | None:
             secondary=secondary_hex,
             accent=accent_hex,
             warm=warm_hex,
+            highlight=highlight_hex,
+            cool=cool_hex,
             primary_dim=primary_dim,
             bg_subtle=_rgb_to_hex(max(10, pr // 12), max(10, pg // 12), max(10, pb // 12)),
             spectrum_colors=spectrum,
@@ -360,8 +370,8 @@ def _extract_theme_from_image(image_data: bytes) -> ColorTheme | None:
             border_now_playing=secondary_hex,
             border_spectrum=accent_hex,
             border_vu=warm_hex,
-            border_party=primary_hex,
-            border_dance=warm_hex,
+            border_party=highlight_hex,
+            border_dance=cool_hex,
         )
     except Exception:
         logger.debug("Failed to extract theme from album art", exc_info=True)

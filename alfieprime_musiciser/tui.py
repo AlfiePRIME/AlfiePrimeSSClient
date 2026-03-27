@@ -36,6 +36,7 @@ from alfieprime_musiciser.state import PlayerState
 from alfieprime_musiciser.visualizer import AudioVisualizer
 from alfieprime_musiciser.tui_settings import SettingsMixin
 from alfieprime_musiciser.tui_animations import AnimationsMixin, _STANDBY_PHRASES, STANDBY_TIMEOUT
+from alfieprime_musiciser.tui_dj import DJMixin
 from alfieprime_musiciser.renderer import (
     render_title_banner,
     render_transport_controls,
@@ -142,7 +143,7 @@ class _DebugLogHandler(logging.Handler):
             pass
 
 
-class BoomBoxTUI(SettingsMixin, AnimationsMixin):
+class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
     """The party-themed boom box terminal UI."""
 
     def __init__(self, visualizer: AudioVisualizer, gui: bool = False, config: Config | None = None) -> None:
@@ -233,6 +234,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         self._debug_log_buffer: deque[str] = deque(maxlen=200)
         self._debug_log_handler: _DebugLogHandler | None = None
         self._debug_scroll_offset: int = 0
+        # DJ mixing console
+        self._init_dj()
 
     def _restore_cached_state(self, config: Config | None) -> None:
         """Restore theme and artwork from last session for the intro animation."""
@@ -305,6 +308,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
 
     def _get_current_mode_name(self) -> str:
         """Return the name of the current view mode."""
+        if self._dj_mode:
+            return "dj"
         if self._art_mode and self.state.artwork_data:
             return "art_calm" if self._art_calm else "art"
         return "main"
@@ -323,6 +328,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             return self._build_settings_layout()
         if self._transition_active:
             return self._build_transition_layout()
+        if self._dj_mode:
+            return self._build_dj_layout()
         if self._art_mode and self.state.artwork_data:
             return self._build_art_layout()
         return self._build_main_layout()
@@ -705,6 +712,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         hint_parts += [
             ("[↑↓]Vol ", "vol", False),
             ("[M]ute ", "vol", self.state.muted),
+            ("D[J] ", "j", False),
             ("[/]Settings ", "/", False),
             ("[Q]uit", "q", False),
         ]
@@ -952,6 +960,10 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
                 self._handle_settings_main_key(k)
             return
 
+        if self._dj_mode:
+            self._handle_dj_key(k)
+            return
+
         if k == "/":
             self._settings_open = True
             self._settings_sub = ""
@@ -993,6 +1005,10 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             if from_mode != to_mode:
                 self._start_transition(from_mode, to_mode)
             self._flash_hint("c")
+        elif k == "j":
+            from_mode = self._get_current_mode_name()
+            self._dj_mode = True
+            self._start_transition(from_mode, "dj")
         elif k == "m":
             self._fire_command("mute")
             self._flash_hint("vol")

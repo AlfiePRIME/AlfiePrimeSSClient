@@ -165,6 +165,40 @@ DEFAULT_SPECTRUM_COLORS = [
 _default_theme = ColorTheme()
 
 
+def blend_themes(a: ColorTheme, b: ColorTheme, t: float = 0.5) -> ColorTheme:
+    """Blend two color themes.  *t* = 0.0 is fully *a*, 1.0 is fully *b*."""
+    t = max(0.0, min(1.0, t))
+
+    def _bl(c1: str, c2: str) -> str:
+        return _lerp_color(c1, c2, t)
+
+    spec = []
+    for i in range(min(len(a.spectrum_colors), len(b.spectrum_colors))):
+        spec.append(_bl(a.spectrum_colors[i], b.spectrum_colors[i]))
+    if not spec:
+        spec = list(DEFAULT_SPECTRUM_COLORS)
+
+    return ColorTheme(
+        primary=_bl(a.primary, b.primary),
+        secondary=_bl(a.secondary, b.secondary),
+        accent=_bl(a.accent, b.accent),
+        warm=_bl(a.warm, b.warm),
+        highlight=_bl(a.highlight, b.highlight),
+        cool=_bl(a.cool, b.cool),
+        primary_dim=_bl(a.primary_dim, b.primary_dim),
+        bg_subtle=_bl(a.bg_subtle, b.bg_subtle),
+        spectrum_colors=spec,
+        border_title=_bl(a.border_title, b.border_title)
+            if a.border_title.startswith("#") and b.border_title.startswith("#")
+            else a.border_title,
+        border_now_playing=a.border_now_playing,
+        border_spectrum=a.border_spectrum,
+        border_vu=a.border_vu,
+        border_party=a.border_party,
+        border_dance=a.border_dance,
+    )
+
+
 def _generate_monochrome_theme(hex_color: str) -> ColorTheme:
     """Generate a full theme from a single base color."""
     r, g, b = _hex_to_rgb(hex_color)

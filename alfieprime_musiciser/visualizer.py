@@ -40,7 +40,7 @@ class AudioVisualizer:
         self._beat_intensity = 0.0  # decays after each beat, 1.0 = just hit
         self._beat_cooldown = 0  # frames to wait before next beat detection
         self._prev_bass_spectrum = None  # previous frame's bass FFT bins
-        self._flux_history = np.zeros(20, dtype=np.float64)  # ~0.67s at 30fps
+        self._flux_history = np.zeros(40, dtype=np.float64)  # ~1.3s at 30fps
         self._flux_hist_pos = 0
         # BPM estimation from beat timestamps
         self._beat_times: deque[float] = deque(maxlen=20)  # last 20 beat timestamps
@@ -262,29 +262,34 @@ class AudioVisualizer:
         if self._beat_cooldown > 0:
             self._beat_cooldown -= 1
 
-        # Trigger immediately - low threshold, no delay
-        threshold = flux_median * 1.2 + 0.00001
+        # Trigger beat when flux exceeds adaptive threshold
+        threshold = flux_median * 1.8 + 0.00001
         if flux > threshold and self._beat_cooldown == 0:
             self._beat_count += 1
             self._beat_intensity = 1.0
-            self._beat_cooldown = 3  # ~100ms at 30fps
+            self._beat_cooldown = 5  # ~167ms at 30fps (max ~360 BPM)
             # Record beat time for BPM estimation
             now = time.monotonic()
             self._beat_times.append(now)
-            if len(self._beat_times) >= 4:
+            if len(self._beat_times) >= 6:
                 # Average interval over recent beats
                 intervals = [
                     self._beat_times[i] - self._beat_times[i - 1]
                     for i in range(1, len(self._beat_times))
                 ]
-                # Filter outliers (keep intervals within 2x of median)
+                # Filter outliers (keep intervals close to median)
                 intervals.sort()
                 median = intervals[len(intervals) // 2]
-                valid = [iv for iv in intervals if 0.3 * median < iv < 2.5 * median]
+                valid = [iv for iv in intervals if 0.5 * median < iv < 1.8 * median]
                 if valid:
                     avg_interval = sum(valid) / len(valid)
                     if avg_interval > 0:
-                        self._bpm = 60.0 / avg_interval
+                        # Smooth BPM: blend with previous to avoid jitter
+                        new_bpm = 60.0 / avg_interval
+                        if self._bpm > 0:
+                            self._bpm = self._bpm * 0.6 + new_bpm * 0.4
+                        else:
+                            self._bpm = new_bpm
 
         # Decay beat intensity
         self._beat_intensity *= 0.6

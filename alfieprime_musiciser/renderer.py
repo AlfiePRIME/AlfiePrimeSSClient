@@ -958,13 +958,20 @@ def render_party_scene(
         beat_div = 4
     bounce = (beat_count // beat_div) % 4
 
-    # DJ frames (3 rows each) - head bobbing while mixing
+    # DJ frames (3 rows each) - normal and hype variants
     dj_w = 9
     dj_frames = [
         [r" o/ ___|", r"/|  |==|", r"/|\ ~~~~"],
         [r"  o ___|", r" /| |==|", r"/|  ~~~~"],
         [r"\o/ ___|", r" |  |==|", r" |\ ~~~~"],
         [r" o\ ___|", r" |\ |==|", r"  |\ ~~~"],
+    ]
+    # Hype frames for high energy — bigger gestures
+    dj_hype_frames = [
+        [r"\o/ ___|", r"/|\ |==|", r"/ \ ~~~~"],
+        [r" o/ ___|", r"/|  |==|", r"< > ~~~~"],
+        [r"\o  ___|", r" |\ |==|", r"/ > ~~~~"],
+        [r"\o/ ___|", r" |  |==|", r">< ~*~*~"],
     ]
 
     # Dancer frames (3 rows each) - 4 different poses
@@ -1112,7 +1119,8 @@ def render_party_scene(
     # Each dancer group is 3 rows tall
     num_groups = max(1, dancer_rows // 3)
 
-    dj = dj_frames[bounce % 4]
+    # DJ uses hype frames at high energy
+    dj = (dj_hype_frames if energy > 0.5 else dj_frames)[bounce % 4]
 
     for group_idx in range(num_groups):
         # Offset phase per group so back rows look different
@@ -1163,12 +1171,16 @@ def render_party_scene(
             full_line = "".join(line_chars)[:scene_width]
 
             # Colorize — dimmer for back rows to create depth
-            # Batch consecutive characters that share the same style category
+            # DJ gets a bigger beat brightness boost than the crowd
             depth_dim = max(0.5, 1.0 - group_idx * 0.15)
             _th_secondary_style = _cached_style(th.secondary)
             body_brightness = (0.3 + 0.4 * avg_level + beat_intensity * 0.1) * depth_dim
+            dj_brightness = (0.5 + 0.4 * avg_level + beat_intensity * 0.4)
             head_val = int(min(0.85 * depth_dim, 1.0) * 64) / 64
             body_val = int(min(body_brightness, 0.8) * 64) / 64
+            dj_body_val = int(min(dj_brightness, 0.95) * 64) / 64
+            dj_head_val = int(min(0.95, 1.0) * 64) / 64
+            is_dj_row = group_idx == 0
 
             # Classify each char into style category and batch runs
             _HEAD = 0  # 'o', 'O'
@@ -1182,6 +1194,30 @@ def render_party_scene(
             prev_cat = -1
             run_start = 0
 
+            def _flush_run(run_str: str, cat: int, start: int, end: int) -> None:
+                in_dj = is_dj_row and start < dj_w
+                mid = (start + end) // 2
+                qhue = int(((t * 0.15 + mid * 0.015 + beat_hue_offset) % 1.0) * 256) / 256
+                if cat == _HEAD:
+                    hv = dj_head_val if in_dj else head_val
+                    color = _hsv_to_hex_cached(qhue, 0.35, hv)
+                    text.append(run_str, _cached_style(color, bold=in_dj))
+                elif cat == _BODY:
+                    bv = dj_body_val if in_dj else body_val
+                    color = _hsv_to_hex_cached(qhue, 0.5, bv)
+                    text.append(run_str, _cached_style(color, bold=in_dj))
+                elif cat == _EQUIP:
+                    if in_dj:
+                        # DJ equipment glows with beat
+                        eq_br = 0.4 + 0.5 * beat_intensity
+                        eq_val = int(min(eq_br, 0.9) * 64) / 64
+                        color = _hsv_to_hex_cached(qhue, 0.7, eq_val)
+                        text.append(run_str, _cached_style(color, bold=True))
+                    else:
+                        text.append(run_str, _th_secondary_style)
+                else:
+                    text.append(run_str, _STYLE_DIM555)
+
             for i, ch in enumerate(full_line):
                 if ch in _head_set:
                     cat = _HEAD
@@ -1193,42 +1229,13 @@ def render_party_scene(
                     cat = _SPACE
 
                 if cat != prev_cat and i > 0:
-                    # Flush previous run
-                    run_str = full_line[run_start:i]
-                    if prev_cat == _HEAD:
-                        mid = (run_start + i) // 2
-                        qhue = int(((t * 0.15 + mid * 0.015 + beat_hue_offset) % 1.0) * 256) / 256
-                        color = _hsv_to_hex_cached(qhue, 0.35, head_val)
-                        text.append(run_str, _cached_style(color))
-                    elif prev_cat == _BODY:
-                        mid = (run_start + i) // 2
-                        qhue = int(((t * 0.15 + mid * 0.015 + beat_hue_offset) % 1.0) * 256) / 256
-                        color = _hsv_to_hex_cached(qhue, 0.5, body_val)
-                        text.append(run_str, _cached_style(color))
-                    elif prev_cat == _EQUIP:
-                        text.append(run_str, _th_secondary_style)
-                    else:
-                        text.append(run_str, _STYLE_DIM555)
+                    _flush_run(full_line[run_start:i], prev_cat, run_start, i)
                     run_start = i
                 prev_cat = cat
 
             # Flush final run
             if run_start < len(full_line):
-                run_str = full_line[run_start:]
-                if prev_cat == _HEAD:
-                    mid = (run_start + len(full_line)) // 2
-                    qhue = int(((t * 0.15 + mid * 0.015 + beat_hue_offset) % 1.0) * 256) / 256
-                    color = _hsv_to_hex_cached(qhue, 0.35, head_val)
-                    text.append(run_str, _cached_style(color))
-                elif prev_cat == _BODY:
-                    mid = (run_start + len(full_line)) // 2
-                    qhue = int(((t * 0.15 + mid * 0.015 + beat_hue_offset) % 1.0) * 256) / 256
-                    color = _hsv_to_hex_cached(qhue, 0.5, body_val)
-                    text.append(run_str, _cached_style(color))
-                elif prev_cat == _EQUIP:
-                    text.append(run_str, _th_secondary_style)
-                else:
-                    text.append(run_str, _STYLE_DIM555)
+                _flush_run(full_line[run_start:], prev_cat, run_start, len(full_line))
 
             lines.append(text)
 

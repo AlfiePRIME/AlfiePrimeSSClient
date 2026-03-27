@@ -555,6 +555,7 @@ class BoomBoxTUI:
                 bold=selected,
             ))
 
+            # Value column — all right-aligned to 8 chars wide
             if key == "auto_volume":
                 if value == -1:
                     val_str = "OFF"
@@ -562,25 +563,25 @@ class BoomBoxTUI:
                 else:
                     val_str = f"{value}%"
                     val_color = th.accent
-                item.append(f" {val_str:>6}", Style(color=val_color, bold=selected))
+                item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
                 if selected:
                     item.append("  ◂▸", Style(color="#555555"))
             elif key == "fps_limit":
-                item.append(f" {value:>4}", Style(color=th.accent, bold=selected))
+                item.append(f"{value:>8}", Style(color=th.accent, bold=selected))
                 if selected:
                     item.append("  ◂▸", Style(color="#555555"))
             elif key == "static_color":
                 if value:
-                    item.append(f" {value:>8}", Style(color=value, bold=selected))
+                    item.append(f"{value:>8}", Style(color=value, bold=selected))
                     item.append(" ██", Style(color=value))
                 else:
-                    item.append("     None", Style(color="#666666"))
+                    item.append(f"{'None':>8}", Style(color="#666666"))
                 if selected:
                     item.append("  Enter▸", Style(color="#555555"))
             elif key in ("auto_play", "show_artwork", "use_art_colors"):
                 val_str = "ON" if value else "OFF"
                 val_color = th.accent if value else "#666666"
-                item.append(f" {val_str:>6}", Style(color=val_color, bold=selected))
+                item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
 
             panel_lines.append(item)
             panel_lines.append(Text(""))

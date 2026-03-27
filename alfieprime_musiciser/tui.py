@@ -150,9 +150,10 @@ class BoomBoxTUI:
         ]
         self._settings_sub: str = ""  # "" = main, "advanced", "color_picker"
         self._advanced_cursor: int = 0
-        self._advanced_items: list[str] = ["client_name", "client_id"]
+        self._advanced_items: list[str] = ["client_name", "client_id", "reset_config"]
         self._advanced_editing: str = ""  # which field is being text-edited
         self._advanced_edit_buf: str = ""  # text input buffer
+        self._advanced_confirm_reset: bool = False  # reset confirmation dialog
         # Color picker state
         self._color_cursor: int = 0
         self._color_hex_editing: bool = False
@@ -160,6 +161,9 @@ class BoomBoxTUI:
         # Easter egg: 33% chance of menu dancers
         self._settings_dancers: bool = False
         self._settings_dancer_tick: float = 0.0
+        # Hint flash state: maps key label to flash start time
+        self._hint_flash: dict[str, float] = {}
+        self._hint_flash_duration: float = 0.4
         # Menu fade transition
         self._menu_fade_start: float = 0.0
         self._menu_fade_duration: float = 0.3
@@ -425,11 +429,19 @@ class BoomBoxTUI:
         ("White", "#ffffff"), ("Silver", "#aaaaaa"), ("Grey", "#555555"), ("Custom Hex", ""),
     ]
 
-    def _build_crt_background(self, term_w: int, term_h: int) -> list[Text]:
-        """Generate animated CRT scanline background lines."""
+    _SKULL_GLYPHS = "☠💀⚠☢☣⛔"
+
+    def _build_crt_background(self, term_w: int, term_h: int, danger: bool = False) -> list[Text]:
+        """Generate animated CRT scanline background lines.
+
+        If *danger* is True, scatter red-shaded skulls and warning signs through the static.
+        """
         t = time.time()
         th = self.state.theme
-        pr, pg, pb = _hex_to_rgb(th.primary)
+        if danger:
+            pr, pg, pb = 180, 0, 0  # red tint for danger background
+        else:
+            pr, pg, pb = _hex_to_rgb(th.primary)
         bg_lines: list[Text] = []
         for row in range(term_h):
             line = Text()
@@ -449,21 +461,60 @@ class BoomBoxTUI:
             br = 255 * flicker
             base_c = _safe_hex(br * 0.4 + pr * flicker * 0.3, br * 0.4 + pg * flicker * 0.3, br * 0.4 + pb * flicker * 0.3)
 
-            # Build chars with more visible noise
-            chars = []
-            for col in range(term_w):
-                noise = random.random()
-                # More noise near scanline
-                threshold = 0.06 + scan_glow * 0.3
-                if noise < threshold * 0.4:
-                    chars.append(random.choice("░▒▓"))
-                elif noise < threshold:
-                    chars.append(random.choice("·.╌"))
-                else:
-                    chars.append(" ")
-            line.append("".join(chars), Style(color=base_c))
+            if danger:
+                # Build line char-by-char, injecting red skulls/warnings at random
+                for col in range(term_w):
+                    noise = random.random()
+                    threshold = 0.06 + scan_glow * 0.3
+                    if noise < 0.012:
+                        # Skull / warning glyph in a random shade of red
+                        glyph = random.choice(self._SKULL_GLYPHS)
+                        shade = random.randint(80, 255)
+                        g_val = random.randint(0, shade // 4)
+                        line.append(glyph, Style(color=_safe_hex(shade, g_val, 0)))
+                    elif noise < threshold * 0.4:
+                        line.append(random.choice("░▒▓"), Style(color=base_c))
+                    elif noise < threshold:
+                        line.append(random.choice("·.╌"), Style(color=base_c))
+                    else:
+                        line.append(" ", Style(color=base_c))
+            else:
+                # Build chars with more visible noise
+                chars = []
+                for col in range(term_w):
+                    noise = random.random()
+                    # More noise near scanline
+                    threshold = 0.06 + scan_glow * 0.3
+                    if noise < threshold * 0.4:
+                        chars.append(random.choice("░▒▓"))
+                    elif noise < threshold:
+                        chars.append(random.choice("·.╌"))
+                    else:
+                        chars.append(" ")
+                line.append("".join(chars), Style(color=base_c))
             bg_lines.append(line)
         return bg_lines
+
+    def _hint_style(self, key: str, active: bool = False) -> Style:
+        """Return a style for a hint label. Green if active, flash accent on recent press, else dim."""
+        if active:
+            return Style(color="#66aa66")
+        flash_start = self._hint_flash.get(key, 0.0)
+        elapsed = time.time() - flash_start
+        if elapsed < self._hint_flash_duration:
+            th = self.state.theme
+            frac = elapsed / self._hint_flash_duration
+            r1, g1, b1 = _hex_to_rgb(th.accent)
+            r2, g2, b2 = 0x44, 0x44, 0x44
+            r = int(r1 + (r2 - r1) * frac)
+            g = int(g1 + (g2 - g1) * frac)
+            b = int(b1 + (b2 - b1) * frac)
+            return Style(color=_safe_hex(r, g, b), bold=frac < 0.3)
+        return Style(color="#444444")
+
+    def _flash_hint(self, key: str) -> None:
+        """Trigger a flash animation on a hint label."""
+        self._hint_flash[key] = time.time()
 
     def _get_menu_fade(self) -> float:
         """Return current menu opacity (0.0-1.0) based on fade state."""
@@ -713,16 +764,19 @@ class BoomBoxTUI:
         return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h, dancer_lines)
 
     def _build_advanced_layout(self) -> Group:
-        """Render advanced settings (client name, UUID) with CRT background."""
+        """Render advanced settings (client name, UUID, reset) with danger CRT background."""
         self._term_width, self._term_height = self._get_terminal_size()
         term_w = self._term_width
         term_h = self._term_height
         t = time.time()
-        th = self.state.theme
         cfg = self._config or Config()
 
         panel_w = 58
-        bg_lines = self._build_crt_background(term_w, term_h)
+        bg_lines = self._build_crt_background(term_w, term_h, danger=True)
+
+        # ── Reset confirmation overlay ──
+        if self._advanced_confirm_reset:
+            return self._build_reset_confirm_layout(bg_lines, panel_w, term_w, term_h, t)
 
         panel_lines: list[Text] = []
 
@@ -731,44 +785,12 @@ class BoomBoxTUI:
         r_val = int(180 + 75 * glow)
         title_c = _safe_hex(r_val, 0, 0)
 
-        # Danger sign animation — 4 phases, ~1.2s each:
-        #   0: fade in top, 1: fade out top, 2: fade in bottom, 3: fade out bottom
-        danger_cycle = 4.8  # total cycle length
-        danger_t = t % danger_cycle
-        danger_phase = int(danger_t / 1.2)  # 0-3
-        danger_frac = (danger_t - danger_phase * 1.2) / 1.2  # 0→1 within phase
-        # Compute opacity for top and bottom danger signs
-        if danger_phase == 0:
-            danger_top_alpha = danger_frac  # fade in top
-            danger_bot_alpha = 0.0
-        elif danger_phase == 1:
-            danger_top_alpha = 1.0 - danger_frac  # fade out top
-            danger_bot_alpha = 0.0
-        elif danger_phase == 2:
-            danger_top_alpha = 0.0
-            danger_bot_alpha = danger_frac  # fade in bottom
-        else:
-            danger_top_alpha = 0.0
-            danger_bot_alpha = 1.0 - danger_frac  # fade out bottom
-
-        # Top danger sign
-        if danger_top_alpha > 0.01:
-            dr = int(255 * danger_top_alpha)
-            dy = int(180 * danger_top_alpha)
-            danger_sign = Text(justify="center")
-            danger_sign.append("  ⚠  ", Style(color=_safe_hex(dr, dy, 0), bold=True))
-            danger_sign.append("DANGER", Style(color=_safe_hex(dr, 0, 0), bold=True))
-            danger_sign.append("  ⚠  ", Style(color=_safe_hex(dr, dy, 0), bold=True))
-            panel_lines.append(danger_sign)
-        else:
-            panel_lines.append(Text(""))
-
         title_line = Text(justify="center")
         title_line.append("━" * panel_w, Style(color=title_c, bold=True))
         panel_lines.append(title_line)
 
         header = Text(justify="center")
-        header.append(" ⚠ ADVANCED ⚠ ", Style(color=title_c, bold=True))
+        header.append(" ☠ ADVANCED ☠ ", Style(color=title_c, bold=True))
         panel_lines.append(header)
 
         title_line2 = Text(justify="center")
@@ -785,11 +807,24 @@ class BoomBoxTUI:
         adv_items: list[tuple[str, str, str]] = [
             ("Client Name", "client_name", cfg.client_name),
             ("Client UUID", "client_id", cfg.client_id),
+            ("Reset Config", "reset_config", ""),
         ]
 
         for i, (label, key, value) in enumerate(adv_items):
             item = Text()
             selected = i == self._advanced_cursor
+
+            if key == "reset_config":
+                # Special red destructive action
+                if selected:
+                    item.append("  ▸ ", Style(color="#ff0000", bold=True))
+                    item.append(f"☠ {label} ☠", Style(color="#ff2222", bold=True))
+                else:
+                    item.append("    ", Style(color="#444444"))
+                    item.append(f"☠ {label} ☠", Style(color="#882222"))
+                panel_lines.append(item)
+                panel_lines.append(Text(""))
+                continue
 
             if selected:
                 item.append("  ▸ ", Style(color="#ff4444", bold=True))
@@ -819,18 +854,6 @@ class BoomBoxTUI:
             panel_lines.append(item)
             panel_lines.append(Text(""))
 
-        # Bottom danger sign
-        if danger_bot_alpha > 0.01:
-            dr = int(255 * danger_bot_alpha)
-            dy = int(180 * danger_bot_alpha)
-            danger_sign_bot = Text(justify="center")
-            danger_sign_bot.append("  ⚠  ", Style(color=_safe_hex(dr, dy, 0), bold=True))
-            danger_sign_bot.append("DANGER", Style(color=_safe_hex(dr, 0, 0), bold=True))
-            danger_sign_bot.append("  ⚠  ", Style(color=_safe_hex(dr, dy, 0), bold=True))
-            panel_lines.append(danger_sign_bot)
-        else:
-            panel_lines.append(Text(""))
-
         # Footer
         footer = Text(justify="center")
         footer.append("━" * panel_w, Style(color="#661111"))
@@ -849,6 +872,74 @@ class BoomBoxTUI:
 
         dancer_lines = self._render_menu_dancers(panel_w)
         return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h, dancer_lines)
+
+    def _build_reset_confirm_layout(
+        self, bg_lines: list[Text], panel_w: int, term_w: int, term_h: int, t: float,
+    ) -> Group:
+        """Big ASCII art warning confirmation for config reset."""
+        panel_lines: list[Text] = []
+        glow = 0.5 + 0.5 * math.sin(t * 4)
+        r_val = int(180 + 75 * glow)
+        warn_c = _safe_hex(r_val, 0, 0)
+        dim_c = _safe_hex(r_val // 2, 0, 0)
+
+        ascii_warning = [
+            r"    ___   ___   ___  ",
+            r"   /   \ /   \ /   \ ",
+            r"  / /!\ | /!\ | /!\ \\",
+            r" / /_!_\ /_!_\ /_!_\ \\",
+            r" \_____/ \_____/ \_____/",
+        ]
+
+        panel_lines.append(Text(""))
+        for art_line in ascii_warning:
+            tl = Text(justify="center")
+            tl.append(art_line, Style(color=warn_c, bold=True))
+            panel_lines.append(tl)
+
+        panel_lines.append(Text(""))
+
+        title = Text(justify="center")
+        title.append("━" * panel_w, Style(color=warn_c, bold=True))
+        panel_lines.append(title)
+
+        msg = Text(justify="center")
+        msg.append(" RESET ALL CONFIGURATION? ", Style(color=warn_c, bold=True))
+        panel_lines.append(msg)
+
+        title2 = Text(justify="center")
+        title2.append("━" * panel_w, Style(color=warn_c, bold=True))
+        panel_lines.append(title2)
+
+        panel_lines.append(Text(""))
+
+        detail1 = Text(justify="center")
+        detail1.append("This will delete your config file", Style(color="#cc4444"))
+        panel_lines.append(detail1)
+
+        detail2 = Text(justify="center")
+        detail2.append("and restart the application.", Style(color="#cc4444"))
+        panel_lines.append(detail2)
+
+        panel_lines.append(Text(""))
+
+        detail3 = Text(justify="center")
+        detail3.append("You will need to re-run setup.", Style(color="#aa3333"))
+        panel_lines.append(detail3)
+
+        panel_lines.append(Text(""))
+        panel_lines.append(Text(""))
+
+        yn = Text(justify="center")
+        yn.append("[Y] ", Style(color="#ff0000", bold=True))
+        yn.append("Yes, reset  ", Style(color="#cc4444"))
+        yn.append("  [N] ", Style(color="#44ff44", bold=True))
+        yn.append("No, go back", Style(color="#44aa44"))
+        panel_lines.append(yn)
+
+        panel_lines.append(Text(""))
+
+        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
 
     def _build_color_picker_layout(self) -> Group:
         """Render color picker submenu with 16 presets + hex input."""
@@ -1062,19 +1153,16 @@ class BoomBoxTUI:
 
         # ── Key hint at bottom ──
         hint = Text()
-        hint.append(" [A]rt mode ", Style(color="#666666"))
-        if self._art_calm:
-            hint.append("[C]alm:ON ", Style(color="#66aa66"))
-        else:
-            hint.append("[C]alm ", Style(color="#444444"))
-        hint.append("[P]lay ", Style(color="#444444"))
-        hint.append("[N]ext ", Style(color="#444444"))
-        hint.append("[B]ack ", Style(color="#444444"))
-        hint.append("[S]huf ", Style(color="#444444"))
-        hint.append("[R]epeat ", Style(color="#444444"))
-        hint.append("[↑↓]Vol ", Style(color="#444444"))
-        hint.append("[/]Settings ", Style(color="#444444"))
-        hint.append("[Q]uit", Style(color="#444444"))
+        hint.append(" [A]rt ", self._hint_style("a", active=self._art_mode))
+        hint.append("[C]alm ", self._hint_style("c", active=self._art_calm))
+        hint.append("[P]lay ", self._hint_style("p"))
+        hint.append("[N]ext ", self._hint_style("n"))
+        hint.append("[B]ack ", self._hint_style("b"))
+        hint.append("[S]huf ", self._hint_style("s", active=self.state.shuffle))
+        hint.append("[R]epeat ", self._hint_style("r", active=self.state.repeat_mode != "off"))
+        hint.append("[↑↓]Vol ", self._hint_style("vol"))
+        hint.append("[/]Settings ", self._hint_style("/"))
+        hint.append("[Q]uit", self._hint_style("q"))
         parts.append(hint)
 
         return Group(*parts)
@@ -1272,6 +1360,11 @@ class BoomBoxTUI:
 
         # ── Settings menu controls ──
         if self._settings_open:
+            # 'w' exits settings from any submenu (unless editing text)
+            if k == "w" and not self._advanced_editing and not self._color_hex_editing and not self._advanced_confirm_reset:
+                self._settings_sub = ""
+                self._start_menu_fade_out(lambda: setattr(self, '_settings_open', False))
+                return
             if self._settings_sub == "advanced":
                 self._handle_advanced_key(k, key)
             elif self._settings_sub == "color_picker":
@@ -1291,14 +1384,19 @@ class BoomBoxTUI:
 
         if k == "p":
             self._fire_command("play_pause")
+            self._flash_hint("p")
         elif k == "n":
             self._fire_command("next")
+            self._flash_hint("n")
         elif k == "b":
             self._fire_command("previous")
+            self._flash_hint("b")
         elif k == "s":
             self._fire_command("shuffle")
+            self._flash_hint("s")
         elif k == "r":
             self._fire_command("repeat")
+            self._flash_hint("r")
         elif k == "a":
             from_mode = self._get_current_mode_name()
             self._art_mode = not self._art_mode
@@ -1315,10 +1413,13 @@ class BoomBoxTUI:
             to_mode = self._get_current_mode_name()
             if from_mode != to_mode:
                 self._start_transition(from_mode, to_mode)
+            self._flash_hint("c")
         elif k == "arrow_up":
             self._fire_command("volume_up")
+            self._flash_hint("vol")
         elif k == "arrow_down":
             self._fire_command("volume_down")
+            self._flash_hint("vol")
 
     def _handle_settings_main_key(self, k: str) -> None:
         """Handle keys in the main settings menu."""
@@ -1343,6 +1444,20 @@ class BoomBoxTUI:
 
     def _handle_advanced_key(self, k: str, raw_key: str) -> None:
         """Handle keys in the advanced settings submenu."""
+        # ── Reset confirmation dialog ──
+        if self._advanced_confirm_reset:
+            if k == "y":
+                from alfieprime_musiciser.config import CONFIG_FILE
+                try:
+                    CONFIG_FILE.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                # Restart the application
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            elif k in ("n", "escape", "/"):
+                self._advanced_confirm_reset = False
+            return
+
         if self._advanced_editing:
             # Text editing mode
             if k == "escape":
@@ -1373,6 +1488,9 @@ class BoomBoxTUI:
             self._advanced_cursor = (self._advanced_cursor + 1) % len(self._advanced_items)
         elif k in (" ", "\r", "\n"):
             field = self._advanced_items[self._advanced_cursor]
+            if field == "reset_config":
+                self._advanced_confirm_reset = True
+                return
             cfg = self._config or Config()
             self._advanced_editing = field
             if field == "client_name":

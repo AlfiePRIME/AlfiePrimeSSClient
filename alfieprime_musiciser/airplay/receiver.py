@@ -462,6 +462,13 @@ class AirPlayReceiver:
         # Configure global data structures (device_info, mdns_props, etc.)
         logger.info("AirPlay: initialising global structs...")
         try:
+            import ap2.pairing.hap as _hap_mod  # type: ignore[import-untyped]
+            # Redirect pairing store to a proper data directory
+            pairings_dir = os.path.join(_LOG_DIR, "pairings") + os.sep
+            os.makedirs(pairings_dir, exist_ok=True)
+            _hap_mod.PAIRING_STORE = pairings_dir
+            logger.debug("AirPlay: pairing store: %s", pairings_dir)
+
             from ap2.pairing.hap import DeviceProperties  # type: ignore[import-untyped]
             ap2mod.DEV_PROPS = DeviceProperties(ap2mod.PI, False)
             logger.debug("AirPlay: DeviceProperties created with PI=%s", ap2mod.PI)

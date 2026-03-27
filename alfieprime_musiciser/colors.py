@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 try:
     from PIL import Image
@@ -13,13 +14,28 @@ logger = logging.getLogger(__name__)
 # ─── Album Art Color Theme ────────────────────────────────────────────────────
 
 
+_rgb_to_hex_cache: dict[tuple[int, int, int], str] = {}
+_hex_to_rgb_cache: dict[str, tuple[int, int, int]] = {}
+
+
 def _rgb_to_hex(r: int, g: int, b: int) -> str:
-    return f"#{r:02x}{g:02x}{b:02x}"
+    key = (r, g, b)
+    cached = _rgb_to_hex_cache.get(key)
+    if cached is not None:
+        return cached
+    result = f"#{r:02x}{g:02x}{b:02x}"
+    _rgb_to_hex_cache[key] = result
+    return result
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    cached = _hex_to_rgb_cache.get(hex_color)
+    if cached is not None:
+        return cached
     h = hex_color.lstrip("#")
-    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    result = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    _hex_to_rgb_cache[hex_color] = result
+    return result
 
 
 def _color_brightness(r: int, g: int, b: int) -> float:
@@ -45,21 +61,39 @@ def _boost_color(r: int, g: int, b: int, min_brightness: int = 80) -> tuple[int,
     return r, g, b
 
 
+_lerp_color_cache: dict[tuple[str, str, int], str] = {}
+
+
 def _lerp_color(hex1: str, hex2: str, t: float) -> str:
     """Linearly interpolate between two hex colors."""
+    # Quantize t to ~256 steps for cache reuse
+    t_q = int(t * 255.0 + 0.5)
+    key = (hex1, hex2, t_q)
+    cached = _lerp_color_cache.get(key)
+    if cached is not None:
+        return cached
     r1, g1, b1 = _hex_to_rgb(hex1)
     r2, g2, b2 = _hex_to_rgb(hex2)
-    r = int(r1 + (r2 - r1) * t)
-    g = int(g1 + (g2 - g1) * t)
-    b = int(b1 + (b2 - b1) * t)
-    return _rgb_to_hex(r, g, b)
+    frac = t_q / 255.0
+    r = int(r1 + (r2 - r1) * frac)
+    g = int(g1 + (g2 - g1) * frac)
+    b = int(b1 + (b2 - b1) * frac)
+    result = _rgb_to_hex(r, g, b)
+    _lerp_color_cache[key] = result
+    return result
 
 
-def _hsv_to_rgb(h: float, s: float, v: float) -> tuple[float, float, float]:
-    if s == 0.0:
+@lru_cache(maxsize=4096)
+def _hsv_to_rgb_cached(h_q: int, s_q: int, v_q: int) -> tuple[float, float, float]:
+    """LRU-cached HSV->RGB with pre-quantized integer inputs (0-255 each)."""
+    h = h_q / 255.0
+    s = s_q / 255.0
+    v = v_q / 255.0
+    if s_q == 0:
         return v, v, v
-    i = int(h * 6.0)
-    f = (h * 6.0) - i
+    h6 = h * 6.0
+    i = int(h6)
+    f = h6 - i
     p = v * (1.0 - s)
     q = v * (1.0 - s * f)
     t = v * (1.0 - s * (1.0 - f))
@@ -75,6 +109,15 @@ def _hsv_to_rgb(h: float, s: float, v: float) -> tuple[float, float, float]:
     if i == 4:
         return t, p, v
     return v, p, q
+
+
+def _hsv_to_rgb(h: float, s: float, v: float) -> tuple[float, float, float]:
+    # Quantize to ~256 steps per channel for cache efficiency
+    return _hsv_to_rgb_cached(
+        int(h * 255.0 + 0.5),
+        int(s * 255.0 + 0.5),
+        int(v * 255.0 + 0.5),
+    )
 
 
 @dataclass

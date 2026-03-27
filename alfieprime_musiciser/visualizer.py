@@ -27,6 +27,9 @@ class AudioVisualizer:
         self._vu_left = 0.0
         self._vu_right = 0.0
         self._window = np.hanning(FFT_SIZE).astype(np.float32)
+        # Pre-computed band bin boundaries (recomputed on sample rate change)
+        self._band_bins: list[tuple[int, int]] | None = None
+        self._band_bins_sr = 0  # sample rate these were computed for
         # AGC: track recent peak dB to auto-scale spectrum sensitivity
         self._agc_peak_db = -60.0  # current tracked peak level in dB
         self._agc_floor_db = -60.0  # noise floor in dB
@@ -191,15 +194,23 @@ class AudioVisualizer:
         spectrum = np.abs(np.fft.rfft(windowed))
 
         n_bins = len(spectrum)
-        band_levels = np.zeros(NUM_BANDS)
 
-        freq_min = 20.0
-        freq_max = self._sample_rate / 2.0
-        for i in range(NUM_BANDS):
-            f_low = freq_min * (freq_max / freq_min) ** (i / NUM_BANDS)
-            f_high = freq_min * (freq_max / freq_min) ** ((i + 1) / NUM_BANDS)
-            bin_low = max(1, int(f_low * FFT_SIZE / self._sample_rate))
-            bin_high = min(n_bins - 1, int(f_high * FFT_SIZE / self._sample_rate))
+        # Lazily compute band bin boundaries (only recompute when sample rate changes)
+        if self._band_bins is None or self._band_bins_sr != self._sample_rate:
+            freq_min = 20.0
+            freq_max = self._sample_rate / 2.0
+            ratio = freq_max / freq_min
+            self._band_bins = []
+            for i in range(NUM_BANDS):
+                f_low = freq_min * ratio ** (i / NUM_BANDS)
+                f_high = freq_min * ratio ** ((i + 1) / NUM_BANDS)
+                bin_low = max(1, int(f_low * FFT_SIZE / self._sample_rate))
+                bin_high = min(n_bins - 1, int(f_high * FFT_SIZE / self._sample_rate))
+                self._band_bins.append((bin_low, bin_high))
+            self._band_bins_sr = self._sample_rate
+
+        band_levels = np.zeros(NUM_BANDS)
+        for i, (bin_low, bin_high) in enumerate(self._band_bins):
             if bin_high > bin_low:
                 band_levels[i] = np.mean(spectrum[bin_low:bin_high])
             elif bin_low < n_bins:
@@ -233,7 +244,7 @@ class AudioVisualizer:
         # Beat detection via spectral flux (onset detection) in bass range
         bass_bin_low = max(1, int(20 * FFT_SIZE / self._sample_rate))
         bass_bin_high = min(n_bins - 1, int(250 * FFT_SIZE / self._sample_rate))
-        bass_spectrum = spectrum[bass_bin_low:bass_bin_high].copy()
+        bass_spectrum = spectrum[bass_bin_low:bass_bin_high]
 
         if self._prev_bass_spectrum is not None and len(self._prev_bass_spectrum) == len(bass_spectrum):
             diff = bass_spectrum - self._prev_bass_spectrum

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from functools import lru_cache
 
 from rich.style import Style
 from rich.text import Text
@@ -25,32 +26,81 @@ from alfieprime_musiciser.colors import (
     _hex_to_rgb, _lerp_color, _rgb_to_hex, _hsv_to_rgb,
 )
 
+# ─── Performance: cached helpers ─────────────────────────────────────────────
+
+# Pre-computed hex lookup table: index 0-255 → two-char hex string
+_HEX_LUT = [f"{i:02x}" for i in range(256)]
+
+
+def _fast_rgb_hex(r: float, g: float, b: float) -> str:
+    """Convert float (0-1) RGB to hex string using lookup table."""
+    ri = min(255, int(r * 255))
+    gi = min(255, int(g * 255))
+    bi = min(255, int(b * 255))
+    return f"#{_HEX_LUT[ri]}{_HEX_LUT[gi]}{_HEX_LUT[bi]}"
+
+
+def _fast_rgb_hex_int(r: int, g: int, b: int) -> str:
+    """Convert int (0-255) RGB to hex string using lookup table."""
+    return f"#{_HEX_LUT[r]}{_HEX_LUT[g]}{_HEX_LUT[b]}"
+
+
+@lru_cache(maxsize=1024)
+def _cached_style(color: str, bold: bool = False, dim: bool = False,
+                  italic: bool = False) -> Style:
+    """Return a cached Style object for the given parameters."""
+    return Style(color=color, bold=bold, dim=dim, italic=italic)
+
+
+# Quantize a float to 512 steps for cache-friendly lookups
+def _quantize(pos: float, steps: int = 512) -> float:
+    return int(pos * steps) / steps
+
+
+@lru_cache(maxsize=512)
+def _rainbow_color_cached(qpos: float) -> str:
+    h = qpos % 1.0
+    r, g, b = _hsv_to_rgb(h, 1.0, 1.0)
+    return _fast_rgb_hex(r, g, b)
+
+
+@lru_cache(maxsize=512)
+def _theme_color_cached(qpos: float, spectrum_key: tuple[str, ...]) -> str:
+    colors = spectrum_key
+    if not colors:
+        return _rainbow_color_cached(qpos)
+    p = qpos % 1.0
+    idx_f = p * (len(colors) - 1)
+    lo = int(idx_f)
+    hi = min(lo + 1, len(colors) - 1)
+    frac = idx_f - lo
+    return _lerp_color(colors[lo], colors[hi], frac)
+
+
 # ─── Renderer ────────────────────────────────────────────────────────────────
 
 LIGHT_CHARS = ["◉", "◈", "✦", "✧", "◆", "◇", "⬥", "⬦"]
 
+# Commonly reused styles
+_STYLE_EMPTY = Style()
+_STYLE_HINT = _cached_style("#444444")
+_STYLE_DIM555 = _cached_style("#555555")
+_STYLE_BORDER444 = _cached_style("#444444")
+
 
 def _rainbow_color(pos: float) -> str:
-    h = pos % 1.0
-    r, g, b = _hsv_to_rgb(h, 1.0, 1.0)
-    return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+    return _rainbow_color_cached(_quantize(pos))
 
 
 def _theme_color(pos: float, theme: ColorTheme | None) -> str:
     """Animated color: lerp through the theme's spectrum if album art is present,
     otherwise fall back to full rainbow."""
     if theme is None or theme is _default_theme:
-        return _rainbow_color(pos)
+        return _rainbow_color_cached(_quantize(pos))
     colors = theme.spectrum_colors
     if not colors:
-        return _rainbow_color(pos)
-    # Map pos (0-1 looping) into the spectrum list with smooth interpolation
-    p = pos % 1.0
-    idx_f = p * (len(colors) - 1)
-    lo = int(idx_f)
-    hi = min(lo + 1, len(colors) - 1)
-    frac = idx_f - lo
-    return _lerp_color(colors[lo], colors[hi], frac)
+        return _rainbow_color_cached(_quantize(pos))
+    return _theme_color_cached(_quantize(pos), tuple(colors))
 
 
 def render_title_banner(width: int, theme: ColorTheme | None = None) -> Text:
@@ -61,16 +111,16 @@ def render_title_banner(width: int, theme: ColorTheme | None = None) -> Text:
     for i in range(4):
         char = LIGHT_CHARS[int((t * 3 + i) % len(LIGHT_CHARS))]
         color = _theme_color((t * 0.5 + i * 0.1) % 1.0, theme)
-        text.append(f" {char}", Style(color=color, bold=True))
+        text.append(f" {char}", _cached_style(color, bold=True))
 
     for i, ch in enumerate(title):
         color = _theme_color((t * 0.3 + i * 0.04) % 1.0, theme)
-        text.append(ch, Style(color=color, bold=True))
+        text.append(ch, _cached_style(color, bold=True))
 
     for i in range(4):
         char = LIGHT_CHARS[int((t * 3 + i + 4) % len(LIGHT_CHARS))]
         color = _theme_color((t * 0.5 + (i + 4) * 0.1) % 1.0, theme)
-        text.append(f"{char} ", Style(color=color, bold=True))
+        text.append(f"{char} ", _cached_style(color, bold=True))
 
     return text
 
@@ -88,29 +138,29 @@ def render_transport_controls(
 
     def _add_button(name: str, label: str, color: str, dim: bool = False) -> None:
         start = text.cell_len
-        style = Style(color=color, bold=not dim, dim=dim)
+        style = _cached_style(color, bold=not dim, dim=dim)
         text.append(f" {label} ", style)
         buttons[name] = (start, text.cell_len)
 
     # Shuffle
     shuf_color = th.accent if shuffle else th.primary_dim
     _add_button("shuffle", "\u21c4", shuf_color, dim="shuffle" not in cmds and "unshuffle" not in cmds)
-    text.append(" ", Style())
+    text.append(" ", _STYLE_EMPTY)
 
     # Previous
     _add_button("previous", "\u23ee", "#aaaaaa", dim="previous" not in cmds)
-    text.append(" ", Style())
+    text.append(" ", _STYLE_EMPTY)
 
     # Play / Pause
     if is_playing:
         _add_button("play_pause", "\u23f8", th.accent, dim="pause" not in cmds)
     else:
         _add_button("play_pause", "\u25b6", th.accent, dim="play" not in cmds)
-    text.append(" ", Style())
+    text.append(" ", _STYLE_EMPTY)
 
     # Next
     _add_button("next", "\u23ed", "#aaaaaa", dim="next" not in cmds)
-    text.append(" ", Style())
+    text.append(" ", _STYLE_EMPTY)
 
     # Repeat
     if repeat_mode == "one":
@@ -122,13 +172,13 @@ def render_transport_controls(
     _add_button("repeat", rep_label, rep_color, dim="repeat_off" not in cmds)
 
     # Key hints
-    text.append("   ", Style())
-    text.append("[S]huf ", Style(color="#444444"))
-    text.append("[B]ack ", Style(color="#444444"))
-    text.append("[P]lay ", Style(color="#444444"))
-    text.append("[N]ext ", Style(color="#444444"))
-    text.append("[R]epeat ", Style(color="#444444"))
-    text.append("[↑↓]Vol", Style(color="#444444"))
+    text.append("   ", _STYLE_EMPTY)
+    text.append("[S]huf ", _STYLE_HINT)
+    text.append("[B]ack ", _STYLE_HINT)
+    text.append("[P]lay ", _STYLE_HINT)
+    text.append("[N]ext ", _STYLE_HINT)
+    text.append("[R]epeat ", _STYLE_HINT)
+    text.append("[↑↓]Vol", _STYLE_HINT)
 
     return text, buttons
 
@@ -145,19 +195,19 @@ def render_now_playing(
     track_text = title or "No Track"
 
     line = Text()
-    line.append("  \u266b ", Style(color=th.primary, bold=True))
+    line.append("  \u266b ", _cached_style(th.primary, bold=True))
     for i, ch in enumerate(track_text):
         color = _theme_color((t * 0.2 + i * 0.05) % 1.0, theme)
-        line.append(ch, Style(color=color, bold=True))
+        line.append(ch, _cached_style(color, bold=True))
     lines.append(line)
 
     if artist:
         line = Text()
-        line.append("    ", Style())
-        line.append(artist, Style(color=th.secondary, bold=True))
+        line.append("    ", _STYLE_EMPTY)
+        line.append(artist, _cached_style(th.secondary, bold=True))
         if album:
-            line.append(" \u2014 ", Style(color="#666666"))
-            line.append(album, Style(color="#888888", italic=True))
+            line.append(" \u2014 ", _cached_style("#666666"))
+            line.append(album, _cached_style("#888888", italic=True))
         lines.append(line)
 
     prog_width = max(width - 20, 20)
@@ -166,18 +216,18 @@ def render_now_playing(
     empty = prog_width - filled
 
     line = Text()
-    line.append("  [", Style(color="#555555"))
-    line.append("=" * max(0, filled - 1), Style(color=th.accent))
+    line.append("  [", _STYLE_DIM555)
+    line.append("=" * max(0, filled - 1), _cached_style(th.accent))
     if filled > 0:
-        line.append(">", Style(color="#ffffff", bold=True))
-    line.append("\u2500" * empty, Style(color="#333333"))
-    line.append("] ", Style(color="#555555"))
+        line.append(">", _cached_style("#ffffff", bold=True))
+    line.append("\u2500" * empty, _cached_style("#333333"))
+    line.append("] ", _STYLE_DIM555)
 
     cur_min, cur_sec = divmod(progress_ms // 1000, 60)
     tot_min, tot_sec = divmod(duration_ms // 1000, 60)
-    line.append(f"{cur_min}:{cur_sec:02d}", Style(color=th.accent))
-    line.append("/", Style(color="#555555"))
-    line.append(f"{tot_min}:{tot_sec:02d}", Style(color="#888888"))
+    line.append(f"{cur_min}:{cur_sec:02d}", _cached_style(th.accent))
+    line.append("/", _STYLE_DIM555)
+    line.append(f"{tot_min}:{tot_sec:02d}", _cached_style("#888888"))
     lines.append(line)
 
     return lines
@@ -195,14 +245,14 @@ def render_spectrum(
     pad_left = max(0, (width - total_bar_width) // 2)
     lines: list[Text] = []
     n_spec = len(spec_colors) - 1
-    bg_style = Style(color=th.bg_subtle)
-    peak_style = Style(color="#ffffff", bold=True)
+    bg_style = _cached_style(th.bg_subtle)
+    peak_style = _cached_style("#ffffff", bold=True)
     # Precompute per-row: threshold, color, bar/peak strings
     bar_str = "\u2588" * bar_w
     peak_str = "\u2594" * bar_w
     dot_str = "\u00b7" * bar_w
     row_colors = [
-        Style(color=spec_colors[min(int((height - 1 - row) / height * n_spec), n_spec)], bold=True)
+        _cached_style(spec_colors[min(int((height - 1 - row) / height * n_spec), n_spec)], bold=True)
         for row in range(height)
     ]
 
@@ -240,6 +290,51 @@ def reset_vu_peaks() -> None:
     _vu_peaks.clear()
 
 
+# Cache for VU meter gradient base colors: (theme_id, meter_width) → list of (r,g,b) tuples
+_vu_gradient_cache: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
+# Cache for VU meter background styles: meter_width → list of Style
+_vu_bg_cache: dict[int, list[Style]] = {}
+
+
+def _get_vu_gradient(th: ColorTheme, meter_width: int) -> list[tuple[int, int, int]]:
+    """Return pre-computed gradient base colors for VU meter (theme-dependent, not time-dependent)."""
+    key = (id(th), meter_width)
+    cached = _vu_gradient_cache.get(key)
+    if cached is not None:
+        return cached
+    gradient: list[tuple[int, int, int]] = []
+    denom = max(meter_width - 1, 1)
+    for i in range(meter_width):
+        ratio = i / denom
+        if ratio < 0.4:
+            c = _lerp_color(th.accent, th.warm, ratio / 0.4)
+        elif ratio < 0.7:
+            c = _lerp_color(th.warm, th.primary, (ratio - 0.4) / 0.3)
+        elif ratio < 0.85:
+            c = _lerp_color(th.primary, th.highlight, (ratio - 0.7) / 0.15)
+        else:
+            c = _lerp_color(th.highlight, "#ff2222", (ratio - 0.85) / 0.15)
+        gradient.append(_hex_to_rgb(c))
+    _vu_gradient_cache[key] = gradient
+    return gradient
+
+
+def _get_vu_bg_styles(meter_width: int) -> list[Style]:
+    """Return pre-computed background styles for VU meter (position-only dependent)."""
+    cached = _vu_bg_cache.get(meter_width)
+    if cached is not None:
+        return cached
+    styles: list[Style] = []
+    denom = max(meter_width - 1, 1)
+    for i in range(meter_width):
+        ratio = i / denom
+        bg_bright = 0.06 + 0.04 * ratio
+        v = int(255 * bg_bright)
+        styles.append(_cached_style(_fast_rgb_hex_int(v, v, v)))
+    _vu_bg_cache[meter_width] = styles
+    return styles
+
+
 def render_vu_meter(
     level: float, width: int, label: str, color: str,
     theme: ColorTheme | None = None,
@@ -272,40 +367,34 @@ def render_vu_meter(
     peak_pos = min(int(peak_val * meter_width), meter_width - 1)
 
     text = Text()
-    text.append(f" {label} ", Style(color=color, bold=True))
-    text.append("\u2590", Style(color="#444444"))
+    text.append(f" {label} ", _cached_style(color, bold=True))
+    text.append("\u2590", _STYLE_BORDER444)
+
+    # Pre-fetch cached gradient and bg styles
+    gradient = _get_vu_gradient(th, meter_width)
+    bg_styles = _get_vu_bg_styles(meter_width)
+    _sin = math.sin
+    _lut = _HEX_LUT
 
     for i in range(meter_width):
-        ratio = i / max(meter_width - 1, 1)
         if i == peak_pos and peak_val > 0.01:
             # Peak marker — bright white/yellow flash
-            flash = 0.7 + 0.3 * math.sin(t * 8)
+            flash = 0.7 + 0.3 * _sin(t * 8)
             br = int(255 * flash)
-            text.append("\u2588", Style(color=f"#{br:02x}{br:02x}{min(255, br):02x}", bold=True))
+            brc = min(255, br)
+            text.append("\u2588", _cached_style(f"#{_lut[br]}{_lut[br]}{_lut[brc]}", bold=True))
         elif i < filled:
-            # Smooth gradient across full width with shimmer
-            if ratio < 0.4:
-                c = _lerp_color(th.accent, th.warm, ratio / 0.4)
-            elif ratio < 0.7:
-                c = _lerp_color(th.warm, th.primary, (ratio - 0.4) / 0.3)
-            elif ratio < 0.85:
-                c = _lerp_color(th.primary, th.highlight, (ratio - 0.7) / 0.15)
-            else:
-                c = _lerp_color(th.highlight, "#ff2222", (ratio - 0.85) / 0.15)
-            # Subtle shimmer on active bars
-            shimmer = 0.85 + 0.15 * math.sin(t * 6 + i * 0.4)
-            cr, cg, cb = _hex_to_rgb(c)
+            # Apply shimmer to pre-computed gradient base color
+            shimmer = 0.85 + 0.15 * _sin(t * 6 + i * 0.4)
+            cr, cg, cb = gradient[i]
             cr = min(255, int(cr * shimmer))
             cg = min(255, int(cg * shimmer))
             cb = min(255, int(cb * shimmer))
-            text.append("\u2588", Style(color=_rgb_to_hex(cr, cg, cb)))
+            text.append("\u2588", _cached_style(f"#{_lut[cr]}{_lut[cg]}{_lut[cb]}"))
         else:
-            # Dark background with faint gradient hint
-            bg_bright = 0.06 + 0.04 * ratio
-            v = int(255 * bg_bright)
-            text.append("\u2591", Style(color=f"#{v:02x}{v:02x}{v:02x}"))
+            text.append("\u2591", bg_styles[i])
 
-    text.append("\u258c", Style(color="#444444"))
+    text.append("\u258c", _STYLE_BORDER444)
     return text
 
 
@@ -327,9 +416,12 @@ def render_volume_gauge(
     dial_w = max(width - 14, 8)
     needle_pos = int(ratio * (dial_w - 1))
 
+    _style_333 = _cached_style("#333333")
+    _style_666 = _cached_style("#666666")
+
     line = Text()
-    line.append(" VOL ", Style(color=th.warm, bold=True))
-    line.append("╭", Style(color="#555555"))
+    line.append(" VOL ", _cached_style(th.warm, bold=True))
+    line.append("╭", _STYLE_DIM555)
 
     for i in range(dial_w):
         tick_ratio = i / max(dial_w - 1, 1)
@@ -337,8 +429,9 @@ def render_volume_gauge(
             # Needle — pulsing brightness
             pulse = 0.7 + 0.3 * math.sin(t * 4)
             br = int(255 * pulse)
-            c = f"#{br:02x}{br:02x}{min(255, br + 40):02x}"
-            line.append("▼", Style(color=c, bold=True))
+            brc = min(255, br + 40)
+            c = f"#{_HEX_LUT[br]}{_HEX_LUT[br]}{_HEX_LUT[brc]}"
+            line.append("▼", _cached_style(c, bold=True))
         elif tick_ratio <= ratio and not muted:
             # Filled portion — fixed green → yellow → orange → red
             if tick_ratio < 0.5:
@@ -347,43 +440,43 @@ def render_volume_gauge(
                 c = _lerp_color("#cccc00", "#ff8800", (tick_ratio - 0.5) / 0.3)
             else:
                 c = _lerp_color("#ff8800", "#ff2222", (tick_ratio - 0.8) / 0.2)
-            line.append("━", Style(color=c))
+            line.append("━", _cached_style(c))
         else:
-            line.append("─", Style(color="#333333"))
+            line.append("─", _style_333)
 
-    line.append("╮", Style(color="#555555"))
+    line.append("╮", _STYLE_DIM555)
     lines.append(line)
 
     # ── Row 2: Scale markings + percentage ──
     line2 = Text()
-    line2.append("     ", Style())  # align with "VOL " above
-    line2.append("╰", Style(color="#555555"))
+    line2.append("     ", _STYLE_EMPTY)  # align with "VOL " above
+    line2.append("╰", _STYLE_DIM555)
 
     # Scale ticks at 0, 25, 50, 75, 100
-    scale_chars: list[tuple[str, str]] = []
+    scale_chars: list[tuple[str, Style]] = []
     for i in range(dial_w):
         tick_ratio = i / max(dial_w - 1, 1)
         pct = int(tick_ratio * 100)
         if pct in (0, 25, 50, 75, 100) and abs(tick_ratio * (dial_w - 1) - i) < 0.5:
-            scale_chars.append(("┼", "#666666"))
+            scale_chars.append(("┼", _style_666))
         else:
-            scale_chars.append(("─", "#333333"))
+            scale_chars.append(("─", _style_333))
 
-    for ch, c in scale_chars:
-        line2.append(ch, Style(color=c))
-    line2.append("╯", Style(color="#555555"))
+    for ch, s in scale_chars:
+        line2.append(ch, s)
+    line2.append("╯", _STYLE_DIM555)
 
     # Volume percentage / muted indicator
     if muted:
         # Flashing mute indicator
         flash = int(t * 3) % 2 == 0
         if flash:
-            line2.append(" MUTE", Style(color="#ff2222", bold=True))
+            line2.append(" MUTE", _cached_style("#ff2222", bold=True))
         else:
-            line2.append(" MUTE", Style(color="#661111", bold=True))
+            line2.append(" MUTE", _cached_style("#661111", bold=True))
     else:
         vol_color = "#00cc00" if vol < 50 else ("#ff8800" if vol < 80 else "#ff2222")
-        line2.append(f" {vol}%", Style(color=vol_color, bold=True))
+        line2.append(f" {vol}%", _cached_style(vol_color, bold=True))
 
     lines.append(line2)
 
@@ -392,12 +485,17 @@ def render_volume_gauge(
         bar_w = max(width - 4, 10)
         filled = int(ratio * bar_w) if not muted else 0
         bar = Text()
-        bar.append("  ", Style())
+        bar.append("  ", _STYLE_EMPTY)
+        _style_bg_bar = _cached_style("#1a1a1a")
+        _lut = _HEX_LUT
+        _sin = math.sin
+        # Pre-compute base gradient colors for the bar
+        bar_denom = max(bar_w - 1, 1)
         for i in range(bar_w):
             if i < filled:
-                tick_r = i / max(bar_w - 1, 1)
+                tick_r = i / bar_denom
                 # Animated shimmer
-                shimmer = 0.7 + 0.3 * math.sin(t * 6 + i * 0.3)
+                shimmer = 0.7 + 0.3 * _sin(t * 6 + i * 0.3)
                 if tick_r < 0.5:
                     base = _lerp_color("#00cc00", "#cccc00", tick_r * 2)
                 elif tick_r < 0.8:
@@ -409,12 +507,19 @@ def render_volume_gauge(
                 br = int(min(255, br * shimmer))
                 bg = int(min(255, bg * shimmer))
                 bb = int(min(255, bb * shimmer))
-                bar.append("█", Style(color=_rgb_to_hex(br, bg, bb)))
+                bar.append("█", _cached_style(f"#{_lut[br]}{_lut[bg]}{_lut[bb]}"))
             else:
-                bar.append("░", Style(color="#1a1a1a"))
+                bar.append("░", _style_bg_bar)
         lines.append(bar)
 
     return lines
+
+
+@lru_cache(maxsize=256)
+def _hsv_to_hex_cached(qhue: float, sat: float, qval: float) -> str:
+    """Cached HSV→hex with quantized inputs."""
+    r, g, b = _hsv_to_rgb(qhue, sat, qval)
+    return _fast_rgb_hex(r, g, b)
 
 
 def render_party_lights(width: int, vu_left: float, vu_right: float) -> Text:
@@ -422,19 +527,25 @@ def render_party_lights(width: int, vu_left: float, vu_right: float) -> Text:
     avg_level = (vu_left + vu_right) / 2.0
     text = Text()
     num_lights = max(width, 10)
+    _sin = math.sin
+    _lut = _HEX_LUT
+    inv_num = 1.0 / num_lights
+    n_lc = len(LIGHT_CHARS)
 
     for i in range(num_lights):
-        char_idx = int((t * 4 + i * 0.7) % len(LIGHT_CHARS))
+        char_idx = int((t * 4 + i * 0.7) % n_lc)
         char = LIGHT_CHARS[char_idx]
 
-        hue = (t * 0.3 + i / num_lights) % 1.0
+        hue = (t * 0.3 + i * inv_num) % 1.0
         brightness = 0.3 + 0.7 * avg_level
-        pulse = 0.5 + 0.5 * math.sin(t * 6 + i * 0.8)
+        pulse = 0.5 + 0.5 * _sin(t * 6 + i * 0.8)
         brightness *= 0.7 + 0.3 * pulse
 
-        r, g, b = _hsv_to_rgb(hue, 1.0, min(brightness, 1.0))
-        color = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
-        text.append(char, Style(color=color, bold=True))
+        # Quantize hue and brightness for cache hits
+        qhue = int(hue * 256) / 256
+        qval = int(min(brightness, 1.0) * 64) / 64
+        color = _hsv_to_hex_cached(qhue, 1.0, qval)
+        text.append(char, _cached_style(color, bold=True))
 
     return text
 
@@ -449,19 +560,21 @@ def render_stereo_lights(width: int, vu_left: float, vu_right: float) -> Text:
         dist_from_center = (half - i) / half
         intensity = min(max(0, vu_left - dist_from_center * 0.5) * 2, 1.0)
         hue = (t * 0.2 + i * 0.03) % 1.0
-        r, g, b = _hsv_to_rgb(hue, 1.0, 0.2 + 0.8 * intensity)
-        color = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
-        text.append("●" if intensity > 0.3 else "○", Style(color=color))
+        qhue = int(hue * 256) / 256
+        qval = int((0.2 + 0.8 * intensity) * 64) / 64
+        color = _hsv_to_hex_cached(qhue, 1.0, qval)
+        text.append("●" if intensity > 0.3 else "○", _cached_style(color))
 
-    text.append(center_str, Style(color=_rainbow_color(t * 0.5), bold=True))
+    text.append(center_str, _cached_style(_rainbow_color(t * 0.5), bold=True))
 
     for i in range(half):
         dist_from_center = i / half
         intensity = min(max(0, vu_right - dist_from_center * 0.5) * 2, 1.0)
         hue = (t * 0.2 + (half + i) * 0.03) % 1.0
-        r, g, b = _hsv_to_rgb(hue, 1.0, 0.2 + 0.8 * intensity)
-        color = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
-        text.append("●" if intensity > 0.3 else "○", Style(color=color))
+        qhue = int(hue * 256) / 256
+        qval = int((0.2 + 0.8 * intensity) * 64) / 64
+        color = _hsv_to_hex_cached(qhue, 1.0, qval)
+        text.append("●" if intensity > 0.3 else "○", _cached_style(color))
 
     return text
 
@@ -525,9 +638,9 @@ def render_braille_art(
             cx = min(ox + 1, px_w - 1)
             cy = min(oy + 2, px_h - 1)
             r, g, b = rgb_pixels[cx, cy]
-            color = f"#{r:02x}{g:02x}{b:02x}"
+            color = _fast_rgb_hex_int(r, g, b)
 
-            line.append(char, Style(color=color))
+            line.append(char, _cached_style(color))
         lines.append(line)
 
     return lines
@@ -544,6 +657,7 @@ def render_party_scene(
     Height is variable: 3 rows minimum (dancers) + 1 floor line.
     Extra rows add more crowd depth with offset dancers.
     """
+    th = theme or _default_theme
     t = time.time()
     avg_level = (vu_left + vu_right) / 2.0
     bounce = beat_count % 4  # animation frame driven by detected beats
@@ -618,6 +732,9 @@ def render_party_scene(
     lines: list[Text] = []
     beat_hue_offset = beat_intensity * 0.08
 
+    _sin = math.sin
+    inv_scene = 1.0 / scene_width
+
     # ── BPM meter row at the top ──
     bpm_line = Text()
     if bpm > 0:
@@ -626,18 +743,19 @@ def render_party_scene(
         bpm_str = "BPM: ---"
     for ci, ch in enumerate(bpm_str):
         color = _theme_color((t * 0.3 + ci * 0.08) % 1.0, theme)
-        bpm_line.append(ch, Style(color=color, bold=True))
+        bpm_line.append(ch, _cached_style(color, bold=True))
     # Pad the rest with floor-style animation
     pad_start = len(bpm_str) + 1
-    bpm_line.append(" ", Style())
+    bpm_line.append(" ", _STYLE_EMPTY)
     for i in range(pad_start, scene_width):
-        hue = (t * 0.08 + i / scene_width + beat_hue_offset) % 1.0
+        hue = (t * 0.08 + i * inv_scene + beat_hue_offset) % 1.0
         brightness = 0.12 + 0.15 * avg_level
-        pulse = 0.5 + 0.5 * math.sin(t * 3 + i * 0.6)
+        pulse = 0.5 + 0.5 * _sin(t * 3 + i * 0.6)
         brightness *= 0.6 + 0.4 * pulse
-        r, g, b = _hsv_to_rgb(hue, 0.6, min(brightness, 0.4))
-        color = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
-        bpm_line.append("░", Style(color=color))
+        qhue = int(hue * 256) / 256
+        qval = int(min(brightness, 0.4) * 64) / 64
+        color = _hsv_to_hex_cached(qhue, 0.6, qval)
+        bpm_line.append("░", _cached_style(color))
     lines.append(bpm_line)
 
     # Reserve 1 row for the floor line, 1 for BPM; remaining for dancer groups
@@ -681,24 +799,72 @@ def render_party_scene(
             full_line = "".join(line_chars)[:scene_width]
 
             # Colorize — dimmer for back rows to create depth
+            # Batch consecutive characters that share the same style category
             depth_dim = max(0.5, 1.0 - group_idx * 0.15)
+            _th_secondary_style = _cached_style(th.secondary)
+            body_brightness = (0.3 + 0.4 * avg_level + beat_intensity * 0.1) * depth_dim
+            head_val = int(min(0.85 * depth_dim, 1.0) * 64) / 64
+            body_val = int(min(body_brightness, 0.8) * 64) / 64
+
+            # Classify each char into style category and batch runs
+            _HEAD = 0  # 'o', 'O'
+            _BODY = 1  # '/', '\', '|', '-'
+            _EQUIP = 2  # '=', '_', '~'
+            _SPACE = 3  # everything else
+            _head_set = frozenset('oO')
+            _body_set = frozenset('/\\|-')
+            _equip_set = frozenset('=_~')
+
+            prev_cat = -1
+            run_start = 0
+
             for i, ch in enumerate(full_line):
-                if ch in ('o', 'O'):
-                    hue = (t * 0.15 + i * 0.015 + beat_hue_offset) % 1.0
-                    r, g, b = _hsv_to_rgb(hue, 0.35, 0.85 * depth_dim)
-                    color = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
-                    text.append(ch, Style(color=color))
-                elif ch in ('/', '\\', '|', '-'):
-                    hue = (t * 0.15 + i * 0.015 + beat_hue_offset) % 1.0
-                    brightness = (0.3 + 0.4 * avg_level + beat_intensity * 0.1) * depth_dim
-                    r, g, b = _hsv_to_rgb(hue, 0.5, min(brightness, 0.8))
-                    color = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
-                    text.append(ch, Style(color=color))
-                elif ch in ('=', '_', '~'):
-                    _th = theme or _default_theme
-                    text.append(ch, Style(color=_th.secondary))
+                if ch in _head_set:
+                    cat = _HEAD
+                elif ch in _body_set:
+                    cat = _BODY
+                elif ch in _equip_set:
+                    cat = _EQUIP
                 else:
-                    text.append(ch, Style(color="#555555"))
+                    cat = _SPACE
+
+                if cat != prev_cat and i > 0:
+                    # Flush previous run
+                    run_str = full_line[run_start:i]
+                    if prev_cat == _HEAD:
+                        mid = (run_start + i) // 2
+                        qhue = int(((t * 0.15 + mid * 0.015 + beat_hue_offset) % 1.0) * 256) / 256
+                        color = _hsv_to_hex_cached(qhue, 0.35, head_val)
+                        text.append(run_str, _cached_style(color))
+                    elif prev_cat == _BODY:
+                        mid = (run_start + i) // 2
+                        qhue = int(((t * 0.15 + mid * 0.015 + beat_hue_offset) % 1.0) * 256) / 256
+                        color = _hsv_to_hex_cached(qhue, 0.5, body_val)
+                        text.append(run_str, _cached_style(color))
+                    elif prev_cat == _EQUIP:
+                        text.append(run_str, _th_secondary_style)
+                    else:
+                        text.append(run_str, _STYLE_DIM555)
+                    run_start = i
+                prev_cat = cat
+
+            # Flush final run
+            if run_start < len(full_line):
+                run_str = full_line[run_start:]
+                if prev_cat == _HEAD:
+                    mid = (run_start + len(full_line)) // 2
+                    qhue = int(((t * 0.15 + mid * 0.015 + beat_hue_offset) % 1.0) * 256) / 256
+                    color = _hsv_to_hex_cached(qhue, 0.35, head_val)
+                    text.append(run_str, _cached_style(color))
+                elif prev_cat == _BODY:
+                    mid = (run_start + len(full_line)) // 2
+                    qhue = int(((t * 0.15 + mid * 0.015 + beat_hue_offset) % 1.0) * 256) / 256
+                    color = _hsv_to_hex_cached(qhue, 0.5, body_val)
+                    text.append(run_str, _cached_style(color))
+                elif prev_cat == _EQUIP:
+                    text.append(run_str, _th_secondary_style)
+                else:
+                    text.append(run_str, _STYLE_DIM555)
 
             lines.append(text)
 
@@ -707,25 +873,27 @@ def render_party_scene(
     for ei in range(extra):
         filler = Text()
         for i in range(scene_width):
-            hue = (t * 0.08 + i / scene_width + ei * 0.1 + beat_hue_offset) % 1.0
+            hue = (t * 0.08 + i * inv_scene + ei * 0.1 + beat_hue_offset) % 1.0
             brightness = 0.15 + 0.3 * avg_level
-            pulse = 0.5 + 0.5 * math.sin(t * 3 + i * 0.5 + ei)
+            pulse = 0.5 + 0.5 * _sin(t * 3 + i * 0.5 + ei)
             brightness *= 0.6 + 0.4 * pulse
-            r, g, b = _hsv_to_rgb(hue, 0.6, min(brightness, 0.6))
-            color = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
-            filler.append("░", Style(color=color))
+            qhue = int(hue * 256) / 256
+            qval = int(min(brightness, 0.6) * 64) / 64
+            color = _hsv_to_hex_cached(qhue, 0.6, qval)
+            filler.append("░", _cached_style(color))
         lines.append(filler)
 
     # Animated dance floor line - gentle colour drift
     floor = Text()
     for i in range(scene_width):
-        hue = (t * 0.1 + i / scene_width + beat_hue_offset) % 1.0
+        hue = (t * 0.1 + i * inv_scene + beat_hue_offset) % 1.0
         brightness = 0.25 + 0.5 * avg_level
-        pulse = 0.5 + 0.5 * math.sin(t * 4 + i * 0.4)
+        pulse = 0.5 + 0.5 * _sin(t * 4 + i * 0.4)
         brightness *= 0.7 + 0.3 * pulse
-        r, g, b = _hsv_to_rgb(hue, 0.6, min(brightness, 0.8))
-        color = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
-        floor.append("▁", Style(color=color))
+        qhue = int(hue * 256) / 256
+        qval = int(min(brightness, 0.8) * 64) / 64
+        color = _hsv_to_hex_cached(qhue, 0.6, qval)
+        floor.append("▁", _cached_style(color))
     lines.append(floor)
 
     return lines
@@ -738,17 +906,17 @@ def render_server_info(
     th = theme or _default_theme
     text = Text()
     if connected:
-        text.append(" ⚡ ", Style(color=th.accent, bold=True))
-        text.append(server_name, Style(color=th.secondary))
+        text.append(" ⚡ ", _cached_style(th.accent, bold=True))
+        text.append(server_name, _cached_style(th.secondary))
         if group:
-            text.append(" │ ", Style(color="#444444"))
-            text.append(group, Style(color=th.warm))
+            text.append(" │ ", _STYLE_HINT)
+            text.append(group, _cached_style(th.warm))
     else:
         t = time.time()
         # Pulsing antenna icon while waiting
         pulse = "📡" if int(t * 2) % 2 == 0 else "⚡"
-        text.append(f" {pulse} ", Style(color="#ff6600", bold=True))
-        text.append(server_name or "Waiting for server...", Style(color="#ff6600", italic=True))
+        text.append(f" {pulse} ", _cached_style("#ff6600", bold=True))
+        text.append(server_name or "Waiting for server...", _cached_style("#ff6600", italic=True))
     return text
 
 
@@ -758,10 +926,11 @@ def render_codec_info(
 ) -> Text:
     th = theme or _default_theme
     text = Text()
-    text.append(" ♪ ", Style(color="#888888"))
-    text.append(codec.upper(), Style(color=th.secondary))
-    text.append(f" {sample_rate // 1000}kHz", Style(color="#888888"))
-    text.append(f" {bit_depth}bit", Style(color="#888888"))
+    _style_888 = _cached_style("#888888")
+    text.append(" ♪ ", _style_888)
+    text.append(codec.upper(), _cached_style(th.secondary))
+    text.append(f" {sample_rate // 1000}kHz", _style_888)
+    text.append(f" {bit_depth}bit", _style_888)
     return text
 
 
@@ -804,16 +973,19 @@ def render_stats_info(theme: ColorTheme | None = None) -> Text:
     mins = int((uptime_s % 3600) // 60)
     secs = int(uptime_s % 60)
 
+    _style_label = _cached_style("#666666")
+    _style_888 = _cached_style("#888888")
+
     # CPU
     cpu_val = float(cache.get("cpu", 0))
     cpu_color = "#00cc00" if cpu_val < 30 else ("#ff8800" if cpu_val < 70 else "#ff2222")
-    text.append(" CPU:", Style(color="#666666"))
-    text.append(f"{cpu_val:4.1f}%", Style(color=cpu_color))
+    text.append(" CPU:", _style_label)
+    text.append(f"{cpu_val:4.1f}%", _cached_style(cpu_color))
 
     # Memory
     mem_val = float(cache.get("mem", 0))
-    text.append("  MEM:", Style(color="#666666"))
-    text.append(f"{mem_val:.0f}MB", Style(color=th.secondary))
+    text.append("  MEM:", _style_label)
+    text.append(f"{mem_val:.0f}MB", _cached_style(th.secondary))
 
     # Network throughput
     rx_bytes = int(cache.get("net_rx", 0))
@@ -826,15 +998,15 @@ def render_stats_info(theme: ColorTheme | None = None) -> Text:
             return f"{b / 1024:.0f}KB/s"
         return f"{b}B/s"
 
-    text.append("  NET:", Style(color="#666666"))
-    text.append(f"↓{_fmt_rate(rx_bytes)}", Style(color=th.accent))
-    text.append(f" ↑{_fmt_rate(tx_bytes)}", Style(color=th.warm))
+    text.append("  NET:", _style_label)
+    text.append(f"↓{_fmt_rate(rx_bytes)}", _cached_style(th.accent))
+    text.append(f" ↑{_fmt_rate(tx_bytes)}", _cached_style(th.warm))
 
     # Uptime
-    text.append("  UP:", Style(color="#666666"))
+    text.append("  UP:", _style_label)
     if hours > 0:
-        text.append(f"{hours}h{mins:02d}m", Style(color="#888888"))
+        text.append(f"{hours}h{mins:02d}m", _style_888)
     else:
-        text.append(f"{mins}m{secs:02d}s", Style(color="#888888"))
+        text.append(f"{mins}m{secs:02d}s", _style_888)
 
     return text

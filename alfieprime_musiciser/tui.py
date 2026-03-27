@@ -27,7 +27,7 @@ from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
-from alfieprime_musiciser.colors import ColorTheme, _hex_to_rgb, _rgb_to_hex
+from alfieprime_musiciser.colors import ColorTheme, _hex_to_rgb, _hsv_to_rgb, _rgb_to_hex
 from alfieprime_musiciser.state import PlayerState
 from alfieprime_musiciser.visualizer import AudioVisualizer
 from alfieprime_musiciser.renderer import (
@@ -126,6 +126,13 @@ class BoomBoxTUI:
         self._standby_active: bool = False
         self._standby_phrase_idx: int = 0
         self._standby_phrase_time: float = 0.0
+        # Cached Rich Console instances (reused across frames)
+        self._render_console: Console | None = None
+        self._render_console_size: tuple[int, int] = (0, 0)
+        self._gui_console: Console | None = None
+        self._gui_console_size: tuple[int, int] = (0, 0)
+        self._crt_console: Console | None = None
+        self._crt_console_size: tuple[int, int] = (0, 0)
 
     def set_command_callback(self, callback: Callable[[str], None]) -> None:
         """Set callback for transport commands (play_pause, next, previous, shuffle, repeat)."""
@@ -466,23 +473,32 @@ class BoomBoxTUI:
         self._term_height = term_h
 
         buf = _io.StringIO()
-        buf_console = Console(
-            file=buf, width=term_w, height=term_h,
-            force_terminal=True, color_system="truecolor",
-            no_color=False,
-        )
+        # Reuse Console object when terminal size hasn't changed
+        if self._render_console is None or self._render_console_size != (term_w, term_h):
+            self._render_console = Console(
+                file=buf, width=term_w, height=term_h,
+                force_terminal=True, color_system="truecolor",
+                no_color=False,
+            )
+            self._render_console_size = (term_w, term_h)
+        else:
+            self._render_console._file = buf  # type: ignore[attr-defined]
+
         layout = self._build_layout()
-        buf_console.print(layout)
+        self._render_console.print(layout)
 
         rendered = buf.getvalue()
 
+        # Trim/pad lines to exactly term_h — use rsplit to avoid full copy
         lines = rendered.split("\n")
+        # Strip trailing empty lines
         while lines and lines[-1] == "":
             lines.pop()
-        if len(lines) > term_h:
+        n = len(lines)
+        if n > term_h:
             lines = lines[:term_h]
-        elif len(lines) < term_h:
-            lines.extend([""] * (term_h - len(lines)))
+        elif n < term_h:
+            lines.extend([""] * (term_h - n))
 
         return "\n".join(lines)
 
@@ -500,10 +516,13 @@ class BoomBoxTUI:
         self._term_height = term_h
 
         # Reuse a headless console sized to the window
-        console = Console(
-            file=_io.StringIO(), width=term_w, height=term_h,
-            force_terminal=True, color_system="truecolor",
-        )
+        if self._gui_console is None or self._gui_console_size != (term_w, term_h):
+            self._gui_console = Console(
+                file=_io.StringIO(), width=term_w, height=term_h,
+                force_terminal=True, color_system="truecolor",
+            )
+            self._gui_console_size = (term_w, term_h)
+        console = self._gui_console
 
         layout = self._build_layout()
         raw_segments = console.render(layout)
@@ -620,7 +639,6 @@ class BoomBoxTUI:
                 age = min(1.0, (t - self._standby_phrase_time) / 1.5)
                 for i, ch in enumerate(phrase):
                     hue = (t * 0.05 + i * 0.02) % 1.0
-                    from alfieprime_musiciser.colors import _hsv_to_rgb
                     r, g, b = _hsv_to_rgb(hue, 0.4, 0.3 + 0.2 * age)
                     c = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
                     line_segs.append((ch, c, None, False))
@@ -775,15 +793,20 @@ class BoomBoxTUI:
         t = time.time()
 
         # ── Build static background into a row list ──
+        # Pre-generate random characters in bulk for speed
+        _heavy = "░▒▓█▌▐╌╍·."
+        _light = "·. ·  "
         static_rows: list[str] = []
         for row in range(term_h):
-            line = "".join(
-                random.choice("░▒▓█▌▐╌╍·.")
-                if random.random() < 0.3
-                else random.choice("·. ·  ")
-                for _ in range(term_w)
-            )
-            static_rows.append(line)
+            randoms = random.random  # local ref for speed
+            choice = random.choice
+            buf_chars: list[str] = []
+            for _ in range(term_w):
+                if randoms() < 0.3:
+                    buf_chars.append(choice(_heavy))
+                else:
+                    buf_chars.append(choice(_light))
+            static_rows.append("".join(buf_chars))
 
         # ── Animated ASCII art ──
         spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -896,40 +919,57 @@ class BoomBoxTUI:
         # Diagonal threshold: top-left (0,0) lights first, bottom-right last
         max_dist = term_h + term_w
         threshold = progress * max_dist * 1.3  # overshoot so trailing edge completes
+        inv_ramp = 1.0 / max(max_dist * 0.15, 1)
+        inv_edge = 1.0 / max(max_dist * 0.1, 1)
+
+        # Cache faded colors to avoid redundant hex parse/format per character
+        _fade_cache: dict[tuple[str, int], str] = {}
+        _space_seg = (" ", None, None, False)
+        _segs_append = segs.append
+        _sin = math.sin
+        _rand = random.random
 
         for row_idx in range(term_h):
             real_row = real_rows[row_idx] if row_idx < len(real_rows) else []
+            real_row_len = len(real_row)
+            row_base = row_idx  # pre-compute for dist calc
             for col_idx in range(term_w):
                 # Distance from top-left corner (diagonal sweep)
-                dist = row_idx + col_idx * 0.7
+                dist = row_base + col_idx * 0.7
                 if dist < threshold:
                     # This cell is "lit" — show real content
-                    if col_idx < len(real_row):
+                    if col_idx < real_row_len:
                         ch, fg, bg, bold = real_row[col_idx]
                         # Brightness ramp: recently lit cells glow brighter
-                        lit_age = (threshold - dist) / max(max_dist * 0.15, 1)
+                        lit_age = (threshold - dist) * inv_ramp
                         if lit_age < 1.0 and fg:
-                            # Fade in: brighten towards full
-                            fr, fg_c, fb = _hex_to_rgb(fg)
-                            fade = min(1.0, lit_age)
-                            fr = int(fr * fade)
-                            fg_c = int(fg_c * fade)
-                            fb = int(fb * fade)
-                            segs.append((ch, _rgb_to_hex(fr, fg_c, fb), bg, bold))
+                            # Quantize fade to reduce unique colors (32 levels)
+                            fade_q = int(min(1.0, lit_age) * 31)
+                            cache_key = (fg, fade_q)
+                            faded_fg = _fade_cache.get(cache_key)
+                            if faded_fg is None:
+                                fade = fade_q / 31.0
+                                # Inline hex parse to avoid function call overhead
+                                fr = int(int(fg[1:3], 16) * fade)
+                                fg_c = int(int(fg[3:5], 16) * fade)
+                                fb = int(int(fg[5:7], 16) * fade)
+                                faded_fg = f"#{fr:02x}{fg_c:02x}{fb:02x}"
+                                _fade_cache[cache_key] = faded_fg
+                            _segs_append((ch, faded_fg, bg, bold))
                         else:
-                            segs.append((ch, fg, bg, bold))
+                            _segs_append((ch, fg, bg, bold))
                     else:
-                        segs.append((" ", None, None, False))
+                        _segs_append(_space_seg)
                 else:
                     # Still dark — show fading static
-                    fade_to_edge = max(0.0, 1.0 - (dist - threshold) / max(max_dist * 0.1, 1))
-                    if random.random() < 0.15 * fade_to_edge:
-                        flicker = 0.5 + 0.5 * math.sin(t * 12 + row_idx + col_idx)
+                    fade_to_edge = max(0.0, 1.0 - (dist - threshold) * inv_edge)
+                    if _rand() < 0.15 * fade_to_edge:
+                        flicker = 0.5 + 0.5 * _sin(t * 12 + row_idx + col_idx)
                         br = int(50 * flicker * fade_to_edge)
                         c = f"#{br:02x}{br:02x}{br:02x}"
-                        segs.append((random.choice("░▒·"), c, None, False))
+                        _segs_append((random.choice("░▒·"), c, None, False))
                     else:
-                        segs.append((" ", None, None, False))
+                        _segs_append(_space_seg)
 
             if row_idx < term_h - 1:
                 segs.append(("\n", None, None, False))
@@ -1059,15 +1099,19 @@ class BoomBoxTUI:
     ) -> str:
         """Convert CRT animation segments to an ANSI string for terminal mode."""
         buf = _io.StringIO()
-        c = Console(
-            file=buf, width=term_w, height=term_h,
-            force_terminal=True, color_system="truecolor", no_color=False,
-        )
+        if self._crt_console is None or self._crt_console_size != (term_w, term_h):
+            self._crt_console = Console(
+                file=buf, width=term_w, height=term_h,
+                force_terminal=True, color_system="truecolor", no_color=False,
+            )
+            self._crt_console_size = (term_w, term_h)
+        else:
+            self._crt_console._file = buf  # type: ignore[attr-defined]
         text = Text()
         for s_text, fg, bg, bold in segs:
             style = Style(color=fg, bgcolor=bg, bold=bold if bold else None)
             text.append(s_text, style)
-        c.print(text, end="")
+        self._crt_console.print(text, end="")
         return buf.getvalue()
 
     # ── Run loops ────────────────────────────────────────────────────────

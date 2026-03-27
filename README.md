@@ -157,6 +157,18 @@ Main Process                          GUI Process (optional)
 
 In GUI mode, the tkinter window runs in a **separate OS process** communicating via a pipe. This completely isolates rendering from audio playback — no stuttering regardless of UI complexity.
 
+### Performance
+
+The 30fps render loop is heavily optimised to minimise per-frame allocations and redundant computation:
+
+- **Style object caching** — Rich `Style` objects are LRU-cached by `(color, bold, dim, italic)` key, eliminating thousands of allocations per frame
+- **Color caching** — `_hsv_to_rgb`, `_rainbow_color`, `_theme_color`, `_lerp_color`, `_hex_to_rgb`, and `_rgb_to_hex` all use dict/LRU caches with quantised inputs (256–512 steps) so repeated calls become dict lookups
+- **Hex formatting LUT** — a 256-element lookup table replaces `f"#{v:02x}"` formatting in all hot paths
+- **VU meter gradient pre-computation** — the 5-zone colour gradient is computed once per theme change and reused across frames
+- **FFT band bin boundaries** — frequency-to-bin mappings are pre-computed once per sample rate change, not every frame
+- **Console reuse** — Rich Console objects are cached and reused across frames, only recreated on terminal resize
+- **Character batching** — the party scene groups consecutive same-category characters into single `Text.append()` calls instead of per-character appends
+
 ### SendSpin Protocol
 
 The app connects as a SendSpin client with four roles:

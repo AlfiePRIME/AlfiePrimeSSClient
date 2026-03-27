@@ -59,20 +59,39 @@ class SettingsMixin:
             br = 255 * flicker
             base_c = _safe_hex(br * 0.4 + pr * flicker * 0.3, br * 0.4 + pg * flicker * 0.3, br * 0.4 + pb * flicker * 0.3)
             if danger:
+                # Pre-build row as (char, category) pairs, then batch by category
+                row_chars: list[tuple[str, int]] = []  # (char, 0=bg 1=noise 2=skull)
                 for col in range(term_w):
                     noise = random.random()
                     threshold = 0.06 + scan_glow * 0.3
                     if noise < 0.025:
-                        glyph = random.choice(self._SKULL_GLYPHS)
-                        shade = random.randint(60, 200)
-                        g_val = random.randint(0, shade // 6)
-                        line.append(glyph, Style(color=_safe_hex(shade, g_val, 0)))
+                        row_chars.append((random.choice(self._SKULL_GLYPHS), 2))
                     elif noise < threshold * 0.4:
-                        line.append(random.choice("░▒▓"), Style(color=base_c))
+                        row_chars.append((random.choice("░▒▓"), 1))
                     elif noise < threshold:
-                        line.append(random.choice("·.╌"), Style(color=base_c))
+                        row_chars.append((random.choice("·.╌"), 1))
                     else:
-                        line.append(" ", Style(color=base_c))
+                        row_chars.append((" ", 0))
+                # Batch consecutive same-category chars into single appends
+                # Skulls get individual random red shades per group
+                buf: list[str] = []
+                cur_cat = -1
+                for ch, cat in row_chars:
+                    if cat != cur_cat and buf:
+                        if cur_cat == 2:
+                            shade = random.randint(60, 200)
+                            line.append("".join(buf), Style(color=_safe_hex(shade, shade // 8, 0)))
+                        else:
+                            line.append("".join(buf), Style(color=base_c))
+                        buf = []
+                    cur_cat = cat
+                    buf.append(ch)
+                if buf:
+                    if cur_cat == 2:
+                        shade = random.randint(60, 200)
+                        line.append("".join(buf), Style(color=_safe_hex(shade, shade // 8, 0)))
+                    else:
+                        line.append("".join(buf), Style(color=base_c))
             else:
                 chars = []
                 for col in range(term_w):
@@ -395,67 +414,80 @@ class SettingsMixin:
     ) -> Group:
         """Big ASCII art warning confirmation for config reset."""
         panel_lines: list[Text] = []
+        # Dark-to-bright red glow
         glow = 0.5 + 0.5 * math.sin(t * 4)
-        r_val = int(140 + 80 * glow)
+        r_val = int(50 + 200 * glow)
         warn_c = _safe_hex(r_val, 0, 0)
-        deep_c = _safe_hex(r_val * 0.6, 0, 0)
+        deep_c = _safe_hex(max(20, r_val * 0.4), 0, 0)
         skull_pulse = 0.5 + 0.5 * math.sin(t * 6)
-        skull_r = int(100 + 120 * skull_pulse)
+        skull_r = int(40 + 180 * skull_pulse)
         skull_c = _safe_hex(skull_r, 0, 0)
-        # Skull border row
-        skull_row = Text(justify="center")
-        skulls = " ".join("☠" for _ in range(min(panel_w // 3, 16)))
-        skull_row.append(skulls, Style(color=skull_c, bold=True))
+
+        def _center(text: str) -> str:
+            """Pad text with leading spaces to center within panel_w."""
+            pad = max(0, (panel_w - len(text)) // 2)
+            return " " * pad + text
+
+        # Skull border — double-spaced, pre-calculated to fit panel_w
+        skull_unit = "☠  "  # 3 chars per unit
+        n_skulls = panel_w // len(skull_unit)
+        skull_str = (skull_unit * n_skulls).rstrip()
+        skull_str = _center(skull_str)
+
+        skull_row = Text()
+        skull_row.append(skull_str, Style(color=skull_c, bold=True))
         panel_lines.append(skull_row)
         panel_lines.append(Text(""))
+        # Warning triangles — all lines exactly 24 chars
         ascii_warning = [
-            r"       /\       /\       /\    ",
-            r"      /!!\     /!!\     /!!\   ",
-            r"     / !! \   / !! \   / !! \  ",
-            r"    / _!!_ \ / _!!_ \ / _!!_ \ ",
-            r"   /________\/________\/________\\",
+            "   /\\      /\\      /\\   ",
+            "  /!!\\    /!!\\    /!!\\  ",
+            " / !! \\  / !! \\  / !! \\ ",
+            "/______\\/______\\/______\\",
         ]
         for art_line in ascii_warning:
-            tl = Text(justify="center")
-            tl.append(art_line, Style(color=warn_c, bold=True))
+            tl = Text()
+            tl.append(_center(art_line), Style(color=warn_c, bold=True))
             panel_lines.append(tl)
         panel_lines.append(Text(""))
-        # Skull border row again
-        skull_row2 = Text(justify="center")
-        skull_row2.append(skulls, Style(color=skull_c, bold=True))
+        # Second skull row
+        skull_row2 = Text()
+        skull_row2.append(skull_str, Style(color=skull_c, bold=True))
         panel_lines.append(skull_row2)
-        title = Text(justify="center")
+        title = Text()
         title.append("━" * panel_w, Style(color=warn_c, bold=True))
         panel_lines.append(title)
-        msg = Text(justify="center")
-        msg.append("☠ RESET ALL CONFIGURATION? ☠", Style(color=warn_c, bold=True))
+        msg = Text()
+        msg.append(_center("☠ RESET ALL CONFIGURATION? ☠"), Style(color=warn_c, bold=True))
         panel_lines.append(msg)
-        title2 = Text(justify="center")
+        title2 = Text()
         title2.append("━" * panel_w, Style(color=warn_c, bold=True))
         panel_lines.append(title2)
         panel_lines.append(Text(""))
-        detail1 = Text(justify="center")
-        detail1.append("This will delete your config file", Style(color="#aa2222"))
+        detail1 = Text()
+        detail1.append(_center("This will delete your config file"), Style(color="#aa2222"))
         panel_lines.append(detail1)
-        detail2 = Text(justify="center")
-        detail2.append("and restart the application.", Style(color="#aa2222"))
+        detail2 = Text()
+        detail2.append(_center("and restart the application."), Style(color="#aa2222"))
         panel_lines.append(detail2)
         panel_lines.append(Text(""))
-        detail3 = Text(justify="center")
-        detail3.append("☢ You will need to re-run setup ☢", Style(color="#881111"))
+        detail3 = Text()
+        detail3.append(_center("☢ You will need to re-run setup ☢"), Style(color="#881111"))
         panel_lines.append(detail3)
         panel_lines.append(Text(""))
         panel_lines.append(Text(""))
-        yn = Text(justify="center")
+        yn_text = "[Y] Yes, reset    [N] No, go back"
+        yn = Text()
+        yn.append(" " * max(0, (panel_w - len(yn_text)) // 2))
         yn.append("[Y] ", Style(color="#cc0000", bold=True))
-        yn.append("Yes, reset  ", Style(color="#aa2222"))
-        yn.append("  [N] ", Style(color="#44ff44", bold=True))
+        yn.append("Yes, reset    ", Style(color="#aa2222"))
+        yn.append("[N] ", Style(color="#44ff44", bold=True))
         yn.append("No, go back", Style(color="#44aa44"))
         panel_lines.append(yn)
         panel_lines.append(Text(""))
         # Bottom skull row
-        skull_row3 = Text(justify="center")
-        skull_row3.append(skulls, Style(color=deep_c, bold=True))
+        skull_row3 = Text()
+        skull_row3.append(skull_str, Style(color=deep_c, bold=True))
         panel_lines.append(skull_row3)
         return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
 

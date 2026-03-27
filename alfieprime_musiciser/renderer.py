@@ -37,6 +37,10 @@ _braille_art_cache: dict[tuple[int, int, int, bool], list[Text]] = {}
 _crowd_energy: float = 0.0
 _crowd_energy_time: float = 0.0
 
+# Crowd presence: 1.0 = full crowd, 0.0 = empty floor. Decays when paused.
+_crowd_presence: float = 1.0
+_crowd_presence_time: float = 0.0
+
 # Pre-computed hex lookup table: index 0-255 → two-char hex string
 _HEX_LUT = [f"{i:02x}" for i in range(256)]
 
@@ -1003,16 +1007,32 @@ def render_party_scene(
     width: int, vu_left: float, vu_right: float,
     beat_count: int = 0, beat_intensity: float = 0.0,
     theme: ColorTheme | None = None, height: int = 4,
-    bpm: float = 0.0,
+    bpm: float = 0.0, is_playing: bool = True,
 ) -> list[Text]:
     """Render an ASCII art party scene with a DJ and dancing crowd, synced to beat.
 
     Height is variable: 3 rows minimum (dancers) + 1 floor line.
     Extra rows add more crowd depth with offset dancers.
+
+    When paused, dancers gradually leave the floor and the DJ plays an idle
+    animation.  They return when playback resumes.
     """
     th = theme or _default_theme
     t = time.time()
     avg_level = (vu_left + vu_right) / 2.0
+
+    # ── Crowd presence: smoothly drain when paused, refill when playing ──
+    global _crowd_presence, _crowd_presence_time
+    now = time.time()
+    dt = min(now - _crowd_presence_time, 0.2) if _crowd_presence_time > 0 else 0.033
+    _crowd_presence_time = now
+    if is_playing:
+        # Fast return: ~2s to full
+        _crowd_presence = min(1.0, _crowd_presence + dt * 0.5)
+    else:
+        # Slow departure: ~8s to empty
+        _crowd_presence = max(0.0, _crowd_presence - dt * 0.12)
+
     # Animation frame driven by detected beats.
     # At high BPM, advance poses less often so movement stays readable:
     #   < 160 BPM → every beat  (normal)
@@ -1043,6 +1063,17 @@ def render_party_scene(
         [r" o/ ___|", r"/|  |==|", r"< > ~~~~"],
         [r"\o  ___|", r" |\ |==|", r"/ > ~~~~"],
         [r"\o/ ___|", r" |  |==|", r">< ~*~*~"],
+    ]
+    # Idle frames — DJ chilling when paused (slow cycle on time, not beats)
+    dj_idle_frames = [
+        [r"  o ___|", r" /| |--|", r" |  ~~~~"],
+        [r"  o ___|", r" /| |--|", r" |  ~~~~"],
+        [r"  o ___|", r" /| |--|", r" |  ~ ~ "],
+        [r"  o ___|", r" /| |--|", r" |  ~~~~"],
+        [r" _o ___|", r" /| |--|", r" |  ~~~~"],
+        [r"  o ___|", r" /| |--|", r" |  ~~~~"],
+        [r"  o_.___|", r" /| |--|", r" |  ~~~~"],
+        [r"  o ___|", r" /| |--|", r" |  ~~~~"],
     ]
 
     # Dancer frames (3 rows each) - 4 different poses
@@ -1202,8 +1233,15 @@ def render_party_scene(
     # Each dancer group is 3 rows tall
     num_groups = max(1, dancer_rows // 3)
 
-    # DJ uses hype frames at high energy
-    dj = (dj_hype_frames if energy > 0.5 else dj_frames)[bounce % 4]
+    # DJ frame selection: idle when paused and crowd has left, hype at high energy
+    if _crowd_presence <= 0.05:
+        # Idle: slow time-based cycle (not beat-driven)
+        idle_idx = int(t * 1.2) % len(dj_idle_frames)
+        dj = dj_idle_frames[idle_idx]
+    elif energy > 0.5:
+        dj = dj_hype_frames[bounce % 4]
+    else:
+        dj = dj_frames[bounce % 4]
 
     for group_idx in range(num_groups):
         # Offset phase per group so back rows look different
@@ -1237,9 +1275,30 @@ def render_party_scene(
             dancer_stride = max(4, int(8 - 4 * energy))
             # At very low energy, skip some dancers entirely
             skip_chance = max(0.0, 0.4 - energy) if energy < 0.3 else 0.0
+            # Crowd departure: as _crowd_presence drops, more dancers leave
+            # Back rows leave first (higher group_idx → leave sooner)
+            presence = _crowd_presence
+            row_threshold = presence * num_groups
+            row_gone = group_idx >= row_threshold  # entire row has left
+            # Within a partially-remaining row, some individuals leave
+            partial = max(0.0, 1.0 - (group_idx - (row_threshold - 1))) if not row_gone else 0.0
+            partial = min(1.0, partial)
             while pos < remaining - 3:
+                # Entire row has departed — render empty space
+                if row_gone:
+                    line_chars.append(" " * dancer_stride)
+                    pos += dancer_stride
+                    dancer_idx += 1
+                    continue
+                # Probabilistic departure for partially-emptied rows
+                dancer_hash = ((dancer_idx * 7 + group_idx * 13) % 10) / 10
+                if partial < 1.0 and dancer_hash >= partial:
+                    line_chars.append(" " * dancer_stride)
+                    pos += dancer_stride
+                    dancer_idx += 1
+                    continue
                 # Probabilistically thin the crowd at low energy
-                if skip_chance > 0 and ((dancer_idx * 7 + group_idx * 13) % 10) / 10 < skip_chance:
+                if skip_chance > 0 and dancer_hash < skip_chance:
                     line_chars.append(" " * dancer_stride)
                     pos += dancer_stride
                     dancer_idx += 1

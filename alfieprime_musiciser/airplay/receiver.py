@@ -207,6 +207,13 @@ class _MetadataHook:
     def _is_active(self) -> bool:
         return self._state.active_source in ("airplay", "")
 
+    def _set_playing(self, playing: bool) -> None:
+        """Set is_playing, gated by active source."""
+        if self._is_active():
+            self._state.is_playing = playing
+        else:
+            self._state.write_to_snapshot("airplay", is_playing=playing)
+
     def on_metadata(self, title: str, artist: str, album: str) -> None:
         s = self._state
         fields: dict = {}
@@ -216,7 +223,7 @@ class _MetadataHook:
             fields["artist"] = artist
         if album:
             fields["album"] = album
-        fields["is_playing"] = True
+        # Don't force is_playing here — let SETRATEANCHORTIME/DMAP caps control it
 
         if self._is_active():
             old_title = s.title
@@ -572,7 +579,7 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
             if artwork and isinstance(artwork, (bytes, bytearray)) and len(artwork) > 0:
                 self._meta_hook.on_artwork(bytes(artwork))
             if rate is not None:
-                self._meta_hook._state.is_playing = float(rate) > 0
+                self._meta_hook._set_playing(float(rate) > 0)
 
         # -- RTSP method overrides ------------------------------------
 
@@ -634,11 +641,14 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
                     # Play state from DMAP caps field
                     caps = fields.get("caps")
                     if caps is not None:
-                        self._meta_hook._state.is_playing = (caps == 1)
+                        self._meta_hook._set_playing(caps == 1)
                     # Duration from DMAP
                     astm = fields.get("astm")
                     if astm:
-                        self._meta_hook._state.duration_ms = int(astm)
+                        if self._meta_hook._is_active():
+                            self._meta_hook._state.duration_ms = int(astm)
+                        else:
+                            self._meta_hook._state.write_to_snapshot("airplay", duration_ms=int(astm))
                 except Exception:
                     logger.debug("Failed to parse DMAP metadata", exc_info=True)
                 self._send_ok()
@@ -671,7 +681,7 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
                     logger.debug("AirPlay SETRATEANCHORTIME: rate=%s rtpTime=%s", rate, rtp_time)
                     if rate is not None:
                         if float(rate) > 0:
-                            self._meta_hook._state.is_playing = True
+                            self._meta_hook._set_playing(True)
                             # Forward to audio connections
                             for s in self.server.streams:
                                 try:
@@ -679,7 +689,7 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
                                 except Exception:
                                     pass
                         else:
-                            self._meta_hook._state.is_playing = False
+                            self._meta_hook._set_playing(False)
                             for s in self.server.streams:
                                 try:
                                     s.getAudioConnection().send("pause")
@@ -854,12 +864,10 @@ class AirPlayReceiver:
                 self._original_command_cb(command)
             return
 
-        # AirPlay is active — try DACP, fall back to SendSpin if unavailable
+        # AirPlay is active — send via DACP
         dacp = self._dacp
         if not dacp.available:
-            logger.debug("DACP not available, falling back to SendSpin for '%s'", command)
-            if self._original_command_cb:
-                self._original_command_cb(command)
+            logger.debug("DACP not available, command '%s' dropped", command)
             return
 
         # Volume — send via DACP to change on the sender

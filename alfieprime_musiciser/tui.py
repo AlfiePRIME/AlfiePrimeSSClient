@@ -847,6 +847,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         party_lines = render_party_scene(
             flush_inner, vu_left, vu_right, beat_count, beat_intensity,
             theme=th, height=dance_height, bpm=current_bpm,
+            is_playing=self.state.is_playing,
         )
         parts.append(Panel(
             Group(*party_lines),

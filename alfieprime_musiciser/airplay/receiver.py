@@ -244,6 +244,8 @@ class _MetadataHook:
         self._state.is_playing = False
         self._state.connected = False
         self._state.supported_commands = []
+        if self._state.active_source == "airplay":
+            self._state.active_source = ""
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +422,7 @@ def _extract_dmap_fields(data: bytes) -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
-def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient):
+def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, config=None):
     """Import and return a subclass of AP2Handler with our hooks injected."""
     _patch_vendor_imports()
 
@@ -433,6 +435,7 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient):
 
         _meta_hook = meta_hook
         _dacp_client = dacp_client
+        _config = config
 
         def dispatch(self):
             """Override dispatch to log all requests and catch exceptions."""
@@ -639,18 +642,50 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient):
                 self._send_ok()
 
         def do_SETUP(self):
-            """Capture DACP headers then delegate to parent."""
+            """Capture DACP headers, gate on swap prompt, then delegate to parent."""
             dacp_id = self.headers.get("DACP-ID", "")
             active_remote = self.headers.get("Active-Remote", "")
             if dacp_id and active_remote:
                 client_ip = self.client_address[0]
                 self._dacp_client.set_sender_info(client_ip, dacp_id, active_remote)
+
+            # Swap gating: if another source is active, check config
+            state = self._meta_hook._state
+            if state.active_source and state.active_source != "airplay":
+                cfg = self._config
+                if cfg and not cfg.swap_prompt:
+                    if cfg.swap_auto_action == "deny":
+                        logger.info("Auto-denying AirPlay connection (active=%s)", state.active_source)
+                        self._send_ok()
+                        return
+                elif cfg and cfg.swap_prompt:
+                    client_ip = self.client_address[0]
+                    state.swap_pending = True
+                    state.swap_pending_source = "airplay"
+                    state.swap_pending_name = client_ip
+                    state.swap_response = ""
+                    # Block RTSP thread waiting for user response (up to 30s)
+                    import time as _time
+                    for _ in range(300):
+                        if state.swap_response:
+                            break
+                        _time.sleep(0.1)
+                    response = state.swap_response
+                    state.swap_pending = False
+                    state.swap_response = ""
+                    if response != "accept":
+                        logger.info("User denied AirPlay connection swap")
+                        self._send_ok()
+                        return
+
             super().do_SETUP()
 
         def do_RECORD(self):
             """Stream start — mark as playing."""
             self._meta_hook._state.is_playing = True
             self._meta_hook._state.connected = True
+            self._meta_hook._state.active_source = "airplay"
+            self._meta_hook._state.codec = "airplay"
             # Populate supported commands so TUI buttons are active
             self._meta_hook._state.supported_commands = list(_AIRPLAY_SUPPORTED_COMMANDS)
             logger.info("AirPlay: stream RECORD — playback starting")
@@ -694,11 +729,13 @@ class AirPlayReceiver:
         *,
         device_name: str = "AlfiePRIME Musiciser",
         port: int = 7000,
+        config=None,
     ):
         self._tui = tui
         self._visualizer = visualizer
         self._device_name = device_name
         self._port = port
+        self._config = config
         self._running = False
         self._server: object | None = None
         self._server_thread: threading.Thread | None = None
@@ -729,7 +766,7 @@ class AirPlayReceiver:
         dacp = self._dacp
 
         # If AirPlay is not the active source, delegate to the original callback
-        if not state.connected or state.codec != "airplay" or not dacp.available:
+        if not state.connected or state.active_source != "airplay" or not dacp.available:
             if self._original_command_cb:
                 self._original_command_cb(command)
             return
@@ -774,9 +811,7 @@ class AirPlayReceiver:
         self._running = True
         loop = asyncio.get_running_loop()
 
-        self._state.server_name = f"AirPlay on :{self._port}"
-        self._state.connected = False
-        self._state.codec = "airplay"
+        self._state.airplay_ready = True
 
         # Intercept TUI command callback to route AirPlay commands via DACP
         if self._tui is not None:
@@ -995,7 +1030,7 @@ class AirPlayReceiver:
         meta_hook = _MetadataHook(self._state)
 
         # Create patched handler
-        HandlerClass = _create_patched_handler(meta_hook, self._dacp)
+        HandlerClass = _create_patched_handler(meta_hook, self._dacp, config=self._config)
 
         # Tell child processes where to log so their output reaches our file.
         os.environ["AIRPLAY_DEBUG_LOG"] = _LOG_FILE

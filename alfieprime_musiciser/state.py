@@ -45,6 +45,15 @@ class PlayerState:
     airplay_pin: str = ""
     # AirPlay server is listening (not yet connected to a client)
     airplay_ready: bool = False
+    # SendSpin server is listening (not yet connected to a client)
+    sendspin_ready: bool = False
+    # Which protocol is currently active: "" (none), "sendspin", "airplay"
+    active_source: str = ""
+    # Device swap prompt state
+    swap_pending: bool = False
+    swap_pending_source: str = ""  # "sendspin" or "airplay"
+    swap_pending_name: str = ""  # display name of the new device
+    swap_response: str = ""  # "accept", "deny", or "" (pending)
 
     def get_interpolated_progress(self) -> int:
         """Get progress interpolated from last server update."""

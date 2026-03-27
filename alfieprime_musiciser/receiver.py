@@ -240,6 +240,7 @@ class SendSpinReceiver:
 
         self._state.server_name = f"Listening on :{self._listen_port}"
         self._state.connected = False
+        self._state.sendspin_ready = True
         logger.info(
             "Listening on port %d, advertising via mDNS (_sendspin._tcp.local.)",
             self._listen_port,
@@ -275,6 +276,32 @@ class SendSpinReceiver:
         except Exception:
             pass
         logger.info("Server connected from %s", remote)
+
+        # ── Swap gating: if another source is active, ask user ──
+        if self._state.active_source and self._state.active_source != "sendspin":
+            cfg = self._config
+            if cfg and not cfg.swap_prompt:
+                # Auto-action without prompting
+                if cfg.swap_auto_action == "deny":
+                    logger.info("Auto-denying SendSpin connection (active_source=%s)", self._state.active_source)
+                    return
+                # "accept" falls through
+            elif cfg and cfg.swap_prompt:
+                self._state.swap_pending = True
+                self._state.swap_pending_source = "sendspin"
+                self._state.swap_pending_name = remote
+                self._state.swap_response = ""
+                # Wait for user response (up to 30s)
+                for _ in range(300):
+                    if self._state.swap_response:
+                        break
+                    await asyncio.sleep(0.1)
+                response = self._state.swap_response
+                self._state.swap_pending = False
+                self._state.swap_response = ""
+                if response != "accept":
+                    logger.info("User denied SendSpin connection swap")
+                    return
 
         async with self._connection_lock:
             # Clean up previous client if any
@@ -316,6 +343,7 @@ class SendSpinReceiver:
         server_info = client.server_info
         server_name = server_info.name if server_info else "Server"
         self._state.connected = True
+        self._state.active_source = "sendspin"
         self._state.server_name = server_name
         logger.info("Connected to server: %s (%s)", server_name, remote)
 
@@ -334,6 +362,8 @@ class SendSpinReceiver:
             if self._client is client:
                 self._state.connected = False
                 self._state.is_playing = False
+                if self._state.active_source == "sendspin":
+                    self._state.active_source = ""
                 self._state.server_name = f"Listening on :{self._listen_port}"
                 await self._audio_handler.handle_disconnect()
                 self._visualizer.reset()
@@ -347,6 +377,7 @@ class SendSpinReceiver:
 
         self._state.server_name = url
         self._state.connected = False
+        self._state.sendspin_ready = True
         backoff = 1.0
 
         while self._running:
@@ -355,6 +386,7 @@ class SendSpinReceiver:
                 assert self._client is not None
                 await self._client.connect(url)
                 self._state.connected = True
+                self._state.active_source = "sendspin"
                 self._state.server_name = url
                 backoff = 1.0
 
@@ -368,6 +400,8 @@ class SendSpinReceiver:
 
                 self._state.connected = False
                 self._state.is_playing = False
+                if self._state.active_source == "sendspin":
+                    self._state.active_source = ""
                 if self._audio_handler:
                     await self._audio_handler.handle_disconnect()
                 logger.info("Disconnected, reconnecting...")

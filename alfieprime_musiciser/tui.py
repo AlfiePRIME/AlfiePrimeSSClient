@@ -197,6 +197,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         self._advanced_editing: str = ""  # which field is being text-edited
         self._advanced_edit_buf: str = ""  # text input buffer
         self._advanced_confirm_reset: bool = False  # reset confirmation dialog
+        # Protocol settings state
+        self._protocol_cursor: int = 0
         # Color picker state
         self._color_cursor: int = 0
         self._color_hex_editing: bool = False
@@ -317,6 +319,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         self._transition_to = to_mode
 
     def _build_layout(self) -> Group:
+        if self.state.swap_pending:
+            return self._build_swap_prompt_layout()
         if self._settings_open:
             return self._build_settings_layout()
         if self._transition_active:
@@ -324,6 +328,63 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         if self._art_mode and self.state.artwork_data:
             return self._build_art_layout()
         return self._build_main_layout()
+
+    def _build_swap_prompt_layout(self) -> Group:
+        """Render the device swap prompt as an overlay on CRT background."""
+        self._term_width, self._term_height = self._get_terminal_size()
+        term_w = self._term_width
+        term_h = self._term_height
+        th = self.state.theme
+        panel_w = 50
+        bg_lines = self._build_crt_background(term_w, term_h)
+
+        def _center(text: str) -> str:
+            pad = max(0, (panel_w - len(text)) // 2)
+            return " " * pad + text
+
+        panel_lines: list[Text] = []
+        title_line = Text()
+        title_line.append("━" * panel_w, Style(color=th.primary, bold=True))
+        panel_lines.append(title_line)
+        header = Text()
+        header.append(_center(" ◈ NEW DEVICE ◈ "), Style(color=th.primary, bold=True))
+        panel_lines.append(header)
+        title_line2 = Text()
+        title_line2.append("━" * panel_w, Style(color=th.primary, bold=True))
+        panel_lines.append(title_line2)
+        panel_lines.append(Text(""))
+        src = self.state.swap_pending_source.upper()
+        name = self.state.swap_pending_name or "Unknown"
+        msg1 = Text()
+        msg1.append(_center(f"A new {src} device wants to connect:"), Style(color="#aaaaaa"))
+        panel_lines.append(msg1)
+        panel_lines.append(Text(""))
+        msg2 = Text()
+        msg2.append(_center(name), Style(color=th.accent, bold=True))
+        panel_lines.append(msg2)
+        panel_lines.append(Text(""))
+        cur_src = self.state.active_source.upper() if self.state.active_source else "NONE"
+        msg3 = Text()
+        msg3.append(_center(f"Current source: {cur_src}"), Style(color="#888888"))
+        panel_lines.append(msg3)
+        panel_lines.append(Text(""))
+        msg4 = Text()
+        msg4.append(_center("Switch to new device?"), Style(color="#cccccc"))
+        panel_lines.append(msg4)
+        panel_lines.append(Text(""))
+        footer = Text()
+        footer.append("━" * panel_w, Style(color=th.primary_dim))
+        panel_lines.append(footer)
+        yn = Text()
+        yn_text = "[Y] Accept    [N] Deny"
+        yn.append(" " * max(0, (panel_w - len(yn_text)) // 2))
+        yn.append("[Y] ", Style(color="#44ff44", bold=True))
+        yn.append("Accept    ", Style(color="#44aa44"))
+        yn.append("[N] ", Style(color="#ff4444", bold=True))
+        yn.append("Deny", Style(color="#aa4444"))
+        panel_lines.append(yn)
+
+        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
 
     def _get_effective_theme(self) -> ColorTheme:
         """Return theme with config overrides applied (static color, art colors off)."""
@@ -835,6 +896,14 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         """Handle a single keypress (including special keys like 'arrow_up')."""
         k = key.lower()
 
+        # ── Swap prompt controls ──
+        if self.state.swap_pending:
+            if k == "y":
+                self.state.swap_response = "accept"
+            elif k in ("n", "escape"):
+                self.state.swap_response = "deny"
+            return
+
         # ── Settings menu controls ──
         if self._settings_open:
             # 'c' exits settings from any submenu (unless editing text)
@@ -846,6 +915,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
                 self._handle_advanced_key(k, key)
             elif self._settings_sub == "color_picker":
                 self._handle_color_picker_key(k, key)
+            elif self._settings_sub == "protocol":
+                self._handle_protocol_key(k)
             else:
                 self._handle_settings_main_key(k)
             return
@@ -1192,7 +1263,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
 
             # ── Phase 2: Hold on static until connected ──
             self._connect_wait_start = time.monotonic()
-            while self._running and not self.state.connected and not self.state.airplay_ready:
+            while self._running and not self.state.connected and not self.state.airplay_ready and not self.state.sendspin_ready:
                 term_w, term_h = self._get_terminal_size()
                 segs = self._crt_static_hold_segments(term_w, term_h)
                 frame = self._crt_to_ansi(segs, term_w, term_h)
@@ -1280,7 +1351,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
 
             # ── Phase 2: Hold on static until connected ──
             self._connect_wait_start = time.monotonic()
-            while self._running and gui.alive and not self.state.connected and not self.state.airplay_ready:
+            while self._running and gui.alive and not self.state.connected and not self.state.airplay_ready and not self.state.sendspin_ready:
                 gui.process_events()
                 term_w, term_h = self._get_terminal_size()
                 segs = self._crt_static_hold_segments(term_w, term_h)

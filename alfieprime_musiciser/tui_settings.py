@@ -249,6 +249,8 @@ class SettingsMixin:
             return self._build_advanced_layout()
         if self._settings_sub == "color_picker":
             return self._build_color_picker_layout()
+        if self._settings_sub == "protocol":
+            return self._build_protocol_layout()
         self._term_width, self._term_height = self._get_terminal_size()
         term_w = self._term_width
         term_h = self._term_height
@@ -333,6 +335,12 @@ class SettingsMixin:
         adv_line.append("    [A] ", Style(color=adv_color, bold=True))
         adv_line.append("Advanced", Style(color=adv_color, bold=True))
         panel_lines.append(adv_line)
+        panel_lines.append(Text(""))
+        proto_c = th.accent
+        proto_line = Text()
+        proto_line.append("    [P] ", Style(color=proto_c, bold=True))
+        proto_line.append("Protocol", Style(color=proto_c, bold=True))
+        panel_lines.append(proto_line)
         panel_lines.append(Text(""))
         footer = Text()
         footer.append("━" * panel_w, Style(color=th.primary_dim))
@@ -641,6 +649,11 @@ class SettingsMixin:
                 self._advanced_cursor = 0
                 self._advanced_editing = ""
             self._start_menu_fade_out(_switch_to_advanced)
+        elif k == "p":
+            def _switch_to_protocol() -> None:
+                self._settings_sub = "protocol"
+                self._protocol_cursor = 0
+            self._start_menu_fade_out(_switch_to_protocol)
         elif k == "arrow_up":
             self._settings_cursor = (self._settings_cursor - 1) % len(self._settings_items)
         elif k == "arrow_down":
@@ -805,3 +818,126 @@ class SettingsMixin:
         if self._config:
             self._config = cfg
             cfg.save()
+
+    # ── Protocol settings submenu ──
+
+    def _build_protocol_layout(self) -> Group:
+        """Render protocol settings submenu."""
+        self._term_width, self._term_height = self._get_terminal_size()
+        term_w = self._term_width
+        term_h = self._term_height
+        th = self.state.theme
+        cfg = self._config or Config()
+        panel_w = 54
+        bg_lines = self._build_crt_background(term_w, term_h)
+
+        def _center(text: str) -> str:
+            pad = max(0, (panel_w - len(text)) // 2)
+            return " " * pad + text
+
+        # Build menu items dynamically — swap sub-items only show when prompt is off
+        proto_items: list[tuple[str, str, object]] = [
+            ("AirPlay Receiver", "airplay_enabled", cfg.airplay_enabled),
+            ("SendSpin Receiver", "sendspin_enabled", cfg.sendspin_enabled),
+            ("Device Swap Prompt", "swap_prompt", cfg.swap_prompt),
+        ]
+        if not cfg.swap_prompt:
+            proto_items.append(("Auto Action", "swap_auto_action", cfg.swap_auto_action))
+
+        panel_lines: list[Text] = []
+        title_line = Text()
+        title_line.append("━" * panel_w, Style(color=th.primary, bold=True))
+        panel_lines.append(title_line)
+        header = Text()
+        header.append(_center(" ◈ PROTOCOL ◈ "), Style(color=th.primary, bold=True))
+        panel_lines.append(header)
+        title_line2 = Text()
+        title_line2.append("━" * panel_w, Style(color=th.primary, bold=True))
+        panel_lines.append(title_line2)
+        panel_lines.append(Text(""))
+
+        note = Text()
+        note.append(_center("Protocol changes apply on next restart"), Style(color="#666666"))
+        panel_lines.append(note)
+        panel_lines.append(Text(""))
+
+        for i, (label, key, value) in enumerate(proto_items):
+            item = Text()
+            selected = i == self._protocol_cursor
+            if selected:
+                item.append("  ▸ ", Style(color=th.accent, bold=True))
+            else:
+                item.append("    ", Style(color="#444444"))
+            item.append(f"{label:<30}", Style(
+                color=th.secondary if selected else "#888888",
+                bold=selected,
+            ))
+            if key == "swap_auto_action":
+                val_str = value.upper()
+                val_color = "#44ff44" if value == "accept" else "#ff4444"
+                item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
+                if selected:
+                    item.append("  ◂▸", Style(color="#555555"))
+            elif key in ("airplay_enabled", "sendspin_enabled", "swap_prompt"):
+                val_str = "ON" if value else "OFF"
+                val_color = th.accent if value else "#666666"
+                item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
+            panel_lines.append(item)
+            panel_lines.append(Text(""))
+
+        panel_lines.append(Text(""))
+        footer = Text()
+        footer.append("━" * panel_w, Style(color=th.primary_dim))
+        panel_lines.append(footer)
+        hint_text = "[↑↓]Nav [Enter]Toggle [◂▸]Adj [B]Back"
+        hint = Text()
+        hint.append(" " * max(0, (panel_w - len(hint_text)) // 2))
+        hint.append("[↑↓]Nav ", Style(color="#555555"))
+        hint.append("[Enter]Toggle ", Style(color="#555555"))
+        hint.append("[◂▸]Adj ", Style(color="#555555"))
+        hint.append("[B]Back", Style(color="#555555"))
+        panel_lines.append(hint)
+
+        panel_x = max(0, (term_w - panel_w - 2) // 2)
+        panel_y = max(0, (term_h - len(panel_lines)) // 2)
+        self._scatter_dancers_on_bg(bg_lines, term_w, term_h, panel_x, panel_y, panel_w, len(panel_lines))
+        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
+
+    def _handle_protocol_key(self, k: str) -> None:
+        """Handle keys in the protocol settings submenu."""
+        cfg = self._config or Config()
+
+        # Build the current items list to know bounds and which key is selected
+        proto_keys = ["airplay_enabled", "sendspin_enabled", "swap_prompt"]
+        if not cfg.swap_prompt:
+            proto_keys.append("swap_auto_action")
+
+        if k in ("b", "escape"):
+            self._start_menu_fade_out(lambda: setattr(self, '_settings_sub', ''))
+        elif k == "arrow_up":
+            self._protocol_cursor = (self._protocol_cursor - 1) % len(proto_keys)
+        elif k == "arrow_down":
+            self._protocol_cursor = (self._protocol_cursor + 1) % len(proto_keys)
+        elif k in (" ", "\r", "\n"):
+            key = proto_keys[self._protocol_cursor]
+            if key == "airplay_enabled":
+                cfg.airplay_enabled = not cfg.airplay_enabled
+            elif key == "sendspin_enabled":
+                cfg.sendspin_enabled = not cfg.sendspin_enabled
+            elif key == "swap_prompt":
+                cfg.swap_prompt = not cfg.swap_prompt
+                # Clamp cursor if auto_action row disappears
+                if cfg.swap_prompt and self._protocol_cursor >= len(proto_keys) - 1:
+                    self._protocol_cursor = min(self._protocol_cursor, 2)
+            elif key == "swap_auto_action":
+                cfg.swap_auto_action = "accept" if cfg.swap_auto_action == "deny" else "deny"
+            if self._config:
+                self._config = cfg
+                cfg.save()
+        elif k in ("arrow_left", "arrow_right"):
+            key = proto_keys[self._protocol_cursor]
+            if key == "swap_auto_action":
+                cfg.swap_auto_action = "accept" if cfg.swap_auto_action == "deny" else "deny"
+                if self._config:
+                    self._config = cfg
+                    cfg.save()

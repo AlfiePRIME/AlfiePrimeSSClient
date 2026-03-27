@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 async def _run_with_config(
     config: Config, demo: bool = False, gui: bool = False, daemon: bool = False,
-    airplay: bool = False, airplay_name: str | None = None, airplay_port: int = 7000,
+    airplay_name: str | None = None, airplay_port: int = 7000,
 ) -> None:
     """Run the TUI + receiver using the given config."""
     visualizer = AudioVisualizer()
@@ -85,15 +85,16 @@ async def _run_with_config(
         config=config,
     )
 
-    # Optional AirPlay receiver
+    # Optional AirPlay receiver — auto-start if deps available and config enables it
     airplay_receiver = None
-    if airplay and _HAS_AIRPLAY:
+    if config.airplay_enabled and _HAS_AIRPLAY:
         from alfieprime_musiciser.airplay.receiver import AirPlayReceiver
         ap_name = airplay_name or config.client_name
         airplay_receiver = AirPlayReceiver(
             tui, visualizer,
             device_name=ap_name,
             port=airplay_port,
+            config=config,
         )
         logger.info("AirPlay receiver enabled as '%s' on port %d", ap_name, airplay_port)
 
@@ -116,7 +117,10 @@ async def _run_with_config(
         receiver._running = True
         tasks.append(receiver._run_demo_mode())
     else:
-        tasks.append(receiver.start())
+        if config.sendspin_enabled:
+            tasks.append(receiver.start())
+        else:
+            logger.info("SendSpin receiver disabled by config")
     if airplay_receiver:
         tasks.append(airplay_receiver.start())
     await asyncio.gather(*tasks)
@@ -136,10 +140,6 @@ def main() -> None:
     parser.add_argument("--gui", action="store_true", help="Run in a standalone GUI window instead of the terminal")
     parser.add_argument("--daemon", "-d", action="store_true", help="Run as a headless service (no GUI/TUI, audio only)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
-    parser.add_argument(
-        "--airplay", action="store_true",
-        help="Also run as an AirPlay 2 receiver (requires av, pyaudio, pycryptodome, biplist, netifaces)",
-    )
     parser.add_argument("--airplay-name", default=None, help="AirPlay device name (default: client name)")
     parser.add_argument("--airplay-port", type=int, default=7000, help="AirPlay RTSP port (default: 7000)")
     args = parser.parse_args()
@@ -202,14 +202,6 @@ def main() -> None:
             pass
         return
 
-    # Check AirPlay deps if requested
-    if args.airplay and not _HAS_AIRPLAY:
-        console.print(
-            f"[bold yellow]Warning:[/] AirPlay dependencies not available ({_MISSING_REASON}).\n"
-            "Install with: [bright_cyan]pip install av pyaudio pycryptodome biplist netifaces[/]\n"
-            "Continuing without AirPlay.\n"
-        )
-
     # Check sendspin is installed
     try:
         from aiosendspin.client import SendspinClient  # noqa: F401
@@ -264,7 +256,6 @@ def main() -> None:
     try:
         asyncio.run(_run_with_config(
             config, gui=args.gui,
-            airplay=args.airplay,
             airplay_name=args.airplay_name,
             airplay_port=args.airplay_port,
         ))

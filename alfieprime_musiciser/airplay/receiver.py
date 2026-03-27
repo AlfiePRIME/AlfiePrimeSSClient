@@ -387,6 +387,7 @@ class AirPlayReceiver:
         # Prefer real LAN interfaces (192.168.x.x) over VPN/virtual adapters.
         logger.info("AirPlay: scanning network interfaces...")
         candidates: list[tuple[str, str]] = []  # (iface_name, ipv4)
+        seen_ips: set[str] = set()
         for name in ni.interfaces():
             addrs = ni.ifaddresses(name)
             logger.debug("  iface %s: families=%s", name, list(addrs.keys()))
@@ -394,8 +395,35 @@ class AirPlayReceiver:
                 for addr in addrs[ni.AF_INET]:
                     ip = addr.get("addr", "")
                     logger.debug("    IPv4: %s", ip)
-                    if ip and not ip.startswith("127."):
+                    if ip and not ip.startswith("127.") and ip not in seen_ips:
                         candidates.append((name, ip))
+                        seen_ips.add(ip)
+
+        # Fallback: netifaces on Windows often misses adapters.  Use the
+        # UDP-socket trick to find the default-route IP and also try
+        # socket.getaddrinfo to discover IPs netifaces doesn't report.
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(1)
+            s.connect(("8.8.8.8", 80))
+            default_ip = s.getsockname()[0]
+            s.close()
+            if default_ip and default_ip not in seen_ips:
+                logger.info("  default-route IP (socket probe): %s", default_ip)
+                candidates.append(("_default", default_ip))
+                seen_ips.add(default_ip)
+        except Exception as exc:
+            logger.debug("  UDP socket probe failed: %s", exc)
+
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                ip = info[4][0]
+                if ip and not ip.startswith("127.") and ip not in seen_ips:
+                    logger.info("  getaddrinfo IP: %s", ip)
+                    candidates.append(("_hostname", ip))
+                    seen_ips.add(ip)
+        except Exception as exc:
+            logger.debug("  getaddrinfo fallback failed: %s", exc)
 
         if not candidates:
             logger.error("No suitable network interface found for AirPlay")
@@ -425,21 +453,38 @@ class AirPlayReceiver:
         iface_name, ipv4_addr = candidates[0]
         logger.info("AirPlay: using interface %s (IPv4: %s)", iface_name, ipv4_addr)
 
-        # Get MAC address
-        ifen = ni.ifaddresses(iface_name)
+        # Get MAC address — try the selected interface first, then scan all
+        mac_addr = ""
+        ipv6_addr = ""
         link_key = getattr(ni, "AF_LINK", getattr(ni, "AF_PACKET", 17))
-        if ifen.get(link_key):
-            mac_addr = ifen[link_key][0].get("addr", "")
+
+        if not iface_name.startswith("_"):
+            # Real netifaces interface
+            ifen = ni.ifaddresses(iface_name)
+            if ifen.get(link_key):
+                mac_addr = ifen[link_key][0].get("addr", "")
+            if ifen.get(ni.AF_INET6):
+                ipv6_addr = ifen[ni.AF_INET6][0].get("addr", "").split("%")[0]
+        else:
+            # IP found via fallback — scan all interfaces for a MAC
+            for probe_name in ni.interfaces():
+                probe = ni.ifaddresses(probe_name)
+                if ni.AF_INET in probe:
+                    for a in probe[ni.AF_INET]:
+                        if a.get("addr") == ipv4_addr and probe.get(link_key):
+                            mac_addr = probe[link_key][0].get("addr", "")
+                            if probe.get(ni.AF_INET6):
+                                ipv6_addr = probe[ni.AF_INET6][0].get("addr", "").split("%")[0]
+                            break
+                if mac_addr:
+                    break
+
         if not mac_addr:
             # Generate a fake MAC if we can't find one
             mac_addr = "AA:BB:CC:%02X:%02X:%02X" % (
                 random.randint(0, 255), random.randint(0, 255), random.randint(0, 255),
             )
             logger.warning("Could not detect MAC address, using generated: %s", mac_addr)
-
-        # Get IPv6 if available
-        if ifen.get(ni.AF_INET6):
-            ipv6_addr = ifen[ni.AF_INET6][0].get("addr", "").split("%")[0]
 
         # Pack addresses to binary for mDNS registration
         ip4_bin = socket.inet_pton(socket.AF_INET, ipv4_addr)

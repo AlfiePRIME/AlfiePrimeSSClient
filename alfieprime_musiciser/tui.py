@@ -153,6 +153,12 @@ class BoomBoxTUI:
         # Easter egg: 33% chance of menu dancers
         self._settings_dancers: bool = False
         self._settings_dancer_tick: float = 0.0
+        # Mode transition animation
+        self._transition_active: bool = False
+        self._transition_start: float = 0.0
+        self._transition_duration: float = 0.6
+        self._transition_from: str = ""  # "main", "art", "art_calm"
+        self._transition_to: str = ""
         # Cached Rich Console instances (reused across frames)
         self._render_console: Console | None = None
         self._render_console_size: tuple[int, int] = (0, 0)
@@ -191,9 +197,24 @@ class BoomBoxTUI:
             title = "AlfiePRIME Musiciser"
         sys.stdout.write(f"\x1b]0;{title}\x07")
 
+    def _get_current_mode_name(self) -> str:
+        """Return the name of the current view mode."""
+        if self._art_mode and self.state.artwork_data:
+            return "art_calm" if self._art_calm else "art"
+        return "main"
+
+    def _start_transition(self, from_mode: str, to_mode: str) -> None:
+        """Begin a mode transition animation."""
+        self._transition_active = True
+        self._transition_start = time.monotonic()
+        self._transition_from = from_mode
+        self._transition_to = to_mode
+
     def _build_layout(self) -> Group:
         if self._settings_open:
             return self._build_settings_layout()
+        if self._transition_active:
+            return self._build_transition_layout()
         if self._art_mode and self.state.artwork_data:
             return self._build_art_layout()
         return self._build_main_layout()
@@ -207,6 +228,132 @@ class BoomBoxTUI:
                 return _generate_monochrome_theme(cfg.static_color)
             return ColorTheme()  # default rainbow
         return self.state.theme
+
+    def _build_transition_layout(self) -> Group:
+        """Render a CRT-style transition between modes.
+
+        Phase 1 (0.0-0.4): Content collapses to a bright horizontal scanline
+        Phase 2 (0.4-0.6): Scanline holds with phosphor glow
+        Phase 3 (0.6-1.0): New content expands from the scanline
+        """
+        elapsed = time.monotonic() - self._transition_start
+        progress = min(1.0, elapsed / self._transition_duration)
+
+        if progress >= 1.0:
+            self._transition_active = False
+            # Fall through to the target layout
+            if self._art_mode and self.state.artwork_data:
+                return self._build_art_layout()
+            return self._build_main_layout()
+
+        self._term_width, self._term_height = self._get_terminal_size()
+        term_w = self._term_width
+        term_h = self._term_height
+        mid_row = term_h // 2
+        t = time.monotonic()
+        th = self._get_effective_theme()
+
+        lines: list[Text] = []
+
+        if progress < 0.4:
+            # Phase 1: collapse to scanline
+            p = progress / 0.4
+            visible_half = max(0, int((1.0 - p) * mid_row))
+            for row in range(term_h):
+                line = Text()
+                dist = abs(row - mid_row)
+                if dist <= visible_half:
+                    # Dimming content with noise
+                    edge_fade = 1.0 - (dist / max(visible_half, 1)) * 0.5
+                    brightness = max(0.1, (1.0 - p) * edge_fade)
+                    noise_chance = p * 0.4
+                    chars = []
+                    for _ in range(term_w):
+                        if random.random() < noise_chance:
+                            chars.append(random.choice("░▒▓"))
+                        elif random.random() < 0.3:
+                            chars.append(random.choice("·.─"))
+                        else:
+                            chars.append(" ")
+                    br = int(min(255, 180 * brightness))
+                    # Tint with theme colour
+                    pr, pg, pb = _hex_to_rgb(th.primary)
+                    cr = int((br * 0.5 + pr * 0.5) * brightness)
+                    cg = int((br * 0.5 + pg * 0.5) * brightness)
+                    cb = int((br * 0.5 + pb * 0.5) * brightness)
+                    cr, cg, cb = min(255, cr), min(255, cg), min(255, cb)
+                    c = f"#{cr:02x}{cg:02x}{cb:02x}"
+                    if dist == 0:
+                        # Bright center scanline emerging
+                        scan_br = int(min(255, 100 + 155 * p))
+                        sc = f"#{scan_br:02x}{min(255, scan_br + 20):02x}{scan_br:02x}"
+                        line.append("━" * term_w, Style(color=sc, bold=True))
+                    else:
+                        line.append("".join(chars), Style(color=c))
+                else:
+                    line.append(" " * term_w)
+                lines.append(line)
+
+        elif progress < 0.6:
+            # Phase 2: bright scanline hold with phosphor glow
+            p = (progress - 0.4) / 0.2
+            flicker = 0.9 + 0.1 * math.sin(t * 60)
+            for row in range(term_h):
+                line = Text()
+                dist = abs(row - mid_row)
+                if dist == 0:
+                    br = int(min(255, 255 * flicker))
+                    pr, pg, pb = _hex_to_rgb(th.accent)
+                    cr = int(min(255, (br * 0.4 + pr * 0.6)))
+                    cg = int(min(255, (br * 0.4 + pg * 0.6)))
+                    cb = int(min(255, (br * 0.4 + pb * 0.6)))
+                    c = f"#{cr:02x}{cg:02x}{cb:02x}"
+                    line.append("━" * term_w, Style(color=c, bold=True))
+                elif dist <= 2:
+                    # Soft glow around scanline
+                    glow = max(0, 0.4 - dist * 0.15) * flicker
+                    br = int(80 * glow)
+                    c = f"#{br:02x}{min(255, br + 10):02x}{br:02x}"
+                    noise = "".join(
+                        random.choice("░·  ") for _ in range(term_w)
+                    )
+                    line.append(noise, Style(color=c))
+                else:
+                    line.append(" " * term_w)
+                lines.append(line)
+
+        else:
+            # Phase 3: expand new content from scanline
+            p = (progress - 0.6) / 0.4
+            visible_half = max(0, int(p * mid_row * 1.5))
+            for row in range(term_h):
+                line = Text()
+                dist = abs(row - mid_row)
+                if dist <= visible_half:
+                    edge_fade = 1.0 - (dist / max(visible_half, 1)) * 0.4
+                    brightness = min(1.0, p * 1.5) * edge_fade
+                    flicker = 0.9 + 0.1 * math.sin(t * 40 + row * 2)
+                    brightness *= flicker
+                    # Mix static noise with content revealing
+                    noise_chance = max(0, (1.0 - p) * 0.5)
+                    chars = []
+                    for _ in range(term_w):
+                        if random.random() < noise_chance:
+                            chars.append(random.choice("░▒▓█"))
+                        else:
+                            chars.append(random.choice(" ·"))
+                    br = int(min(255, 200 * brightness))
+                    pr, pg, pb = _hex_to_rgb(th.secondary)
+                    cr = int(min(255, (br * 0.6 + pr * 0.4)))
+                    cg = int(min(255, (br * 0.6 + pg * 0.4)))
+                    cb = int(min(255, (br * 0.6 + pb * 0.4)))
+                    c = f"#{cr:02x}{cg:02x}{cb:02x}"
+                    line.append("".join(chars), Style(color=c))
+                else:
+                    line.append(" " * term_w)
+                lines.append(line)
+
+        return Group(*lines)
 
     def _save_ui_state(self) -> None:
         """Persist UI state (art mode, calm mode) to config file."""
@@ -242,23 +389,41 @@ class BoomBoxTUI:
     def _build_crt_background(self, term_w: int, term_h: int) -> list[Text]:
         """Generate animated CRT scanline background lines."""
         t = time.time()
+        th = self.state.theme
+        pr, pg, pb = _hex_to_rgb(th.primary)
         bg_lines: list[Text] = []
         for row in range(term_h):
             line = Text()
-            flicker = 0.03 + 0.02 * math.sin(t * 8 + row * 0.7)
-            br = int(255 * flicker)
-            band_phase = math.sin(t * 1.5 + row * 0.15) * 0.5 + 0.5
-            if band_phase > 0.85:
-                br = int(br * 2.5)
-            br = max(0, min(255, br))
-            base_c = f"#{br:02x}{br:02x}{br:02x}"
+            # Rolling scanline: a bright band that scrolls down the screen
+            scanline_pos = (t * 8) % term_h
+            scan_dist = min(abs(row - scanline_pos), term_h - abs(row - scanline_pos))
+            scan_glow = max(0, 1.0 - scan_dist / 4.0) * 0.3
+
+            # Base flicker per row
+            flicker = 0.06 + 0.04 * math.sin(t * 6 + row * 0.5)
+            # Horizontal interference bands that drift
+            band_phase = math.sin(t * 1.2 + row * 0.12) * 0.5 + 0.5
+            if band_phase > 0.8:
+                flicker += 0.08
+            flicker += scan_glow
+
+            br = int(max(0, min(255, 255 * flicker)))
+            # Tint with theme primary
+            cr = max(0, min(255, int(br * 0.4 + pr * flicker * 0.3)))
+            cg = max(0, min(255, int(br * 0.4 + pg * flicker * 0.3)))
+            cb = max(0, min(255, int(br * 0.4 + pb * flicker * 0.3)))
+            base_c = f"#{cr:02x}{cg:02x}{cb:02x}"
+
+            # Build chars with more visible noise
             chars = []
-            for _ in range(term_w):
+            for col in range(term_w):
                 noise = random.random()
-                if noise < 0.02:
-                    chars.append(random.choice("░▒"))
-                elif noise < 0.04:
-                    chars.append("·")
+                # More noise near scanline
+                threshold = 0.06 + scan_glow * 0.3
+                if noise < threshold * 0.4:
+                    chars.append(random.choice("░▒▓"))
+                elif noise < threshold:
+                    chars.append(random.choice("·.╌"))
                 else:
                     chars.append(" ")
             line.append("".join(chars), Style(color=base_c))
@@ -1003,13 +1168,21 @@ class BoomBoxTUI:
         elif k == "r":
             self._fire_command("repeat")
         elif k == "a":
+            from_mode = self._get_current_mode_name()
             self._art_mode = not self._art_mode
             self._art_particles.clear()
             self._save_ui_state()
+            to_mode = self._get_current_mode_name()
+            if from_mode != to_mode:
+                self._start_transition(from_mode, to_mode)
         elif k == "c" and self._art_mode:
+            from_mode = self._get_current_mode_name()
             self._art_calm = not self._art_calm
             self._art_particles.clear()
             self._save_ui_state()
+            to_mode = self._get_current_mode_name()
+            if from_mode != to_mode:
+                self._start_transition(from_mode, to_mode)
         elif k == "arrow_up":
             self._fire_command("volume_up")
         elif k == "arrow_down":

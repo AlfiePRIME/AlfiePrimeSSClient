@@ -33,6 +33,10 @@ from alfieprime_musiciser.colors import (
 # keyed on (hash(image_data), target_w, target_h, hq).
 _braille_art_cache: dict[tuple[int, int, int, bool], list[Text]] = {}
 
+# Smoothed crowd energy — builds up fast, decays slowly
+_crowd_energy: float = 0.0
+_crowd_energy_time: float = 0.0
+
 # Pre-computed hex lookup table: index 0-255 → two-char hex string
 _HEX_LUT = [f"{i:02x}" for i in range(256)]
 
@@ -1073,7 +1077,19 @@ def render_party_scene(
     ]
 
     # Energy-reactive dancer selection (male/female pairs interleaved)
-    energy = min(1.0, avg_level + beat_intensity * 0.5)
+    # Smooth crowd energy: fast attack (~0.3s), slow decay (~2s)
+    global _crowd_energy, _crowd_energy_time
+    raw_energy = min(1.0, avg_level + beat_intensity * 0.5)
+    now = time.time()
+    dt = min(now - _crowd_energy_time, 0.2) if _crowd_energy_time > 0 else 0.033
+    _crowd_energy_time = now
+    if raw_energy > _crowd_energy:
+        # Fast build-up
+        _crowd_energy += (raw_energy - _crowd_energy) * min(1.0, dt * 4.0)
+    else:
+        # Slow decay
+        _crowd_energy += (raw_energy - _crowd_energy) * min(1.0, dt * 0.6)
+    energy = _crowd_energy
     if energy < 0.3:
         dancer_pool = [dancer_a, dancer_ga, dancer_b, dancer_gb]
     elif energy <= 0.6:

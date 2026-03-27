@@ -195,6 +195,7 @@ def render_transport_controls(
     text.append("[N]ext ", _STYLE_HINT)
     text.append("[R]epeat ", _STYLE_HINT)
     text.append("[↑↓]Vol ", _STYLE_HINT)
+    text.append("[M]ute ", _STYLE_HINT)
     text.append("[A]rt", _STYLE_HINT)
 
     return text, buttons
@@ -678,6 +679,13 @@ def render_braille_art(
         img = _PILImage.open(_io.BytesIO(image_data))
     except Exception:
         return []
+
+    # Flatten alpha onto a dark background so transparent regions don't
+    # render as solid black (PIL default).
+    if img.mode in ("RGBA", "LA", "PA"):
+        bg = _PILImage.new("RGB", img.size, (30, 30, 30))
+        bg.paste(img, mask=img.split()[-1])  # alpha channel as mask
+        img = bg
 
     px_w = width * 2
     px_h = height * 4

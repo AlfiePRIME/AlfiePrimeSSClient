@@ -310,6 +310,13 @@ class AudioVisualizer:
         self._peaks *= 0.95
         self._vu_left *= 0.85
         self._vu_right *= 0.85
+        # Clamp near-zero residuals so bars fully disappear
+        self._bands[self._bands < 0.005] = 0.0
+        self._peaks[self._peaks < 0.005] = 0.0
+        if self._vu_left < 0.005:
+            self._vu_left = 0.0
+        if self._vu_right < 0.005:
+            self._vu_right = 0.0
 
     def get_beat(self) -> tuple[int, float]:
         """Return (beat_count, beat_intensity). Count increments on each beat."""

@@ -843,6 +843,7 @@ class SettingsMixin:
         ]
         if not cfg.swap_prompt:
             proto_items.append(("Auto Action", "swap_auto_action", cfg.swap_auto_action))
+        proto_items.append(("Forget AirPlay Devices", "forget_airplay_devices", cfg.forget_airplay_devices))
 
         panel_lines: list[Text] = []
         title_line = Text()
@@ -878,7 +879,7 @@ class SettingsMixin:
                 item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
                 if selected:
                     item.append("  ◂▸", Style(color="#555555"))
-            elif key in ("airplay_enabled", "sendspin_enabled", "swap_prompt"):
+            elif key in ("airplay_enabled", "sendspin_enabled", "swap_prompt", "forget_airplay_devices"):
                 val_str = "ON" if value else "OFF"
                 val_color = th.accent if value else "#666666"
                 item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
@@ -911,6 +912,7 @@ class SettingsMixin:
         proto_keys = ["airplay_enabled", "sendspin_enabled", "swap_prompt"]
         if not cfg.swap_prompt:
             proto_keys.append("swap_auto_action")
+        proto_keys.append("forget_airplay_devices")
 
         if k in ("b", "escape"):
             self._start_menu_fade_out(lambda: setattr(self, '_settings_sub', ''))
@@ -931,6 +933,8 @@ class SettingsMixin:
                     self._protocol_cursor = min(self._protocol_cursor, 2)
             elif key == "swap_auto_action":
                 cfg.swap_auto_action = "accept" if cfg.swap_auto_action == "deny" else "deny"
+            elif key == "forget_airplay_devices":
+                cfg.forget_airplay_devices = not cfg.forget_airplay_devices
             if self._config:
                 self._config = cfg
                 cfg.save()

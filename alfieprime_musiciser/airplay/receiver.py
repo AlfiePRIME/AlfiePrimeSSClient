@@ -204,8 +204,9 @@ class _PCMConsumer:
 class _MetadataHook:
     """Receives metadata + artwork from the AP2Handler and updates PlayerState."""
 
-    def __init__(self, state: PlayerState):
+    def __init__(self, state: PlayerState, visualizer: AudioVisualizer | None = None):
         self._state = state
+        self._visualizer = visualizer
         self._last_title = ""
 
     def _is_active(self) -> bool:
@@ -221,6 +222,8 @@ class _MetadataHook:
                 self._state.playback_speed = 0.0
                 self._state.progress_update_time = time.monotonic()
             self._state.is_playing = playing
+            if self._visualizer:
+                self._visualizer.set_paused(not playing)
         else:
             self._state.write_to_snapshot("airplay", is_playing=playing)
 
@@ -898,12 +901,22 @@ class AirPlayReceiver:
         if command == "volume_up":
             new_vol = min(100, state.volume + 5)
             state.volume = new_vol
+            if state.muted:
+                state.muted = False
+                logger.info("AirPlay unmuted via volume up")
             logger.info("AirPlay volume up: %d%%", new_vol)
             return
         elif command == "volume_down":
             new_vol = max(0, state.volume - 5)
             state.volume = new_vol
+            if state.muted:
+                state.muted = False
+                logger.info("AirPlay unmuted via volume down")
             logger.info("AirPlay volume down: %d%%", new_vol)
+            return
+        elif command == "mute":
+            state.muted = not state.muted
+            logger.info("AirPlay mute %s", "on" if state.muted else "off")
             return
 
         # Play/pause — local only: mute/unmute our speaker output.
@@ -1148,7 +1161,7 @@ class AirPlayReceiver:
         logger.debug("AirPlay: mDNS TXT props: %s", {k: v for k, v in mdns_props.items() if k != 'pk'})
 
         # Create metadata hook
-        meta_hook = _MetadataHook(self._state)
+        meta_hook = _MetadataHook(self._state, visualizer=self._visualizer)
 
         # Create patched handler
         HandlerClass = _create_patched_handler(meta_hook, self._remote, config=self._config)
@@ -1392,4 +1405,32 @@ class AirPlayReceiver:
             except Exception:
                 pass
 
+        # Clear pairing state so devices can reconnect on next start.
+        # Transient pairing (Ft48) means clients re-pair each session anyway,
+        # but stale files cause an LTSK/DeviceProperties mismatch that forces
+        # a double-restart.  Always clear client pairings; optionally clear
+        # the server keypair too (forget_airplay_devices setting).
+        self._clear_pairing_store()
+
         logger.info("AirPlay receiver stopped")
+
+    def _clear_pairing_store(self) -> None:
+        """Remove HAP pairing files so next startup gets a clean handshake."""
+        pairings_dir = os.path.join(_LOG_DIR, "pairings")
+        if not os.path.isdir(pairings_dir):
+            return
+        forget_all = getattr(self._config, "forget_airplay_devices", False)
+        try:
+            for fname in os.listdir(pairings_dir):
+                fpath = os.path.join(pairings_dir, fname)
+                if not os.path.isfile(fpath):
+                    continue
+                # Always clear client pairings and device props (fixes
+                # the double-restart bug).  Only clear the LTSK (server
+                # identity) when "forget devices" is enabled.
+                if fname == "ltsk.txt" and not forget_all:
+                    continue
+                os.remove(fpath)
+                logger.debug("AirPlay: removed pairing file %s", fname)
+        except Exception:
+            logger.debug("AirPlay: failed to clear pairing store", exc_info=True)

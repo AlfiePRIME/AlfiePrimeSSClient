@@ -43,6 +43,8 @@ class Config:
     swap_auto_action: str = "deny"  # "accept" or "deny" when prompt is off
     # Devices the user has previously accepted via the swap prompt
     accepted_devices: list[str] = field(default_factory=list)
+    # Clear AirPlay pairing data on close so devices must re-pair
+    forget_airplay_devices: bool = False
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)

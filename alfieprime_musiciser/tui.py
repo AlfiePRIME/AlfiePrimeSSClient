@@ -704,6 +704,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             ]
         hint_parts += [
             ("[↑↓]Vol ", "vol", False),
+            ("[M]ute ", "vol", self.state.muted),
             ("[/]Settings ", "/", False),
             ("[Q]uit", "q", False),
         ]
@@ -781,7 +782,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         if self.state.artwork_data and show_art:
             art_w = 20
             art_h = 8  # gives 16x32 effective pixel grid
-            art_lines = render_braille_art(self.state.artwork_data, art_w, art_h, theme=th)
+            art_lines = render_braille_art(self.state.artwork_data, art_w, art_h, theme=th, hq=True)
 
         if art_lines:
             np_grid = Table.grid(padding=0, expand=True)
@@ -992,6 +993,9 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             if from_mode != to_mode:
                 self._start_transition(from_mode, to_mode)
             self._flash_hint("c")
+        elif k == "m":
+            self._fire_command("mute")
+            self._flash_hint("vol")
         elif k == "arrow_up":
             if self._airplay_debug and not self.state.connected:
                 self._debug_scroll_offset = min(

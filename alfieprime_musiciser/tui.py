@@ -387,18 +387,25 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             title_align="center", border_style=th.warm, padding=(0, 0),
         ))
 
-        # ── Key hint at bottom ──
+        # ── Key hint at bottom (centered) ──
+        hint_parts = [
+            ("[A]rt ", "a", self._art_mode),
+            ("[C]alm ", "c", self._art_calm),
+            ("[P]lay ", "p", False),
+            ("[N]ext ", "n", False),
+            ("[B]ack ", "b", False),
+            ("[S]huf ", "s", self.state.shuffle),
+            ("[R]epeat ", "r", self.state.repeat_mode != "off"),
+            ("[↑↓]Vol ", "vol", False),
+            ("[/]Settings ", "/", False),
+            ("[Q]uit", "q", False),
+        ]
+        hint_text_len = sum(len(label) for label, _, _ in hint_parts)
+        pad_l = max(0, (term_w - hint_text_len) // 2)
         hint = Text()
-        hint.append(" [A]rt ", self._hint_style("a", active=self._art_mode))
-        hint.append("[C]alm ", self._hint_style("c", active=self._art_calm))
-        hint.append("[P]lay ", self._hint_style("p"))
-        hint.append("[N]ext ", self._hint_style("n"))
-        hint.append("[B]ack ", self._hint_style("b"))
-        hint.append("[S]huf ", self._hint_style("s", active=self.state.shuffle))
-        hint.append("[R]epeat ", self._hint_style("r", active=self.state.repeat_mode != "off"))
-        hint.append("[↑↓]Vol ", self._hint_style("vol"))
-        hint.append("[/]Settings ", self._hint_style("/"))
-        hint.append("[Q]uit", self._hint_style("q"))
+        hint.append(" " * pad_l)
+        for label, key, active in hint_parts:
+            hint.append(label, self._hint_style(key, active=active))
         parts.append(hint)
 
         return Group(*parts)

@@ -757,7 +757,7 @@ class BoomBoxTUI:
         hint.append("[↑↓] Navigate  ", Style(color="#555555"))
         hint.append("[Enter/Space] Toggle  ", Style(color="#555555"))
         hint.append("[◂▸] Adjust  ", Style(color="#555555"))
-        hint.append("[/] Close", Style(color="#555555"))
+        hint.append("[Q] Close", Style(color="#555555"))
         panel_lines.append(hint)
 
         dancer_lines = self._render_menu_dancers(panel_w)
@@ -867,7 +867,7 @@ class BoomBoxTUI:
         else:
             hint.append("[↑↓] Navigate  ", Style(color="#555555"))
             hint.append("[Enter] Edit  ", Style(color="#555555"))
-            hint.append("[/] Back", Style(color="#555555"))
+            hint.append("[B] Back", Style(color="#555555"))
         panel_lines.append(hint)
 
         dancer_lines = self._render_menu_dancers(panel_w)
@@ -1051,7 +1051,7 @@ class BoomBoxTUI:
         else:
             hint.append("[↑↓◂▸] Navigate  ", Style(color="#555555"))
             hint.append("[Enter] Select  ", Style(color="#555555"))
-            hint.append("[/] Back", Style(color="#555555"))
+            hint.append("[B] Back", Style(color="#555555"))
         panel_lines.append(hint)
 
         dancer_lines = self._render_menu_dancers(panel_w)
@@ -1360,8 +1360,8 @@ class BoomBoxTUI:
 
         # ── Settings menu controls ──
         if self._settings_open:
-            # 'w' exits settings from any submenu (unless editing text)
-            if k == "w" and not self._advanced_editing and not self._color_hex_editing and not self._advanced_confirm_reset:
+            # 'q' exits settings from any submenu (unless editing text)
+            if k == "q" and not self._advanced_editing and not self._color_hex_editing and not self._advanced_confirm_reset:
                 self._settings_sub = ""
                 self._start_menu_fade_out(lambda: setattr(self, '_settings_open', False))
                 return
@@ -1423,7 +1423,7 @@ class BoomBoxTUI:
 
     def _handle_settings_main_key(self, k: str) -> None:
         """Handle keys in the main settings menu."""
-        if k == "/" or k == "escape":
+        if k == "escape":
             self._start_menu_fade_out(lambda: setattr(self, '_settings_open', False))
         elif k == "a":
             def _switch_to_advanced() -> None:
@@ -1480,7 +1480,7 @@ class BoomBoxTUI:
                 self._advanced_edit_buf += raw_key
             return
 
-        if k == "/" or k == "escape":
+        if k == "b" or k == "escape":
             self._start_menu_fade_out(lambda: setattr(self, '_settings_sub', ''))
         elif k == "arrow_up":
             self._advanced_cursor = (self._advanced_cursor - 1) % len(self._advanced_items)
@@ -1528,7 +1528,7 @@ class BoomBoxTUI:
             return
 
         total = 17  # 16 presets + 1 clear
-        if k == "/" or k == "escape":
+        if k == "b" or k == "escape":
             self._start_menu_fade_out(lambda: setattr(self, '_settings_sub', ''))
         elif k == "arrow_up":
             if self._color_cursor == 16:

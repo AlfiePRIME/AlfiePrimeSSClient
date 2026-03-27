@@ -199,7 +199,7 @@ Album artwork arrives as binary WebSocket messages. Since the client library doe
 | [Pillow](https://pillow.readthedocs.io/) | Album art colour extraction via median-cut quantization |
 | [psutil](https://psutil.readthedocs.io/) | System stats (CPU, memory, network) — optional |
 | [dbus-next](https://github.com/altdesktop/python-dbus-next) | MPRIS2 media controls — Linux only, auto-installed |
-| [winsdk](https://github.com/pywinrt/python-winsdk) | SMTC media controls — Windows only, auto-installed |
+| [winsdk](https://github.com/pywinrt/python-winsdk) | SMTC media controls — Windows only, optional (requires Visual Studio Build Tools to compile) |
 
 ## License
 

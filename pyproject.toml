@@ -9,8 +9,10 @@ dependencies = [
     "rich>=13.0.0",
     "Pillow>=10.0.0",
     "dbus-next>=0.2.3; sys_platform == 'linux'",
-    "winsdk>=1.0.0b10; sys_platform == 'win32'",
 ]
+
+[project.optional-dependencies]
+smtc = ["winsdk>=1.0.0b10"]
 
 [project.scripts]
 alfieprime-musiciser = "alfieprime_musiciser.main:main"

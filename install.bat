@@ -143,6 +143,20 @@ if %errorlevel% neq 0 (
 echo  [OK] Installation complete!
 echo.
 
+:: --- Try to install winsdk for Windows media key support (optional) ---
+echo  [3b/4] Installing Windows media key support (optional)...
+%PYTHON_CMD% -m pipx inject alfieprime-musiciser winsdk --quiet 2>nul
+if %errorlevel% neq 0 (
+    echo  [!] winsdk could not be installed (needs Visual Studio Build Tools).
+    echo      Media keys/lock screen controls won't be available.
+    echo      Everything else works fine. You can install later with:
+    echo        pipx inject alfieprime-musiciser winsdk
+    echo.
+) else (
+    echo  [OK] Windows media key support installed
+    echo.
+)
+
 :: --- Find the installed GUI launcher (runs via pythonw, no console flash) ---
 set "APP_EXE="
 

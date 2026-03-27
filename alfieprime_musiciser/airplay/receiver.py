@@ -437,10 +437,24 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
         _dacp_client = dacp_client
         _config = config
 
+        def __init__(self, socket, client_address, server):
+            super().__init__(socket, client_address, server)
+            # Suppress vendor logger's screen output — route to file only
+            self.logger.setLevel(logging.WARNING)
+            self.logger.propagate = False
+
+        def log_request(self, code="-", size="-"):
+            """Suppress BaseHTTPRequestHandler stderr output."""
+            pass
+
+        def log_message(self, format, *args):
+            """Redirect HTTP log messages to our file logger instead of stderr."""
+            logger.debug(format, *args)
+
         def dispatch(self):
             """Override dispatch to log all requests and catch exceptions."""
             path = self.path.split("?")[0] if "?" in self.path else self.path
-            logger.info("AirPlay: %s %s from %s", self.command, path, self.client_address[0])
+            logger.debug("AirPlay: %s %s from %s", self.command, path, self.client_address[0])
             try:
                 super().dispatch()
             except Exception:
@@ -1134,6 +1148,9 @@ class AirPlayReceiver:
         # Start RTSP server
         try:
             self._server = AP2Server((bind_addr, self._port), HandlerClass)
+            # Suppress the server's vendor logger from writing to the console
+            self._server.logger.setLevel(logging.WARNING)
+            self._server.logger.propagate = False
             self._pcm_consumer = pcm_consumer
             # Mark server as ready (listening) — actual connected=True happens
             # in do_RECORD when a client starts streaming.

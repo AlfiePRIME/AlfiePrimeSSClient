@@ -755,9 +755,11 @@ class SettingsMixin:
         elif item == "use_art_colors":
             cfg.use_art_colors = not cfg.use_art_colors
         elif item == "static_color":
-            self._settings_sub = "color_picker"
-            self._color_cursor = 0
-            self._color_hex_editing = False
+            def _open_color_picker() -> None:
+                self._settings_sub = "color_picker"
+                self._color_cursor = 0
+                self._color_hex_editing = False
+            self._start_menu_fade_out(_open_color_picker)
             return
         if self._config:
             self._config = cfg

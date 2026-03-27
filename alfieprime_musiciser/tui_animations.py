@@ -417,6 +417,21 @@ class AnimationsMixin:
             f"                                 ",
             f"     {spin_ch} Connecting{dots}             ",
         ]
+
+        # After 2 minutes, show a hint asking if the server is running
+        elapsed = time.monotonic() - self._connect_wait_start if self._connect_wait_start else 0
+        if elapsed >= 120:
+            art.append(f"                                 ")
+            hint1 = "Is your server running?"
+            hint2 = "Still listening for a connection..."
+            art.append(f"  {hint1:^29}    ")
+            art.append(f"  {hint2:^29}    ")
+
+            # Pulsing minutes counter
+            mins = int(elapsed // 60)
+            wait_msg = f"Waiting for {mins}m {int(elapsed % 60):02d}s"
+            art.append(f"  {wait_msg:^29}    ")
+
         # Ensure all lines are exactly AW chars
         art = [(line + " " * AW)[:AW] for line in art]
 

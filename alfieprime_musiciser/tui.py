@@ -154,6 +154,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         self._gui_console_size: tuple[int, int] = (0, 0)
         self._crt_console: Console | None = None
         self._crt_console_size: tuple[int, int] = (0, 0)
+        # Connecting timeout hint
+        self._connect_wait_start: float = 0.0
 
     def _restore_cached_state(self, config: Config | None) -> None:
         """Restore theme and artwork from last session for the intro animation."""
@@ -914,6 +916,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
                 await asyncio.sleep(1 / 60)
 
             # ── Phase 2: Hold on static until connected ──
+            self._connect_wait_start = time.monotonic()
             while self._running and not self.state.connected:
                 term_w, term_h = self._get_terminal_size()
                 segs = self._crt_static_hold_segments(term_w, term_h)
@@ -1001,6 +1004,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
                 await asyncio.sleep(1 / 60)
 
             # ── Phase 2: Hold on static until connected ──
+            self._connect_wait_start = time.monotonic()
             while self._running and gui.alive and not self.state.connected:
                 gui.process_events()
                 term_w, term_h = self._get_terminal_size()

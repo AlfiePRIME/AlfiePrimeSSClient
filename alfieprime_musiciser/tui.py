@@ -315,8 +315,12 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
                 border_style=th.border_title, padding=(0, 1),
             ))
             reserved_rows += 3  # title banner
-            art_h = max(8, term_h - reserved_rows)
-            art_w = max(20, flush_inner)
+            max_h = max(8, term_h - reserved_rows)
+            max_w = max(20, flush_inner)
+            # Keep visually square: art_w = 2*art_h (terminal chars ~2:1 height:width)
+            # Fill as much of the screen as possible within both constraints
+            art_h = min(max_h, max_w // 2)
+            art_w = art_h * 2
             art_lines = render_braille_art(
                 self.state.artwork_data, art_w, art_h, theme=th, hq=True,
             )

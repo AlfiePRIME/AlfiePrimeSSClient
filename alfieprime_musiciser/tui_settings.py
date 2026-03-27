@@ -250,14 +250,18 @@ class SettingsMixin:
         ]
         panel_w = 54
         bg_lines = self._build_crt_background(term_w, term_h)
+        def _center(text: str) -> str:
+            pad = max(0, (panel_w - len(text)) // 2)
+            return " " * pad + text
+
         panel_lines: list[Text] = []
-        title_line = Text(justify="center")
+        title_line = Text()
         title_line.append("━" * panel_w, Style(color=th.primary, bold=True))
         panel_lines.append(title_line)
-        header = Text(justify="center")
-        header.append(" ◈ SETTINGS ◈ ", Style(color=th.primary, bold=True))
+        header = Text()
+        header.append(_center(" ◈ SETTINGS ◈ "), Style(color=th.primary, bold=True))
         panel_lines.append(header)
-        title_line2 = Text(justify="center")
+        title_line2 = Text()
         title_line2.append("━" * panel_w, Style(color=th.primary, bold=True))
         panel_lines.append(title_line2)
         panel_lines.append(Text(""))
@@ -311,10 +315,12 @@ class SettingsMixin:
         adv_line.append("Advanced", Style(color=adv_color, bold=True))
         panel_lines.append(adv_line)
         panel_lines.append(Text(""))
-        footer = Text(justify="center")
+        footer = Text()
         footer.append("━" * panel_w, Style(color=th.primary_dim))
         panel_lines.append(footer)
-        hint = Text(justify="center")
+        hint_text = "[↑↓] Navigate  [Enter/Space] Toggle  [◂▸] Adjust  [Q] Close"
+        hint = Text()
+        hint.append(" " * max(0, (panel_w - len(hint_text)) // 2))
         hint.append("[↑↓] Navigate  ", Style(color="#555555"))
         hint.append("[Enter/Space] Toggle  ", Style(color="#555555"))
         hint.append("[◂▸] Adjust  ", Style(color="#555555"))
@@ -334,22 +340,26 @@ class SettingsMixin:
         bg_lines = self._build_crt_background(term_w, term_h, danger=True)
         if self._advanced_confirm_reset:
             return self._build_reset_confirm_layout(bg_lines, panel_w, term_w, term_h, t)
+        def _center(text: str) -> str:
+            pad = max(0, (panel_w - len(text)) // 2)
+            return " " * pad + text
+
         panel_lines: list[Text] = []
         glow = 0.5 + 0.5 * math.sin(t * 3)
         r_val = int(180 + 75 * glow)
         title_c = _safe_hex(r_val, 0, 0)
-        title_line = Text(justify="center")
+        title_line = Text()
         title_line.append("━" * panel_w, Style(color=title_c, bold=True))
         panel_lines.append(title_line)
-        header = Text(justify="center")
-        header.append(" ☠ ADVANCED ☠ ", Style(color=title_c, bold=True))
+        header = Text()
+        header.append(_center(" ☠ ADVANCED ☠ "), Style(color=title_c, bold=True))
         panel_lines.append(header)
-        title_line2 = Text(justify="center")
+        title_line2 = Text()
         title_line2.append("━" * panel_w, Style(color=title_c, bold=True))
         panel_lines.append(title_line2)
         panel_lines.append(Text(""))
-        warn = Text(justify="center")
-        warn.append("Changing these may break server recognition", Style(color="#aa4444"))
+        warn = Text()
+        warn.append(_center("Changing these may break server recognition"), Style(color="#aa4444"))
         panel_lines.append(warn)
         panel_lines.append(Text(""))
         adv_items: list[tuple[str, str, str]] = [
@@ -393,15 +403,19 @@ class SettingsMixin:
                 item.append(f" {display}", Style(color="#cc8888" if selected else "#666666"))
             panel_lines.append(item)
             panel_lines.append(Text(""))
-        footer = Text(justify="center")
+        footer = Text()
         footer.append("━" * panel_w, Style(color="#661111"))
         panel_lines.append(footer)
-        hint = Text(justify="center")
+        hint = Text()
         if self._advanced_editing:
+            hint_text = "[Type] Edit  [Enter] Save  [Esc] Cancel"
+            hint.append(" " * max(0, (panel_w - len(hint_text)) // 2))
             hint.append("[Type] Edit  ", Style(color="#555555"))
             hint.append("[Enter] Save  ", Style(color="#555555"))
             hint.append("[Esc] Cancel", Style(color="#555555"))
         else:
+            hint_text = "[↑↓] Navigate  [Enter] Edit  [B] Back"
+            hint.append(" " * max(0, (panel_w - len(hint_text)) // 2))
             hint.append("[↑↓] Navigate  ", Style(color="#555555"))
             hint.append("[Enter] Edit  ", Style(color="#555555"))
             hint.append("[B] Back", Style(color="#555555"))
@@ -501,23 +515,29 @@ class SettingsMixin:
         cfg = self._config or Config()
         panel_w = 46
         bg_lines = self._build_crt_background(term_w, term_h)
+        def _center(text: str) -> str:
+            pad = max(0, (panel_w - len(text)) // 2)
+            return " " * pad + text
+
         panel_lines: list[Text] = []
-        title_line = Text(justify="center")
+        title_line = Text()
         title_line.append("━" * panel_w, Style(color=th.primary, bold=True))
         panel_lines.append(title_line)
-        header = Text(justify="center")
-        header.append(" ◈ STATIC COLOUR ◈ ", Style(color=th.primary, bold=True))
+        header = Text()
+        header.append(_center(" ◈ STATIC COLOUR ◈ "), Style(color=th.primary, bold=True))
         panel_lines.append(header)
-        title_line2 = Text(justify="center")
+        title_line2 = Text()
         title_line2.append("━" * panel_w, Style(color=th.primary, bold=True))
         panel_lines.append(title_line2)
         panel_lines.append(Text(""))
-        cur = Text(justify="center")
+        cur = Text()
         if cfg.static_color:
+            cur_text = f"Current: ████ {cfg.static_color}"
+            cur.append(" " * max(0, (panel_w - len(cur_text)) // 2))
             cur.append("Current: ", Style(color="#888888"))
             cur.append(f"████ {cfg.static_color}", Style(color=cfg.static_color, bold=True))
         else:
-            cur.append("Current: None", Style(color="#666666"))
+            cur.append(_center("Current: None"), Style(color="#666666"))
         panel_lines.append(cur)
         panel_lines.append(Text(""))
         for row_idx in range(4):
@@ -569,15 +589,19 @@ class SettingsMixin:
         ))
         panel_lines.append(clear_line)
         panel_lines.append(Text(""))
-        footer = Text(justify="center")
+        footer = Text()
         footer.append("━" * panel_w, Style(color=th.primary_dim))
         panel_lines.append(footer)
-        hint = Text(justify="center")
+        hint = Text()
         if self._color_hex_editing:
+            hint_text = "[Type] Hex  [Enter] Apply  [Esc] Cancel"
+            hint.append(" " * max(0, (panel_w - len(hint_text)) // 2))
             hint.append("[Type] Hex  ", Style(color="#555555"))
             hint.append("[Enter] Apply  ", Style(color="#555555"))
             hint.append("[Esc] Cancel", Style(color="#555555"))
         else:
+            hint_text = "[↑↓◂▸] Navigate  [Enter] Select  [B] Back"
+            hint.append(" " * max(0, (panel_w - len(hint_text)) // 2))
             hint.append("[↑↓◂▸] Navigate  ", Style(color="#555555"))
             hint.append("[Enter] Select  ", Style(color="#555555"))
             hint.append("[B] Back", Style(color="#555555"))
@@ -617,7 +641,7 @@ class SettingsMixin:
                     pass
                 os.execv(sys.executable, [sys.executable] + sys.argv)
             elif k in ("n", "escape", "/"):
-                self._advanced_confirm_reset = False
+                self._start_menu_fade_out(lambda: setattr(self, '_advanced_confirm_reset', False))
             return
         if self._advanced_editing:
             if k == "escape":
@@ -647,7 +671,7 @@ class SettingsMixin:
         elif k in (" ", "\r", "\n"):
             field = self._advanced_items[self._advanced_cursor]
             if field == "reset_config":
-                self._advanced_confirm_reset = True
+                self._start_menu_fade_out(lambda: setattr(self, '_advanced_confirm_reset', True))
                 return
             cfg = self._config or Config()
             self._advanced_editing = field

@@ -319,6 +319,8 @@ class SendSpinReceiver:
         self._state.server_name = server_name
         logger.info("Connected to server: %s (%s)", server_name, remote)
 
+        await self._apply_auto_settings()
+
         # Wait for disconnect
         try:
             disconnect_event = asyncio.Event()
@@ -355,6 +357,8 @@ class SendSpinReceiver:
                 self._state.connected = True
                 self._state.server_name = url
                 backoff = 1.0
+
+                await self._apply_auto_settings()
 
                 # Wait for disconnect
                 disconnect_event = asyncio.Event()
@@ -619,6 +623,29 @@ class SendSpinReceiver:
             if self._config:
                 self._config.cached_theme = {}
                 self._config.save()
+
+    async def _apply_auto_settings(self) -> None:
+        """Apply auto-play and auto-volume settings on connect."""
+        cfg = self._config
+        if cfg is None:
+            return
+
+        # Auto volume: set local volume immediately on connect
+        if cfg.auto_volume >= 0:
+            vol = max(0, min(100, cfg.auto_volume))
+            self._state.volume = vol
+            logger.info("Auto-volume: setting to %d%%", vol)
+            if self._audio_handler is not None:
+                self._audio_handler.set_volume(vol, muted=self._state.muted)
+
+        # Auto play: send play command on connect
+        if cfg.auto_play and self._client is not None and self._client.connected:
+            from aiosendspin.models.types import MediaCommand
+            try:
+                await self._client.send_group_command(MediaCommand.PLAY)
+                logger.info("Auto-play: sent PLAY command")
+            except Exception:
+                logger.debug("Auto-play failed", exc_info=True)
 
     def _on_transport_command(self, command: str) -> None:
         """Handle a transport command from the TUI (called from input thread)."""

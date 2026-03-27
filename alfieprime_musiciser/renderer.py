@@ -29,6 +29,10 @@ from alfieprime_musiciser.colors import (
 
 # ─── Performance: cached helpers ─────────────────────────────────────────────
 
+# Memoization cache for render_braille_art – keeps only the most recent entry
+# keyed on (hash(image_data), target_w, target_h, hq).
+_braille_art_cache: dict[tuple[int, int, int, bool], list[Text]] = {}
+
 # Pre-computed hex lookup table: index 0-255 → two-char hex string
 _HEX_LUT = [f"{i:02x}" for i in range(256)]
 
@@ -598,6 +602,11 @@ def render_braille_art(
     if _PILImage is None or _io is None:
         return []
 
+    # ── memoization: avoid re-decoding/re-rendering the same image ──
+    cache_key = (hash(image_data), width, height, hq)
+    if cache_key in _braille_art_cache:
+        return _braille_art_cache[cache_key]
+
     try:
         img = _PILImage.open(_io.BytesIO(image_data))
     except Exception:
@@ -689,6 +698,10 @@ def render_braille_art(
                 color = _fast_rgb_hex_int(r, g, b)
                 line.append(char, _cached_style(color))
             lines.append(line)
+
+    # Store result in cache, keeping only the latest entry
+    _braille_art_cache.clear()
+    _braille_art_cache[cache_key] = lines
 
     return lines
 

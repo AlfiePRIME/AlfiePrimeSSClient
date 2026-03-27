@@ -81,9 +81,29 @@ _VENDOR_ROOT = os.path.join(os.path.dirname(__file__), "vendor")
 
 
 def _patch_vendor_imports() -> None:
-    """Add the vendor directory to sys.path and alias 'ap2' → vendored copy."""
+    """Add the vendor directory to sys.path and fix known packaging issues."""
     if _VENDOR_ROOT not in sys.path:
         sys.path.insert(0, _VENDOR_ROOT)
+
+    # Fix: an empty ap2/playfair/ directory can shadow the real ap2/playfair.py
+    # module. Detect and remove it at runtime if it exists.
+    playfair_dir = os.path.join(_VENDOR_ROOT, "ap2", "playfair")
+    playfair_init = os.path.join(playfair_dir, "__init__.py")
+    playfair_mod = os.path.join(_VENDOR_ROOT, "ap2", "playfair.py")
+    if os.path.isdir(playfair_dir) and os.path.isfile(playfair_mod):
+        init_size = os.path.getsize(playfair_init) if os.path.isfile(playfair_init) else -1
+        if init_size <= 0:
+            # Empty __init__.py shadowing the real module — remove the directory
+            import shutil
+            try:
+                shutil.rmtree(playfair_dir)
+                logger.info("Removed empty ap2/playfair/ directory that was shadowing playfair.py")
+            except OSError as exc:
+                logger.warning("Could not remove ap2/playfair/ directory: %s", exc)
+            # Purge any cached bad import
+            for key in list(sys.modules):
+                if "playfair" in key:
+                    del sys.modules[key]
 
 
 # ---------------------------------------------------------------------------

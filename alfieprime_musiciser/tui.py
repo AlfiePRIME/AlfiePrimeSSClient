@@ -59,6 +59,11 @@ _RICH_STANDARD_COLORS: dict[int, str] = {
 }
 
 
+def _safe_hex(r: int | float, g: int | float, b: int | float) -> str:
+    """Format RGB to hex string, clamping to 0-255."""
+    return f"#{max(0,min(255,int(r))):02x}{max(0,min(255,int(g))):02x}{max(0,min(255,int(b))):02x}"
+
+
 def _rich_256_color(n: int) -> str:
     """Convert an 8-bit (256) colour number to a hex string."""
     if n < 16:
@@ -263,7 +268,6 @@ class BoomBoxTUI:
                 line = Text()
                 dist = abs(row - mid_row)
                 if dist <= visible_half:
-                    # Dimming content with noise
                     edge_fade = 1.0 - (dist / max(visible_half, 1)) * 0.5
                     brightness = max(0.1, (1.0 - p) * edge_fade)
                     noise_chance = p * 0.4
@@ -275,18 +279,16 @@ class BoomBoxTUI:
                             chars.append(random.choice("·.─"))
                         else:
                             chars.append(" ")
-                    br = int(min(255, 180 * brightness))
-                    # Tint with theme colour
+                    br = 180 * brightness
                     pr, pg, pb = _hex_to_rgb(th.primary)
-                    cr = int((br * 0.5 + pr * 0.5) * brightness)
-                    cg = int((br * 0.5 + pg * 0.5) * brightness)
-                    cb = int((br * 0.5 + pb * 0.5) * brightness)
-                    cr, cg, cb = min(255, cr), min(255, cg), min(255, cb)
-                    c = f"#{cr:02x}{cg:02x}{cb:02x}"
+                    c = _safe_hex(
+                        (br * 0.5 + pr * 0.5) * brightness,
+                        (br * 0.5 + pg * 0.5) * brightness,
+                        (br * 0.5 + pb * 0.5) * brightness,
+                    )
                     if dist == 0:
-                        # Bright center scanline emerging
-                        scan_br = int(min(255, 100 + 155 * p))
-                        sc = f"#{scan_br:02x}{min(255, scan_br + 20):02x}{scan_br:02x}"
+                        scan_br = 100 + 155 * p
+                        sc = _safe_hex(scan_br, scan_br + 20, scan_br)
                         line.append("━" * term_w, Style(color=sc, bold=True))
                     else:
                         line.append("".join(chars), Style(color=c))
@@ -302,21 +304,15 @@ class BoomBoxTUI:
                 line = Text()
                 dist = abs(row - mid_row)
                 if dist == 0:
-                    br = int(min(255, 255 * flicker))
+                    br = 255 * flicker
                     pr, pg, pb = _hex_to_rgb(th.accent)
-                    cr = int(min(255, (br * 0.4 + pr * 0.6)))
-                    cg = int(min(255, (br * 0.4 + pg * 0.6)))
-                    cb = int(min(255, (br * 0.4 + pb * 0.6)))
-                    c = f"#{cr:02x}{cg:02x}{cb:02x}"
+                    c = _safe_hex(br * 0.4 + pr * 0.6, br * 0.4 + pg * 0.6, br * 0.4 + pb * 0.6)
                     line.append("━" * term_w, Style(color=c, bold=True))
                 elif dist <= 2:
-                    # Soft glow around scanline
                     glow = max(0, 0.4 - dist * 0.15) * flicker
-                    br = int(80 * glow)
-                    c = f"#{br:02x}{min(255, br + 10):02x}{br:02x}"
-                    noise = "".join(
-                        random.choice("░·  ") for _ in range(term_w)
-                    )
+                    br = 80 * glow
+                    c = _safe_hex(br, br + 10, br)
+                    noise = "".join(random.choice("░·  ") for _ in range(term_w))
                     line.append(noise, Style(color=c))
                 else:
                     line.append(" " * term_w)
@@ -334,7 +330,6 @@ class BoomBoxTUI:
                     brightness = min(1.0, p * 1.5) * edge_fade
                     flicker = 0.9 + 0.1 * math.sin(t * 40 + row * 2)
                     brightness *= flicker
-                    # Mix static noise with content revealing
                     noise_chance = max(0, (1.0 - p) * 0.5)
                     chars = []
                     for _ in range(term_w):
@@ -342,12 +337,9 @@ class BoomBoxTUI:
                             chars.append(random.choice("░▒▓█"))
                         else:
                             chars.append(random.choice(" ·"))
-                    br = int(min(255, 200 * brightness))
+                    br = 200 * brightness
                     pr, pg, pb = _hex_to_rgb(th.secondary)
-                    cr = int(min(255, (br * 0.6 + pr * 0.4)))
-                    cg = int(min(255, (br * 0.6 + pg * 0.4)))
-                    cb = int(min(255, (br * 0.6 + pb * 0.4)))
-                    c = f"#{cr:02x}{cg:02x}{cb:02x}"
+                    c = _safe_hex(br * 0.6 + pr * 0.4, br * 0.6 + pg * 0.4, br * 0.6 + pb * 0.4)
                     line.append("".join(chars), Style(color=c))
                 else:
                     line.append(" " * term_w)
@@ -407,12 +399,8 @@ class BoomBoxTUI:
                 flicker += 0.08
             flicker += scan_glow
 
-            br = int(max(0, min(255, 255 * flicker)))
-            # Tint with theme primary
-            cr = max(0, min(255, int(br * 0.4 + pr * flicker * 0.3)))
-            cg = max(0, min(255, int(br * 0.4 + pg * flicker * 0.3)))
-            cb = max(0, min(255, int(br * 0.4 + pb * flicker * 0.3)))
-            base_c = f"#{cr:02x}{cg:02x}{cb:02x}"
+            br = 255 * flicker
+            base_c = _safe_hex(br * 0.4 + pr * flicker * 0.3, br * 0.4 + pg * flicker * 0.3, br * 0.4 + pb * flicker * 0.3)
 
             # Build chars with more visible noise
             chars = []
@@ -603,7 +591,7 @@ class BoomBoxTUI:
         glow = 0.5 + 0.5 * math.sin(t * 3)
         r_val = int(180 + 75 * glow)
         g_val = int(30 * glow)
-        adv_color = f"#{r_val:02x}{g_val:02x}00"
+        adv_color = _safe_hex(r_val, g_val, 0)
         adv_line = Text()
         adv_line.append("    [A] ", Style(color=adv_color, bold=True))
         adv_line.append("Advanced", Style(color=adv_color, bold=True))
@@ -642,7 +630,7 @@ class BoomBoxTUI:
         # Glowing red title
         glow = 0.5 + 0.5 * math.sin(t * 3)
         r_val = int(180 + 75 * glow)
-        title_c = f"#{r_val:02x}0000"
+        title_c = _safe_hex(r_val, 0, 0)
 
         title_line = Text(justify="center")
         title_line.append("━" * panel_w, Style(color=title_c, bold=True))
@@ -2103,7 +2091,10 @@ class BoomBoxTUI:
             self._crt_console._file = buf  # type: ignore[attr-defined]
         text = Text()
         for s_text, fg, bg, bold in segs:
-            style = Style(color=fg, bgcolor=bg, bold=bold if bold else None)
+            try:
+                style = Style(color=fg, bgcolor=bg, bold=bold if bold else None)
+            except Exception:
+                style = Style(bold=bold if bold else None)
             text.append(s_text, style)
         self._crt_console.print(text, end="")
         return buf.getvalue()

@@ -34,6 +34,7 @@ _LOG_FILE = os.path.join(_LOG_DIR, "airplay_debug.log")
 
 
 _file_logging_active = False
+_file_handler: logging.Handler | None = None
 
 
 def setup_file_logging() -> str:
@@ -41,7 +42,7 @@ def setup_file_logging() -> str:
 
     Safe to call multiple times — only attaches once.
     """
-    global _file_logging_active
+    global _file_logging_active, _file_handler
     if _file_logging_active:
         return _LOG_FILE
     try:
@@ -53,6 +54,7 @@ def setup_file_logging() -> str:
             "%(asctime)s | %(levelname)-5s | %(name)s | %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         ))
+        _file_handler = handler
         # Attach to the root logger so we capture EVERYTHING — including
         # vendored AP2Handler per-connection loggers with dynamic names
         # like "AP2Handler: ip:port<=>ip:port" and HAP/Audio/Control loggers.
@@ -70,6 +72,21 @@ def setup_file_logging() -> str:
     except Exception as exc:
         logger.warning("Failed to set up file logging at %s: %s", _LOG_FILE, exc)
     return _LOG_FILE
+
+
+def _reattach_file_logging() -> None:
+    """Re-attach our file handler to the root logger.
+
+    The vendored ap2/utils.py calls ``logging.config.dictConfig()`` at
+    import time which reconfigures the root logger and REMOVES our handler.
+    Call this AFTER importing vendored modules to restore file logging.
+    """
+    if _file_handler is None:
+        return
+    root = logging.getLogger()
+    if _file_handler not in root.handlers:
+        root.addHandler(_file_handler)
+        logger.debug("Re-attached file logging handler after vendored import")
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +233,43 @@ class _MetadataHook:
 
 
 # ---------------------------------------------------------------------------
+# DMAP binary field extractor
+# ---------------------------------------------------------------------------
+
+
+def _extract_dmap_fields(data: bytes) -> dict[str, object]:
+    """Extract DMAP fields from binary data into a dict.
+
+    Returns e.g. ``{'minm': 'Song Title', 'asar': 'Artist', ...}``.
+    Integer fields are returned as int, strings as str.
+    """
+    result: dict[str, object] = {}
+    pos = 0
+    while pos + 8 <= len(data):
+        code = data[pos:pos + 4].decode("ascii", errors="replace")
+        length = int.from_bytes(data[pos + 4:pos + 8], "big")
+        value_bytes = data[pos + 8:pos + 8 + length]
+        pos += 8 + length
+
+        # Recurse into container types (mlit, msrv, mdcl)
+        if code in ("mlit", "msrv", "mdcl"):
+            result.update(_extract_dmap_fields(value_bytes))
+            continue
+
+        # String fields we care about
+        if code in ("minm", "asar", "asal", "asaa", "asgn", "ascp"):
+            try:
+                result[code] = value_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                pass
+        # Integer fields
+        elif code in ("caps", "astm", "astn", "asdc", "asdn"):
+            result[code] = int.from_bytes(value_bytes, "big") if value_bytes else 0
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Patched AP2Handler that calls our hooks
 # ---------------------------------------------------------------------------
 
@@ -226,7 +280,7 @@ def _create_patched_handler(audio_hook: _AudioHook, meta_hook: _MetadataHook):
 
     # Now we can import the vendored modules
     from ap2_receiver import AP2Handler  # type: ignore[import-untyped]
-    from ap2.dxxp import parse_dxxp  # type: ignore[import-untyped]
+    import plistlib
 
     class PatchedAP2Handler(AP2Handler):
         """AP2Handler with audio/metadata hooks for AlfiePRIME integration."""
@@ -234,68 +288,218 @@ def _create_patched_handler(audio_hook: _AudioHook, meta_hook: _MetadataHook):
         _audio_hook = audio_hook
         _meta_hook = meta_hook
 
-        def do_SET_PARAMETER(self):
-            """Override to intercept metadata, artwork, and volume."""
-            content_type = self.headers.get("Content-Type", "")
-            content_len = int(self.headers.get("Content-Length", 0))
+        # -- helpers --------------------------------------------------
 
-            if content_type == "text/parameters" and content_len > 0:
-                body = self.rfile.read(content_len)
+        def _send_ok(self):
+            self.send_response(200)
+            self.send_header("Server", self.version_string())
+            cseq = self.headers.get("CSeq")
+            if cseq:
+                self.send_header("CSeq", cseq)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def _read_body(self) -> bytes:
+            content_len = int(self.headers.get("Content-Length", 0))
+            return self.rfile.read(content_len) if content_len > 0 else b""
+
+        def _extract_plist_metadata(self, plist: dict) -> None:
+            """Try to extract Now Playing metadata from an AirPlay 2 plist."""
+            # AirPlay 2 sends metadata in /command POSTs with MR keys
+            # nested under params.params or directly at top level.
+            info = plist
+            if "params" in plist and isinstance(plist["params"], dict):
+                info = plist["params"]
+                if "params" in info and isinstance(info["params"], dict):
+                    info = info["params"]
+
+            # Standard MediaRemote NowPlayingInfo keys
+            _MR = "kMRMediaRemoteNowPlayingInfo"
+            title = info.get(f"{_MR}Title", "") or info.get("title", "")
+            artist = info.get(f"{_MR}Artist", "") or info.get("artist", "")
+            album = info.get(f"{_MR}Album", "") or info.get("album", "")
+            duration = info.get(f"{_MR}Duration", 0) or info.get("duration", 0)
+            elapsed = info.get(f"{_MR}ElapsedTime", 0) or info.get("elapsed", 0)
+            artwork = info.get(f"{_MR}ArtworkData", b"") or info.get("artworkData", b"")
+            rate = info.get(f"{_MR}PlaybackRate", None)
+
+            if title or artist or album:
+                self._meta_hook.on_metadata(
+                    str(title) if title else "",
+                    str(artist) if artist else "",
+                    str(album) if album else "",
+                )
+            if duration:
+                duration_ms = int(float(duration) * 1000)
+                elapsed_ms = int(float(elapsed) * 1000) if elapsed else 0
+                self._meta_hook._state.duration_ms = duration_ms
+                self._meta_hook._state.progress_ms = elapsed_ms
+                self._meta_hook._state.progress_update_time = time.monotonic()
+                self._meta_hook._state.playback_speed = 1.0
+            if artwork and isinstance(artwork, (bytes, bytearray)) and len(artwork) > 0:
+                self._meta_hook.on_artwork(bytes(artwork))
+            if rate is not None:
+                self._meta_hook._state.is_playing = float(rate) > 0
+
+        # -- RTSP method overrides ------------------------------------
+
+        def do_SET_PARAMETER(self):
+            """Intercept metadata, artwork, volume, progress."""
+            content_type = self.headers.get("Content-Type", "")
+            body = self._read_body()
+
+            if content_type == "text/parameters" and body:
                 for line in body.split(b"\r\n"):
                     if not line:
                         continue
                     parts = line.split(b":", 1)
-                    if len(parts) == 2:
-                        key = parts[0].strip()
-                        val = parts[1].strip()
-                        if key == b"volume":
-                            try:
-                                self._meta_hook.on_volume(float(val))
-                            except ValueError:
-                                pass
-                        elif key == b"progress":
-                            try:
-                                nums = val.split(b"/")
-                                if len(nums) == 3:
-                                    self._meta_hook.on_progress(
-                                        int(nums[0]), int(nums[1]), int(nums[2]),
-                                    )
-                            except ValueError:
-                                pass
-
-                self.send_response(200)
-                self.send_header("Server", self.version_string())
-                self.send_header("Content-Length", "0")
-                self.end_headers()
+                    if len(parts) != 2:
+                        continue
+                    key = parts[0].strip()
+                    val = parts[1].strip()
+                    if key == b"volume":
+                        try:
+                            self._meta_hook.on_volume(float(val))
+                        except ValueError:
+                            pass
+                    elif key == b"progress":
+                        try:
+                            nums = val.split(b"/")
+                            if len(nums) == 3:
+                                self._meta_hook.on_progress(
+                                    int(nums[0]), int(nums[1]), int(nums[2]),
+                                )
+                                # Also forward to audio connections (parent's job)
+                                for s in self.server.streams:
+                                    try:
+                                        s.getAudioConnection().send(
+                                            f"progress-{val.decode('utf8').lstrip()}"
+                                        )
+                                    except Exception:
+                                        pass
+                        except ValueError:
+                            pass
+                self._send_ok()
                 return
 
-            elif content_type.startswith("image/") and content_len > 0:
-                data = self.rfile.read(content_len)
-                self._meta_hook.on_artwork(data)
-                self.send_response(200)
-                self.send_header("Server", self.version_string())
-                self.send_header("Content-Length", "0")
-                self.end_headers()
+            elif content_type.startswith("image/") and body:
+                self._meta_hook.on_artwork(body)
+                self._send_ok()
                 return
 
-            elif content_type == "application/x-dmap-tagged" and content_len > 0:
-                data = self.rfile.read(content_len)
+            elif content_type == "application/x-dmap-tagged" and body:
                 try:
-                    info = parse_dxxp(data)
-                    title = info.get("itemname", "") or info.get("minm", "")
-                    artist = info.get("songartist", "") or info.get("asar", "")
-                    album = info.get("songalbum", "") or info.get("asal", "")
-                    self._meta_hook.on_metadata(title, artist, album)
+                    fields = _extract_dmap_fields(body)
+                    logger.debug("AirPlay DMAP: %s", fields)
+                    title = fields.get("minm", "")
+                    artist = fields.get("asar", "")
+                    album = fields.get("asal", "")
+                    if title or artist or album:
+                        self._meta_hook.on_metadata(
+                            str(title), str(artist), str(album),
+                        )
+                    # Play state from DMAP caps field
+                    caps = fields.get("caps")
+                    if caps is not None:
+                        self._meta_hook._state.is_playing = (caps == 1)
+                    # Duration from DMAP
+                    astm = fields.get("astm")
+                    if astm:
+                        self._meta_hook._state.duration_ms = int(astm)
                 except Exception:
                     logger.debug("Failed to parse DMAP metadata", exc_info=True)
-                self.send_response(200)
-                self.send_header("Server", self.version_string())
-                self.send_header("Content-Length", "0")
-                self.end_headers()
+                self._send_ok()
                 return
 
-            # Fall back to parent for anything else
-            super().do_SET_PARAMETER()
+            elif content_type == "application/x-apple-binary-plist" and body:
+                # AirPlay 2 binary plist SET_PARAMETER
+                try:
+                    pl = plistlib.loads(body)
+                    logger.debug("AirPlay SET_PARAMETER bplist: %s",
+                                 {k: v for k, v in pl.items()
+                                  if not isinstance(v, (bytes, bytearray))})
+                    self._extract_plist_metadata(pl)
+                except Exception:
+                    logger.debug("Failed to parse bplist SET_PARAMETER", exc_info=True)
+                self._send_ok()
+                return
+
+            # Unknown content type — send 200 (body already consumed)
+            self._send_ok()
+
+        def do_SETRATEANCHORTIME(self):
+            """Intercept play/pause rate changes."""
+            body = self._read_body()
+            if body:
+                try:
+                    pl = plistlib.loads(body)
+                    rate = pl.get("rate", None)
+                    rtp_time = pl.get("rtpTime", 0)
+                    logger.debug("AirPlay SETRATEANCHORTIME: rate=%s rtpTime=%s", rate, rtp_time)
+                    if rate is not None:
+                        if float(rate) > 0:
+                            self._meta_hook._state.is_playing = True
+                            # Forward to audio connections
+                            for s in self.server.streams:
+                                try:
+                                    s.getAudioConnection().send(f"play-{rtp_time}")
+                                except Exception:
+                                    pass
+                        else:
+                            self._meta_hook._state.is_playing = False
+                            for s in self.server.streams:
+                                try:
+                                    s.getAudioConnection().send("pause")
+                                except Exception:
+                                    pass
+                except Exception:
+                    logger.debug("Failed to parse SETRATEANCHORTIME", exc_info=True)
+            self._send_ok()
+
+        def handle_command(self):
+            """Intercept AirPlay 2 /command POST with metadata."""
+            body = self._read_body()
+            if body:
+                try:
+                    pl = plistlib.loads(body)
+                    # Log without artwork (too large)
+                    log_pl = {k: (f"<{len(v)} bytes>" if isinstance(v, (bytes, bytearray)) else v)
+                              for k, v in pl.items()}
+                    logger.debug("AirPlay /command: %s", log_pl)
+                    self._extract_plist_metadata(pl)
+                except Exception:
+                    logger.debug("Failed to parse /command plist", exc_info=True)
+            self._send_ok()
+
+        def handle_feedback(self):
+            """Handle /feedback — mostly stream status, forward to parent."""
+            try:
+                super().handle_feedback()
+            except Exception:
+                logger.debug("handle_feedback error", exc_info=True)
+                self._send_ok()
+
+        def do_RECORD(self):
+            """Stream start — mark as playing."""
+            self._meta_hook._state.is_playing = True
+            self._meta_hook._state.connected = True
+            logger.info("AirPlay: stream RECORD — playback starting")
+            try:
+                super().do_RECORD()
+            except Exception:
+                logger.debug("do_RECORD error", exc_info=True)
+                self._send_ok()
+
+        def do_TEARDOWN(self):
+            """Stream teardown — mark as disconnected."""
+            logger.info("AirPlay: stream TEARDOWN — client disconnecting")
+            try:
+                super().do_TEARDOWN()
+            except Exception:
+                logger.debug("do_TEARDOWN error", exc_info=True)
+                self._send_ok()
+            finally:
+                self._meta_hook.on_disconnect()
 
     return PatchedAP2Handler
 
@@ -383,6 +587,10 @@ class AirPlayReceiver:
         except ImportError as exc:
             logger.error("AirPlay dependencies not available: %s", exc)
             return
+
+        # The vendored ap2/utils.py calls logging.config.dictConfig() at import
+        # time, which wipes our root handler.  Re-attach it now.
+        _reattach_file_logging()
 
         # ── Find a network interface with an IPv4 address and MAC ──
         # Prefer real LAN interfaces (192.168.x.x) over VPN/virtual adapters.

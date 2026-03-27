@@ -146,13 +146,10 @@ class SettingsMixin:
     def _compose_panel_on_bg(
         self, bg_lines: list[Text], panel_lines: list[Text],
         panel_w: int, term_w: int, term_h: int,
-        dancer_lines: list[Text] | None = None,
     ) -> Group:
-        """Overlay a centered panel (with optional dancers below) onto CRT background."""
+        """Overlay a centered panel onto CRT background."""
         fade = self._get_menu_fade()
         total_content = len(panel_lines)
-        if dancer_lines:
-            total_content += 1 + len(dancer_lines)
         panel_x = max(0, (term_w - panel_w - 2) // 2)
         panel_y = max(0, (term_h - total_content) // 2)
         bg_a = int(10 * fade)
@@ -172,12 +169,6 @@ class SettingsMixin:
             in_range = fade_min <= content_idx <= fade_max
             if 0 <= content_idx < len(panel_lines) and in_range:
                 content_line = panel_lines[content_idx]
-            elif dancer_lines and in_range:
-                dancer_idx = content_idx - len(panel_lines) - 1
-                if dancer_idx == -1:
-                    content_line = Text("")
-                elif 0 <= dancer_idx < len(dancer_lines):
-                    content_line = dancer_lines[dancer_idx]
             if content_line is not None:
                 line = Text()
                 bg_text = bg_lines[row].plain if row < len(bg_lines) else " " * term_w
@@ -199,35 +190,58 @@ class SettingsMixin:
                 result_lines.append(bg_lines[row] if row < len(bg_lines) else Text(" " * term_w))
         return Group(*result_lines)
 
-    def _render_menu_dancers(self, panel_w: int) -> list[Text]:
-        """Render a small row of dancers for settings menu easter egg."""
+    def _scatter_dancers_on_bg(
+        self, bg_lines: list[Text], term_w: int, term_h: int,
+        panel_x: int, panel_y: int, panel_w: int, panel_h: int,
+    ) -> None:
+        """Scatter animated dancers onto the CRT background, avoiding the panel area."""
         if not self._settings_dancers:
-            return []
+            return
         t = time.time()
         bounce = int(t * 3) % 4
-        n_dancers = random.Random(42).randint(3, 5)
-        spacing = max(4, panel_w // (n_dancers + 1))
-        dancer_rows: list[list[str]] = [[] for _ in range(3)]
         rng = random.Random(42)
+        n_dancers = rng.randint(5, 8)
+        colors = ["#ff55ff", "#55ffff", "#ffff55", "#55ff55", "#ff8855", "#ff5555", "#55ff88"]
+        # Panel bounding box (with margin)
+        px0 = panel_x - 1
+        px1 = panel_x + panel_w + 2
+        py0 = panel_y - 1
+        py1 = panel_y + panel_h + 1
+
         for i in range(n_dancers):
             dtype = rng.randint(0, len(self._MENU_DANCERS) - 1)
+            # Stable base position from seed, drifts over time
+            base_x = rng.randint(1, max(1, term_w - 5))
+            base_y = rng.randint(1, max(1, term_h - 5))
+            dx = int(3 * math.sin(t * 0.5 + i * 2.3))
+            dy = int(2 * math.sin(t * 0.4 + i * 1.7 + 0.8))
+            x = max(0, min(term_w - 4, base_x + dx))
+            y = max(0, min(term_h - 4, base_y + dy))
+            # Skip if overlapping the panel area
+            if px0 <= x <= px1 and py0 <= y <= py1 + 3:
+                continue
+            if px0 <= x + 3 <= px1 and py0 <= y <= py1 + 3:
+                continue
             frames = self._MENU_DANCERS[dtype]
             frame = frames[bounce]
+            c = colors[i % len(colors)]
+            style = Style(color=c, bold=True)
             for r in range(3):
-                pad = spacing - len(frame[r])
-                dancer_rows[r].append(frame[r] + " " * max(0, pad))
-        lines: list[Text] = []
-        colors = ["#ff55ff", "#55ffff", "#ffff55", "#55ff55", "#ff8855"]
-        for r in range(3):
-            line = Text()
-            full = "".join(dancer_rows[r])
-            pad_l = max(0, (panel_w - len(full)) // 2)
-            line.append(" " * pad_l)
-            for ci, ch in enumerate(full):
-                c = colors[ci % len(colors)]
-                line.append(ch, Style(color=c))
-            lines.append(line)
-        return lines
+                row_idx = y + r
+                if 0 <= row_idx < len(bg_lines):
+                    row_str = frame[r]
+                    # Overwrite chars at position x in the background line
+                    line = bg_lines[row_idx]
+                    plain = line.plain
+                    if x + 3 <= len(plain):
+                        # Rebuild the line with the dancer chars inserted
+                        new_line = Text()
+                        if x > 0:
+                            new_line.append_text(line[:x])
+                        new_line.append(row_str, style)
+                        if x + 3 < len(plain):
+                            new_line.append_text(line[x + 3:])
+                        bg_lines[row_idx] = new_line
 
     def _build_settings_layout(self) -> Group:
         """Render settings menu with animated CRT background."""
@@ -326,8 +340,10 @@ class SettingsMixin:
         hint.append("[◂▸]Adj ", Style(color="#555555"))
         hint.append("[C]Close", Style(color="#555555"))
         panel_lines.append(hint)
-        dancer_lines = self._render_menu_dancers(panel_w)
-        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h, dancer_lines)
+        panel_x = max(0, (term_w - panel_w - 2) // 2)
+        panel_y = max(0, (term_h - len(panel_lines)) // 2)
+        self._scatter_dancers_on_bg(bg_lines, term_w, term_h, panel_x, panel_y, panel_w, len(panel_lines))
+        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
 
     def _build_advanced_layout(self) -> Group:
         """Render advanced settings (client name, UUID, reset) with danger CRT background."""
@@ -420,8 +436,10 @@ class SettingsMixin:
             hint.append("[Enter] Edit  ", Style(color="#555555"))
             hint.append("[B] Back", Style(color="#555555"))
         panel_lines.append(hint)
-        dancer_lines = self._render_menu_dancers(panel_w)
-        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h, dancer_lines)
+        panel_x = max(0, (term_w - panel_w - 2) // 2)
+        panel_y = max(0, (term_h - len(panel_lines)) // 2)
+        self._scatter_dancers_on_bg(bg_lines, term_w, term_h, panel_x, panel_y, panel_w, len(panel_lines))
+        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
 
     def _build_reset_confirm_layout(
         self, bg_lines: list[Text], panel_w: int, term_w: int, term_h: int, t: float,
@@ -606,8 +624,10 @@ class SettingsMixin:
             hint.append("[Enter] Select  ", Style(color="#555555"))
             hint.append("[B] Back", Style(color="#555555"))
         panel_lines.append(hint)
-        dancer_lines = self._render_menu_dancers(panel_w)
-        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h, dancer_lines)
+        panel_x = max(0, (term_w - panel_w - 2) // 2)
+        panel_y = max(0, (term_h - len(panel_lines)) // 2)
+        self._scatter_dancers_on_bg(bg_lines, term_w, term_h, panel_x, panel_y, panel_w, len(panel_lines))
+        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
 
     def _handle_settings_main_key(self, k: str) -> None:
         """Handle keys in the main settings menu."""

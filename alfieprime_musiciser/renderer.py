@@ -732,13 +732,13 @@ def render_art_scene(
     energy = min(1.0, avg_level + beat_intensity * 0.5)
     _sin = math.sin
 
-    # ── Centered square art dimensions (~40% of area) ──
+    # ── Centered visually-square art (~40% of area) ──
+    # Terminal chars are ~2:1 height:width, so art_w ≈ 2*art_h for a square look.
     target_area = scene_w * scene_h * 0.4
-    art_side = int(math.sqrt(target_area))
-    art_w = min(art_side, scene_w - 4)
-    art_h = min(art_side, scene_h - 2)
-    art_w = max(art_w, 12)
-    art_h = max(art_h, 6)
+    art_h = int(math.sqrt(target_area / 2))
+    art_w = art_h * 2
+    art_w = max(12, min(art_w, scene_w - 4))
+    art_h = max(6, min(art_h, scene_h - 2))
 
     art_x = max(0, (scene_w - art_w) // 2)
     art_y = max(0, (scene_h - art_h) // 2)

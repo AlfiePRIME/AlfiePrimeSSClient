@@ -15,7 +15,7 @@ A party-themed TUI/GUI music player and [SendSpin](https://github.com/music-assi
 - **Desktop notifications** — shows a notification on track change via `notify-send` (Linux)
 - **Terminal tab title** — sets the terminal tab/window title to the current track via OSC escape sequences
 - **Transport controls** — play/pause, next, previous, shuffle, repeat, volume via keyboard or mouse click
-- **CRT animations** — 3-phase startup (boot, static hold with animated connecting screen, diagonal lights-on sweep) and power-off effects
+- **CRT animations** — 3-phase startup (boot, static hold with animated antenna and radio wave ripples, diagonal lights-on sweep) and power-off effects
 - **Standby screensaver** — floating phrases with dim particles after 5 minutes of idle, wakes instantly on playback
 - **System stats** — CPU usage, memory, network throughput, and session uptime in the status bar
 - **Artwork pre-caching** — upcoming track artwork is extracted on background threads for instant theme changes on track switch

@@ -2056,33 +2056,46 @@ class BoomBoxTUI:
                     buf_chars.append(choice(_light))
             static_rows.append("".join(buf_chars))
 
-        # ── Animated ASCII art ──
+        # ── Animated ASCII art — antenna with radio waves ──
         spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
         spin_ch = spinner[int(t * 10) % len(spinner)]
-
-        # Signal wave animation — show 1-3 ripples cycling
-        wave_count = (int(t * 3) % 3) + 1
-
-        w1 = ")" if wave_count >= 1 else " "
-        w2 = ")" if wave_count >= 2 else " "
-        w3 = ")" if wave_count >= 3 else " "
         dots = "." * ((int(t * 2) % 3) + 1)
 
+        # Radio wave ripples expand outward from antenna tip in all directions
+        # 4 concentric rings, each visible in turn (cycling)
+        phase = (t * 2.5) % 4.0  # 0→4 cycle
+
+        def _wave_char(ring: int) -> str:
+            """Return wave char if this ring is currently visible."""
+            # Each ring fades in and out based on phase
+            dist = (phase - ring) % 4.0
+            return "·" if dist < 1.0 else " "
+
+        r1 = _wave_char(0)
+        r2 = _wave_char(1)
+        r3 = _wave_char(2)
+        r4 = _wave_char(3)
+
         art = [
-            f"              .─────.            ",
-            f"             /       \\      {w3}    ",
-            f"            │  ◉   ◉  │    {w2}     ",
-            f"            │    ▽    │   {w1}      ",
-            f"             \\       /           ",
-            f"              '──┬──'            ",
-            f"                 │               ",
-            f"            ┌────┴────┐          ",
-            f"            │ ═══════ │          ",
-            f"            │ ═══════ │          ",
-            f"            └─────────┘          ",
-            f"           ──────┬──────         ",
-            f"                 │               ",
-            f"     {spin_ch} Connecting{dots:<3}           ",
+            f"        {r4}   {r3}  {r2} {r1}              ",
+            f"      {r4}  {r3}  {r2} {r1}   {r1}            ",
+            f"    {r4}  {r3}  {r2} {r1}  ╱    {r1}           ",
+            f"  {r4}  {r3}  {r2} {r1} ╱╱      {r1} {r2}        ",
+            f"    {r3}  {r2} {r1} ╱╱╱        {r2} {r3}      ",
+            f"      {r2}  ╱╱╱╱          {r3} {r4}    ",
+            f"       {r1}╱╱╱╱╱                  ",
+            f"        ╱╱╱╱   ☆                 ",
+            f"         ┃                       ",
+            f"         ┃                       ",
+            f"        ╱┃╲                      ",
+            f"       ╱ ┃ ╲                     ",
+            f"      ╱  ┃  ╲                    ",
+            f"    {r1}  ─────── {r1}                  ",
+            f"   {r2}           {r2}                  ",
+            f"  {r3}             {r3}                  ",
+            f" {r4}               {r4}                 ",
+            f"                                 ",
+            f"     {spin_ch} Connecting{dots:<3}             ",
         ]
 
         art_h = len(art)
@@ -2112,18 +2125,23 @@ class BoomBoxTUI:
                 # Art portion — bright with pulse
                 pulse = 0.6 + 0.4 * math.sin(t * 2 + art_row_idx * 0.3)
                 art_br = int(120 + 135 * pulse)
-                # Box chars in cyan-ish, text in white
                 for ch in art_padded:
-                    if ch in "╭╮╰╯│─┌┐└┘├┤┬┴┼":
-                        c_br = int(art_br * 0.6)
-                        segs.append((ch, f"#{c_br:02x}{min(255, int(c_br * 1.3)):02x}{min(255, int(c_br * 1.2)):02x}", None, False))
-                    elif ch in "◉⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏":
-                        segs.append((ch, f"#{art_br:02x}{min(255, art_br):02x}{max(0, art_br - 40):02x}", None, True))
-                    elif ch == ")":
-                        # Signal waves — animated brightness
-                        wave_pulse = 0.4 + 0.6 * math.sin(t * 6)
+                    if ch in "╱╲┃─":
+                        # Antenna structure — warm metallic colour
+                        c_br = int(art_br * 0.7)
+                        segs.append((ch, f"#{min(255, int(c_br * 1.1)):02x}{min(255, int(c_br * 0.8)):02x}{max(0, int(c_br * 0.4)):02x}", None, False))
+                    elif ch == "☆":
+                        # Antenna tip — bright pulsing
+                        tip_pulse = 0.5 + 0.5 * math.sin(t * 5)
+                        tip_br = int(180 + 75 * tip_pulse)
+                        segs.append((ch, f"#{min(255, tip_br):02x}{min(255, int(tip_br * 0.9)):02x}{max(0, int(tip_br * 0.3)):02x}", None, True))
+                    elif ch == "·":
+                        # Radio wave ripples — animated cyan glow
+                        wave_pulse = 0.3 + 0.7 * math.sin(t * 4 + art_row_idx * 0.5)
                         w_br = int(art_br * wave_pulse)
-                        segs.append((ch, f"#{max(20, w_br):02x}{min(255, int(w_br * 1.2)):02x}{min(255, int(w_br * 1.1)):02x}", None, True))
+                        segs.append((ch, f"#{max(20, int(w_br * 0.3)):02x}{min(255, int(w_br * 1.1)):02x}{min(255, int(w_br * 1.2)):02x}", None, True))
+                    elif ch in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏":
+                        segs.append((ch, f"#{art_br:02x}{min(255, art_br):02x}{max(0, art_br - 40):02x}", None, True))
                     elif ch.isalpha() or ch in ".:!":
                         segs.append((ch, f"#{art_br:02x}{art_br:02x}{min(255, art_br + 20):02x}", None, True))
                     else:

@@ -660,7 +660,21 @@ def render_party_scene(
     th = theme or _default_theme
     t = time.time()
     avg_level = (vu_left + vu_right) / 2.0
-    bounce = beat_count % 4  # animation frame driven by detected beats
+    # Animation frame driven by detected beats.
+    # At high BPM, advance poses less often so movement stays readable:
+    #   < 160 BPM → every beat  (normal)
+    #   160-240    → every 2nd beat (half-time)
+    #   240-360    → every 3rd beat
+    #   360+       → every 4th beat
+    if bpm <= 0 or bpm < 160:
+        beat_div = 1
+    elif bpm < 240:
+        beat_div = 2
+    elif bpm < 360:
+        beat_div = 3
+    else:
+        beat_div = 4
+    bounce = (beat_count // beat_div) % 4
 
     # DJ frames (3 rows each) - head bobbing while mixing
     dj_w = 9

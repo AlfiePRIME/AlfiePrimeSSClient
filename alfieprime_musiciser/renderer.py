@@ -1467,34 +1467,57 @@ def render_stats_info(theme: ColorTheme | None = None) -> Text:
 
 
 def render_source_info(
-    active_source: str, server_name: str, airplay_connected: bool,
-    sendspin_connected: bool, theme: ColorTheme | None = None,
+    active_source: str, server_name: str, group_name: str,
+    codec: str, sample_rate: int, bit_depth: int,
+    airplay_connected: bool, sendspin_connected: bool,
+    theme: ColorTheme | None = None,
 ) -> Text:
-    """Render connected source info with switch hint."""
+    """Render single-line status: active source + server name + codec + source indicators."""
     th = theme or _default_theme
     text = Text()
+    _style_dim = _cached_style("#666666")
+    _style_on = _cached_style(th.accent, bold=True)
+    _style_off = _cached_style("#555555")
+    _style_888 = _cached_style("#888888")
 
-    _style_label = _cached_style("#666666")
-    _style_active = _cached_style(th.accent, bold=True)
-    _style_inactive = _cached_style("#555555")
+    # Active source protocol label
+    if active_source == "airplay":
+        text.append(" AirPlay", _style_on)
+    elif active_source == "sendspin":
+        text.append(" SendSpin", _style_on)
+    else:
+        text.append(" Waiting", _cached_style("#ff6600", italic=True))
 
-    def _src_label(name: str, connected: bool, is_active: bool) -> None:
+    # Server/device name
+    if server_name and active_source:
+        text.append(" ⚡ ", _cached_style(th.accent))
+        text.append(server_name, _cached_style(th.secondary))
+    if group_name and active_source == "sendspin":
+        text.append(" │ ", _style_dim)
+        text.append(group_name, _cached_style(th.warm))
+
+    # Codec info
+    if active_source:
+        text.append("  ♪ ", _style_888)
+        text.append(codec.upper(), _cached_style(th.secondary))
+        text.append(f" {sample_rate // 1000}kHz", _style_888)
+        text.append(f" {bit_depth}bit", _style_888)
+
+    # Source indicators (right side)
+    text.append("  │", _style_dim)
+
+    def _dot(name: str, connected: bool, is_active: bool) -> None:
         if is_active and connected:
-            text.append(f" ▸{name}", _style_active)
+            text.append(f" {name}●", _style_on)
         elif connected:
-            text.append(f"  {name}", _cached_style(th.secondary))
+            text.append(f" {name}●", _style_off)
         else:
-            text.append(f"  {name}", _style_inactive)
-        if connected:
-            text.append(" ●", _cached_style(th.accent if is_active else "#555555"))
-        else:
-            text.append(" ○", _style_inactive)
+            text.append(f" {name}○", _style_off)
 
-    _src_label("SendSpin", sendspin_connected, active_source == "sendspin")
-    text.append("  │", _style_label)
-    _src_label("AirPlay", airplay_connected, active_source == "airplay")
+    _dot("S", sendspin_connected, active_source == "sendspin")
+    _dot("A", airplay_connected, active_source == "airplay")
 
     if sendspin_connected and airplay_connected:
-        text.append("  [T]Switch", _cached_style("#555555"))
+        text.append(" [T]", _style_dim)
 
     return text

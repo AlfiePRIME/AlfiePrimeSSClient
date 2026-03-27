@@ -46,14 +46,10 @@ from alfieprime_musiciser.renderer import (
     render_party_lights,
     render_stereo_lights,
     render_party_scene,
-    render_server_info,
-    render_codec_info,
-    render_stats_info,
     render_source_info,
     render_braille_art,
     render_binary_background,
     render_art_scene,
-    _process as _psutil_process,
 )
 
 
@@ -787,8 +783,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         #   + VU(4) + party_lights(4) + status(2 or 3) + frame_bot(1)
         #   + spectrum borders(2) + dance_floor borders(2)
         np_rows = np_panel_content_lines + 2
-        has_stats_row = _psutil_process is not None or bool(self.state.session_stats)
-        status_rows = 3 if has_stats_row else 2
+        status_rows = 2  # single-line source info bar + border
         fixed_rows = 1 + 3 + np_rows + 4 + 4 + status_rows + 1 + 2 + 2
         available = max(self._term_height - fixed_rows, 8)
         # Dance floor gets a fixed size; spectrum expands to fill all remaining space
@@ -856,28 +851,21 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             title_align="center", border_style=th.border_dance, padding=(0, 0),
         ))
 
-        # Status bar — connection info + codec, optional system stats + session stats
-        status_table = Table.grid(padding=0, expand=True)
-        status_table.add_column(ratio=1)
-        status_table.add_column(ratio=1)
-        status_table.add_row(
-            render_server_info(self.state.server_name, self.state.group_name, self.state.connected, theme=th),
-            render_codec_info(self.state.codec, self.state.sample_rate, self.state.bit_depth, theme=th),
-        )
-        # Source info row — connected clients and active source
-        source_row = render_source_info(
-            active_source=self.state.active_source,
-            server_name=self.state.server_name,
-            airplay_connected=self.state.airplay_connected,
-            sendspin_connected=self.state.sendspin_connected,
-            theme=th,
-        )
-        session_text = Text()
-        if self.state.session_stats:
-            session_text.append(" \U0001f3a7 ", Style(color="#666666"))
-            session_text.append(self.state.session_stats, Style(color=th.secondary))
-        status_table.add_row(source_row, session_text)
-        parts.append(Panel(status_table, border_style="#444444", padding=(0, 0)))
+        # Status bar — single line: active source + server name + codec + indicators
+        parts.append(Panel(
+            render_source_info(
+                active_source=self.state.active_source,
+                server_name=self.state.server_name,
+                group_name=self.state.group_name,
+                codec=self.state.codec,
+                sample_rate=self.state.sample_rate,
+                bit_depth=self.state.bit_depth,
+                airplay_connected=self.state.airplay_connected,
+                sendspin_connected=self.state.sendspin_connected,
+                theme=th,
+            ),
+            border_style="#444444", padding=(0, 0),
+        ))
 
         # Boom box frame accents
         frame_inner = max(term_w - 2, 0)

@@ -719,14 +719,67 @@ def render_party_scene(
         ["°o°", "\\|/", "/ \\"],
     ]
 
-    # Energy-reactive dancer selection
+    # ── Female variants (skirt/dress on lower body) ──
+
+    # Female dancer (skirt swishes)
+    dancer_ga = [
+        [" o/", "/| ", "/Y\\"],
+        ["\\o ", " |\\", "/Y\\"],
+        ["\\o/", " | ", "/ \\"],
+        [" o ", "/|\\", "/A\\"],
+    ]
+
+    # Female jumper
+    dancer_gb = [
+        ["\\o/", " | ", ")V("],
+        ["_o_", " | ", "/V\\"],
+        ["\\o/", " | ", ")V("],
+        [" o ", "-|-", "/A\\"],
+    ]
+
+    # Female headbanger
+    dancer_gc = [
+        [" o ", "/|\\", "/Y\\"],
+        [" o ", "/|\\", "/Y\\"],
+        ["\\o ", " |\\", "/A\\"],
+        [" o/", "/| ", "/A\\"],
+    ]
+
+    # Female spinner
+    dancer_gd = [
+        ["\\o/", " | ", ")X("],
+        [" o>", " | ", "/X\\"],
+        ["/o\\", " | ", ")X("],
+        ["<o ", " | ", "/X\\"],
+    ]
+
+    # Female robot
+    dancer_ge = [
+        ["[o]", "/|\\", "|V|"],
+        ["[o]", "\\|/", "/A\\"],
+        ["[o]", "-|-", "|V|"],
+        ["[o]", "_|_", "\\A/"],
+    ]
+
+    # Female raver
+    dancer_gf = [
+        ["*o*", "/|\\", "/Y\\"],
+        ["°o°", "\\|/", "\\A/"],
+        ["*o*", "/|\\", ")X("],
+        ["°o°", "\\|/", "/Y\\"],
+    ]
+
+    # Energy-reactive dancer selection (male/female pairs interleaved)
     energy = min(1.0, avg_level + beat_intensity * 0.5)
     if energy < 0.3:
-        dancer_pool = [dancer_a, dancer_b]
+        dancer_pool = [dancer_a, dancer_ga, dancer_b, dancer_gb]
     elif energy <= 0.6:
-        dancer_pool = [dancer_a, dancer_b, dancer_c, dancer_d]
+        dancer_pool = [dancer_a, dancer_ga, dancer_b, dancer_gb,
+                       dancer_c, dancer_gc, dancer_d, dancer_gd]
     else:
-        dancer_pool = [dancer_a, dancer_b, dancer_c, dancer_d, dancer_e, dancer_f]
+        dancer_pool = [dancer_a, dancer_ga, dancer_b, dancer_gb,
+                       dancer_c, dancer_gc, dancer_d, dancer_gd,
+                       dancer_e, dancer_ge, dancer_f, dancer_gf]
 
     scene_width = max(width, 40)
     lines: list[Text] = []

@@ -109,6 +109,16 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         self._standby_active: bool = False
         self._standby_phrase_idx: int = 0
         self._standby_phrase_time: float = 0.0
+        # Bouncing box state
+        self._standby_box_x: float = 0.0
+        self._standby_box_y: float = 0.0
+        self._standby_box_vx: float = 8.0   # chars per second
+        self._standby_box_vy: float = 4.0
+        self._standby_box_init: bool = False
+        self._standby_last_tick: float = 0.0
+        # Scattered ZZZ sprites: list of (x, y, age, max_age, seed)
+        self._standby_zzz: list[list[float]] = []
+        self._standby_zzz_timer: float = 0.0
         # Full-screen album art mode (restore from config)
         self._art_mode: bool = config.art_mode if config else False
         self._art_calm: bool = config.art_calm if config else False

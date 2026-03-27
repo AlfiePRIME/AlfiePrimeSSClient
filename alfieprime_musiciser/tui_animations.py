@@ -177,20 +177,18 @@ class AnimationsMixin:
                 self._standby_active = True
                 self._standby_phrase_idx = random.randint(0, len(_STANDBY_PHRASES) - 1)
                 self._standby_phrase_time = time.monotonic()
+                self._standby_box_init = False
+                self._standby_zzz = []
+                self._standby_zzz_timer = time.monotonic()
             return True
         return False
 
     def _standby_segments(
         self, term_w: int, term_h: int,
     ) -> list[tuple[str, str | None, str | None, bool]]:
-        """Render a gentle standby screensaver with rotating phrases."""
+        """Render a gentle standby screensaver with bouncing box and scattered ZZZs."""
         segs: list[tuple[str, str | None, str | None, bool]] = []
         t = time.monotonic()
-
-        # Rotate phrase every 8 seconds
-        if t - self._standby_phrase_time > 8.0:
-            self._standby_phrase_idx = (self._standby_phrase_idx + 1) % len(_STANDBY_PHRASES)
-            self._standby_phrase_time = t
 
         phrase = _STANDBY_PHRASES[self._standby_phrase_idx]
 
@@ -198,11 +196,50 @@ class AnimationsMixin:
         box_w = len(phrase) + 6  # "│  phrase  │"
         box_h = 5  # top border, blank, phrase, blank, bottom border
 
-        # Floating position — gentle drift across screen
-        max_dx = max(0, term_w - box_w)
-        max_dy = max(0, term_h - box_h - 4)
-        drift_x = int((math.sin(t * 0.15) * 0.3 + 0.5) * max_dx)
-        drift_y = int((math.sin(t * 0.1 + 1.0) * 0.3 + 0.5) * max_dy) + 2
+        # ── Bouncing box physics ──
+        max_x = max(0, term_w - box_w)
+        max_y = max(0, term_h - box_h - 4)
+
+        if not self._standby_box_init:
+            self._standby_box_x = float(random.randint(0, max(1, max_x)))
+            self._standby_box_y = float(random.randint(0, max(1, max_y)))
+            self._standby_box_init = True
+            self._standby_last_tick = t
+
+        dt = min(t - self._standby_last_tick, 0.2)
+        self._standby_last_tick = t
+
+        self._standby_box_x += self._standby_box_vx * dt
+        self._standby_box_y += self._standby_box_vy * dt
+
+        bounced = False
+        if self._standby_box_x <= 0:
+            self._standby_box_x = 0.0
+            self._standby_box_vx = abs(self._standby_box_vx)
+            bounced = True
+        elif self._standby_box_x >= max_x:
+            self._standby_box_x = float(max_x)
+            self._standby_box_vx = -abs(self._standby_box_vx)
+            bounced = True
+        if self._standby_box_y <= 0:
+            self._standby_box_y = 0.0
+            self._standby_box_vy = abs(self._standby_box_vy)
+            bounced = True
+        elif self._standby_box_y >= max_y:
+            self._standby_box_y = float(max_y)
+            self._standby_box_vy = -abs(self._standby_box_vy)
+            bounced = True
+
+        if bounced:
+            self._standby_phrase_idx = (self._standby_phrase_idx + 1) % len(_STANDBY_PHRASES)
+            self._standby_phrase_time = t
+
+        drift_x = int(self._standby_box_x)
+        drift_y = int(self._standby_box_y) + 2
+
+        # Recalc box_w for current phrase (may have changed on bounce)
+        phrase = _STANDBY_PHRASES[self._standby_phrase_idx]
+        box_w = len(phrase) + 6
 
         # Box row indices
         box_top = drift_y
@@ -213,9 +250,42 @@ class AnimationsMixin:
         title = "A L F I E P R I M E"
         title_x = max(0, (term_w - len(title)) // 2)
 
-        # Zzz animation
+        # ── Scattered ZZZ sprites ──
+        # Spawn new ZZZs periodically
+        if t - self._standby_zzz_timer > 0.8:
+            self._standby_zzz_timer = t
+            zx = float(random.randint(0, max(0, term_w - 4)))
+            zy = float(random.randint(0, max(0, term_h - 1)))
+            max_age = random.uniform(2.5, 5.0)
+            seed = random.random()
+            self._standby_zzz.append([zx, zy, 0.0, max_age, seed])
+
+        # Update ages and remove expired
+        new_zzz: list[list[float]] = []
+        for sprite in self._standby_zzz:
+            sprite[2] += dt  # age
+            if sprite[2] < sprite[3]:
+                new_zzz.append(sprite)
+        self._standby_zzz = new_zzz
+
+        # Build a map of row → list of (col, text, color) for ZZZ rendering
         zzz_frames = ["z", "zz", "zzz", "zz"]
-        zzz = zzz_frames[int(t * 0.8) % len(zzz_frames)]
+        zzz_map: dict[int, list[tuple[int, str, str]]] = {}
+        for zx, zy, age, max_age, seed in self._standby_zzz:
+            # Fade in (0→0.5s), hold, fade out (last 0.8s)
+            fade_in = min(1.0, age / 0.5)
+            fade_out = min(1.0, (max_age - age) / 0.8)
+            brightness = fade_in * fade_out
+            if brightness <= 0.01:
+                continue
+            frame_idx = int((t * 0.8 + seed * 10) % len(zzz_frames))
+            zzz_text = zzz_frames[frame_idx]
+            br = int(255 * brightness * (0.15 + 0.1 * math.sin(t * 2 + seed * 20)))
+            br = max(0, min(255, br))
+            c = _safe_hex(br, br, min(255, br + 25))
+            row_i = int(zy)
+            if 0 <= row_i < term_h:
+                zzz_map.setdefault(row_i, []).append((int(zx), zzz_text, c))
 
         # Border colour — gentle pulse
         border_pulse = 0.12 + 0.08 * math.sin(t * 0.8)
@@ -223,93 +293,97 @@ class AnimationsMixin:
         border_c = _safe_hex(border_br, border_br, border_br + 20)
 
         for row in range(term_h):
-            line_segs: list[tuple[str, str | None, str | None, bool]] = []
+            line_chars: list[tuple[str, str | None]] = [(" ", None)] * term_w
 
-            if row == box_top:
-                # Top border: ╭───╮
-                line_segs.append((" " * drift_x, None, None, False))
-                line_segs.append(("╭" + "─" * (box_w - 2) + "╮", border_c, None, False))
-                pad_r = term_w - drift_x - box_w
-                if pad_r > 0:
-                    line_segs.append((" " * pad_r, None, None, False))
-            elif row == box_bottom:
-                # Bottom border: ╰───╯
-                line_segs.append((" " * drift_x, None, None, False))
-                line_segs.append(("╰" + "─" * (box_w - 2) + "╯", border_c, None, False))
-                pad_r = term_w - drift_x - box_w
-                if pad_r > 0:
-                    line_segs.append((" " * pad_r, None, None, False))
-            elif box_top < row < box_bottom and row == phrase_row:
-                # Phrase row: │  phrase  │
-                line_segs.append((" " * drift_x, None, None, False))
-                line_segs.append(("│  ", border_c, None, False))
-                age = min(1.0, (t - self._standby_phrase_time) / 1.5)
-                for i, ch in enumerate(phrase):
-                    hue = (t * 0.05 + i * 0.02) % 1.0
-                    r, g, b = _hsv_to_rgb(hue, 0.4, 0.3 + 0.2 * age)
-                    c = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
-                    line_segs.append((ch, c, None, False))
-                line_segs.append(("  │", border_c, None, False))
-                pad_r = term_w - drift_x - box_w
-                if pad_r > 0:
-                    line_segs.append((" " * pad_r, None, None, False))
-            elif box_top < row < box_bottom:
-                # Empty rows inside box: │          │
-                line_segs.append((" " * drift_x, None, None, False))
-                line_segs.append(("│" + " " * (box_w - 2) + "│", border_c, None, False))
-                pad_r = term_w - drift_x - box_w
-                if pad_r > 0:
-                    line_segs.append((" " * pad_r, None, None, False))
-            elif row == box_top - 2:
-                # Zzz above the box
-                zzz_x = drift_x + box_w + 1
-                if zzz_x + len(zzz) < term_w:
-                    line_segs.append((" " * zzz_x, None, None, False))
-                    pulse = 0.2 + 0.15 * math.sin(t * 2)
-                    br = int(255 * pulse)
-                    line_segs.append((zzz, f"#{br:02x}{br:02x}{min(255, br + 30):02x}", None, False))
-                    pad_r = term_w - zzz_x - len(zzz)
-                    if pad_r > 0:
-                        line_segs.append((" " * pad_r, None, None, False))
-                else:
-                    line_segs.append((" " * term_w, None, None, False))
-            elif row == 1:
-                # Title at top center, very dim
-                line_segs.append((" " * title_x, None, None, False))
+            # ── Scatter ZZZ sprites onto this row ──
+            for zcol, ztxt, zc in zzz_map.get(row, []):
+                for i, ch in enumerate(ztxt):
+                    ci = zcol + i
+                    if 0 <= ci < term_w:
+                        line_chars[ci] = (ch, zc)
+
+            # ── Floating particles (sparse) ──
+            if random.random() < 0.005:
+                star_x = random.randint(0, term_w - 1)
+                twinkle = 0.03 + 0.03 * math.sin(t * 3 + star_x)
+                br = int(255 * twinkle)
+                c = f"#{br:02x}{br:02x}{br:02x}"
+                if line_chars[star_x][1] is None:
+                    line_chars[star_x] = ("·", c)
+
+            # ── Title row ──
+            if row == 1:
                 pulse = 0.08 + 0.04 * math.sin(t * 0.5)
                 br = int(255 * pulse)
                 c = f"#{br:02x}{br:02x}{br:02x}"
-                line_segs.append((title, c, None, False))
-                pad_r = term_w - title_x - len(title)
-                if pad_r > 0:
-                    line_segs.append((" " * pad_r, None, None, False))
-            elif row == term_h - 2:
-                # Subtle hint at the bottom
+                for i, ch in enumerate(title):
+                    ci = title_x + i
+                    if 0 <= ci < term_w:
+                        line_chars[ci] = (ch, c)
+
+            # ── Bottom hint ──
+            if row == term_h - 2:
                 hint = "press play to wake up"
                 hint_x = (term_w - len(hint)) // 2
                 blink = 0.06 + 0.04 * math.sin(t * 1.5)
                 br = int(255 * blink)
                 c = f"#{br:02x}{br:02x}{br:02x}"
-                line_segs.append((" " * hint_x, None, None, False))
-                line_segs.append((hint, c, None, False))
-                pad_r = term_w - hint_x - len(hint)
-                if pad_r > 0:
-                    line_segs.append((" " * pad_r, None, None, False))
-            else:
-                # Mostly black with occasional dim floating particles
-                if random.random() < 0.005:
-                    star_x = random.randint(0, term_w - 1)
-                    twinkle = 0.03 + 0.03 * math.sin(t * 3 + star_x)
-                    br = int(255 * twinkle)
-                    c = f"#{br:02x}{br:02x}{br:02x}"
-                    if star_x > 0:
-                        line_segs.append((" " * star_x, None, None, False))
-                    line_segs.append(("·", c, None, False))
-                    pad_r = term_w - star_x - 1
-                    if pad_r > 0:
-                        line_segs.append((" " * pad_r, None, None, False))
-                else:
-                    line_segs.append((" " * term_w, None, None, False))
+                for i, ch in enumerate(hint):
+                    ci = hint_x + i
+                    if 0 <= ci < term_w:
+                        line_chars[ci] = (ch, c)
+
+            # ── Bouncing box ──
+            if row == box_top:
+                border_str = "╭" + "─" * (box_w - 2) + "╮"
+                for i, ch in enumerate(border_str):
+                    ci = drift_x + i
+                    if 0 <= ci < term_w:
+                        line_chars[ci] = (ch, border_c)
+            elif row == box_bottom:
+                border_str = "╰" + "─" * (box_w - 2) + "╯"
+                for i, ch in enumerate(border_str):
+                    ci = drift_x + i
+                    if 0 <= ci < term_w:
+                        line_chars[ci] = (ch, border_c)
+            elif box_top < row < box_bottom and row == phrase_row:
+                # │  phrase  │
+                age_f = min(1.0, (t - self._standby_phrase_time) / 1.5)
+                for i, ch in enumerate("│  " + phrase + "  │"):
+                    ci = drift_x + i
+                    if 0 <= ci < term_w:
+                        if i == 0 or i == len(phrase) + 5:
+                            line_chars[ci] = (ch, border_c)
+                        elif 3 <= i < 3 + len(phrase):
+                            pi = i - 3
+                            hue = (t * 0.05 + pi * 0.02) % 1.0
+                            r, g, b = _hsv_to_rgb(hue, 0.4, 0.3 + 0.2 * age_f)
+                            c = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+                            line_chars[ci] = (ch, c)
+                        else:
+                            line_chars[ci] = (ch, None)
+            elif box_top < row < box_bottom:
+                inner_str = "│" + " " * (box_w - 2) + "│"
+                for i, ch in enumerate(inner_str):
+                    ci = drift_x + i
+                    if 0 <= ci < term_w:
+                        if i == 0 or i == box_w - 1:
+                            line_chars[ci] = (ch, border_c)
+                        else:
+                            line_chars[ci] = (" ", None)
+
+            # ── Emit segments for this row (batch consecutive same-color chars) ──
+            line_segs: list[tuple[str, str | None, str | None, bool]] = []
+            buf: list[str] = []
+            cur_c: str | None = ""  # sentinel different from None
+            for ch, c in line_chars:
+                if c != cur_c and buf:
+                    line_segs.append(("".join(buf), cur_c, None, False))
+                    buf = []
+                cur_c = c
+                buf.append(ch)
+            if buf:
+                line_segs.append(("".join(buf), cur_c, None, False))
 
             segs.extend(line_segs)
             if row < term_h - 1:

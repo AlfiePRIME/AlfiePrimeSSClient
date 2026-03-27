@@ -160,6 +160,12 @@ class BoomBoxTUI:
         # Easter egg: 33% chance of menu dancers
         self._settings_dancers: bool = False
         self._settings_dancer_tick: float = 0.0
+        # Menu fade transition
+        self._menu_fade_start: float = 0.0
+        self._menu_fade_duration: float = 0.3
+        self._menu_fading_in: bool = False
+        self._menu_fading_out: bool = False
+        self._menu_fade_callback: Callable[[], None] | None = None
         # Mode transition animation
         self._transition_active: bool = False
         self._transition_start: float = 0.0
@@ -459,37 +465,88 @@ class BoomBoxTUI:
             bg_lines.append(line)
         return bg_lines
 
+    def _get_menu_fade(self) -> float:
+        """Return current menu opacity (0.0-1.0) based on fade state."""
+        if self._menu_fading_in:
+            elapsed = time.monotonic() - self._menu_fade_start
+            progress = min(1.0, elapsed / self._menu_fade_duration)
+            if progress >= 1.0:
+                self._menu_fading_in = False
+            return progress
+        if self._menu_fading_out:
+            elapsed = time.monotonic() - self._menu_fade_start
+            progress = min(1.0, elapsed / self._menu_fade_duration)
+            if progress >= 1.0:
+                self._menu_fading_out = False
+                if self._menu_fade_callback:
+                    self._menu_fade_callback()
+                    self._menu_fade_callback = None
+                # Start fade-in if menu is still open
+                if self._settings_open:
+                    self._menu_fading_in = True
+                    self._menu_fade_start = time.monotonic()
+                return 0.0
+            return 1.0 - progress
+        return 1.0
+
+    def _start_menu_fade_in(self) -> None:
+        """Begin a menu fade-in animation."""
+        self._menu_fading_in = True
+        self._menu_fading_out = False
+        self._menu_fade_start = time.monotonic()
+
+    def _start_menu_fade_out(self, callback: Callable[[], None] | None = None) -> None:
+        """Begin a menu fade-out, calling callback when complete."""
+        self._menu_fading_out = True
+        self._menu_fading_in = False
+        self._menu_fade_start = time.monotonic()
+        self._menu_fade_callback = callback
+
     def _compose_panel_on_bg(
         self, bg_lines: list[Text], panel_lines: list[Text],
         panel_w: int, term_w: int, term_h: int,
         dancer_lines: list[Text] | None = None,
     ) -> Group:
         """Overlay a centered panel (with optional dancers below) onto CRT background."""
+        fade = self._get_menu_fade()
         total_content = len(panel_lines)
         if dancer_lines:
             total_content += 1 + len(dancer_lines)  # 1 blank + dancers
         panel_x = max(0, (term_w - panel_w - 2) // 2)
         panel_y = max(0, (term_h - total_content) // 2)
-        panel_bg_style = Style(bgcolor="#0a0a0a")
+        bg_a = int(10 * fade)
+        panel_bg_style = Style(bgcolor=_safe_hex(bg_a, bg_a, bg_a))
+
+        # Scale panel vertical extent by fade (expand from center)
+        if fade < 1.0:
+            visible_half = max(0, int(total_content * 0.5 * fade))
+            center = total_content // 2
+            fade_min = center - visible_half
+            fade_max = center + visible_half
+        else:
+            fade_min = 0
+            fade_max = total_content
 
         result_lines: list[Text] = []
         for row in range(term_h):
             content_idx = row - panel_y
             # Which content line does this map to?
             content_line: Text | None = None
-            if 0 <= content_idx < len(panel_lines):
+            in_range = fade_min <= content_idx <= fade_max
+            if 0 <= content_idx < len(panel_lines) and in_range:
                 content_line = panel_lines[content_idx]
-            elif dancer_lines:
-                dancer_idx = content_idx - len(panel_lines) - 1  # -1 for blank gap
+            elif dancer_lines and in_range:
+                dancer_idx = content_idx - len(panel_lines) - 1
                 if dancer_idx == -1:
-                    content_line = Text("")  # blank separator
+                    content_line = Text("")
                 elif 0 <= dancer_idx < len(dancer_lines):
                     content_line = dancer_lines[dancer_idx]
 
             if content_line is not None:
                 line = Text()
                 bg_text = bg_lines[row].plain if row < len(bg_lines) else " " * term_w
-                line.append(bg_text[:panel_x], Style(color="#222222"))
+                bg_br = max(10, int(34 * fade))
+                line.append(bg_text[:panel_x], Style(color=_safe_hex(bg_br, bg_br, bg_br)))
                 content_plain = content_line.plain
                 pad_needed = panel_w - len(content_plain)
                 line.append(" ", panel_bg_style)
@@ -500,7 +557,7 @@ class BoomBoxTUI:
                 right_start = panel_x + panel_w + 2
                 right_bg = bg_text[right_start:term_w]
                 if right_bg:
-                    line.append(right_bg, Style(color="#222222"))
+                    line.append(right_bg, Style(color=_safe_hex(bg_br, bg_br, bg_br)))
                 result_lines.append(line)
             else:
                 result_lines.append(bg_lines[row] if row < len(bg_lines) else Text(" " * term_w))
@@ -674,6 +731,38 @@ class BoomBoxTUI:
         r_val = int(180 + 75 * glow)
         title_c = _safe_hex(r_val, 0, 0)
 
+        # Danger sign animation — 4 phases, ~1.2s each:
+        #   0: fade in top, 1: fade out top, 2: fade in bottom, 3: fade out bottom
+        danger_cycle = 4.8  # total cycle length
+        danger_t = t % danger_cycle
+        danger_phase = int(danger_t / 1.2)  # 0-3
+        danger_frac = (danger_t - danger_phase * 1.2) / 1.2  # 0→1 within phase
+        # Compute opacity for top and bottom danger signs
+        if danger_phase == 0:
+            danger_top_alpha = danger_frac  # fade in top
+            danger_bot_alpha = 0.0
+        elif danger_phase == 1:
+            danger_top_alpha = 1.0 - danger_frac  # fade out top
+            danger_bot_alpha = 0.0
+        elif danger_phase == 2:
+            danger_top_alpha = 0.0
+            danger_bot_alpha = danger_frac  # fade in bottom
+        else:
+            danger_top_alpha = 0.0
+            danger_bot_alpha = 1.0 - danger_frac  # fade out bottom
+
+        # Top danger sign
+        if danger_top_alpha > 0.01:
+            dr = int(255 * danger_top_alpha)
+            dy = int(180 * danger_top_alpha)
+            danger_sign = Text(justify="center")
+            danger_sign.append("  ⚠  ", Style(color=_safe_hex(dr, dy, 0), bold=True))
+            danger_sign.append("DANGER", Style(color=_safe_hex(dr, 0, 0), bold=True))
+            danger_sign.append("  ⚠  ", Style(color=_safe_hex(dr, dy, 0), bold=True))
+            panel_lines.append(danger_sign)
+        else:
+            panel_lines.append(Text(""))
+
         title_line = Text(justify="center")
         title_line.append("━" * panel_w, Style(color=title_c, bold=True))
         panel_lines.append(title_line)
@@ -728,6 +817,18 @@ class BoomBoxTUI:
                 item.append(f" {display}", Style(color="#cc8888" if selected else "#666666"))
 
             panel_lines.append(item)
+            panel_lines.append(Text(""))
+
+        # Bottom danger sign
+        if danger_bot_alpha > 0.01:
+            dr = int(255 * danger_bot_alpha)
+            dy = int(180 * danger_bot_alpha)
+            danger_sign_bot = Text(justify="center")
+            danger_sign_bot.append("  ⚠  ", Style(color=_safe_hex(dr, dy, 0), bold=True))
+            danger_sign_bot.append("DANGER", Style(color=_safe_hex(dr, 0, 0), bold=True))
+            danger_sign_bot.append("  ⚠  ", Style(color=_safe_hex(dr, dy, 0), bold=True))
+            panel_lines.append(danger_sign_bot)
+        else:
             panel_lines.append(Text(""))
 
         # Footer
@@ -1185,6 +1286,7 @@ class BoomBoxTUI:
             self._settings_cursor = 0
             self._settings_dancers = random.random() < 0.33
             self._settings_dancer_tick = time.time()
+            self._start_menu_fade_in()
             return
 
         if k == "p":
@@ -1221,11 +1323,13 @@ class BoomBoxTUI:
     def _handle_settings_main_key(self, k: str) -> None:
         """Handle keys in the main settings menu."""
         if k == "/" or k == "escape":
-            self._settings_open = False
+            self._start_menu_fade_out(lambda: setattr(self, '_settings_open', False))
         elif k == "a":
-            self._settings_sub = "advanced"
-            self._advanced_cursor = 0
-            self._advanced_editing = ""
+            def _switch_to_advanced() -> None:
+                self._settings_sub = "advanced"
+                self._advanced_cursor = 0
+                self._advanced_editing = ""
+            self._start_menu_fade_out(_switch_to_advanced)
         elif k == "arrow_up":
             self._settings_cursor = (self._settings_cursor - 1) % len(self._settings_items)
         elif k == "arrow_down":
@@ -1262,7 +1366,7 @@ class BoomBoxTUI:
             return
 
         if k == "/" or k == "escape":
-            self._settings_sub = ""
+            self._start_menu_fade_out(lambda: setattr(self, '_settings_sub', ''))
         elif k == "arrow_up":
             self._advanced_cursor = (self._advanced_cursor - 1) % len(self._advanced_items)
         elif k == "arrow_down":
@@ -1297,7 +1401,7 @@ class BoomBoxTUI:
                         pass
                 self._color_hex_editing = False
                 self._color_hex_buf = ""
-                self._settings_sub = ""  # back to main
+                self._start_menu_fade_out(lambda: setattr(self, '_settings_sub', ''))
             elif k == "backspace" or raw_key == "\x7f":
                 self._color_hex_buf = self._color_hex_buf[:-1]
             elif len(raw_key) == 1 and raw_key in "0123456789abcdefABCDEF#":
@@ -1307,7 +1411,7 @@ class BoomBoxTUI:
 
         total = 17  # 16 presets + 1 clear
         if k == "/" or k == "escape":
-            self._settings_sub = ""
+            self._start_menu_fade_out(lambda: setattr(self, '_settings_sub', ''))
         elif k == "arrow_up":
             if self._color_cursor == 16:
                 self._color_cursor = 12  # jump to last row
@@ -1612,6 +1716,8 @@ class BoomBoxTUI:
 
     def _check_standby(self) -> bool:
         """Return True if the standby screensaver should be active."""
+        if self._settings_open:
+            return False
         if self.state.is_playing:
             self._last_playing_time = time.monotonic()
             if self._standby_active:

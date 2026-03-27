@@ -14,6 +14,9 @@ class PlayerState:
     title: str = ""
     artist: str = ""
     album: str = ""
+    album_artist: str = ""
+    year: int = 0
+    track_number: int = 0
     progress_ms: int = 0
     duration_ms: int = 0
     is_playing: bool = False

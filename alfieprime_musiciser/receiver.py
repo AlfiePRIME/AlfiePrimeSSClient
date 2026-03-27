@@ -418,6 +418,12 @@ class SendSpinReceiver:
             state.artist = meta.artist or ""
         if not isinstance(getattr(meta, "album", UndefinedField()), UndefinedField):
             state.album = meta.album or ""
+        if not isinstance(getattr(meta, "album_artist", UndefinedField()), UndefinedField):
+            state.album_artist = meta.album_artist or ""
+        if not isinstance(getattr(meta, "year", UndefinedField()), UndefinedField):
+            state.year = meta.year or 0
+        if not isinstance(getattr(meta, "track", UndefinedField()), UndefinedField):
+            state.track_number = meta.track or 0
 
         # On track change, log and apply pre-cached artwork theme if available
         if state.title != old_title and state.title:

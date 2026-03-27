@@ -8,8 +8,8 @@ A party-themed TUI/GUI music player and [SendSpin](https://github.com/music-assi
 - **Dynamic album art colours** — extracts a colour palette from the currently playing album art and themes the entire UI (titles, borders, spectrum gradient, party lights). Falls back to rainbow when no artwork is available
 - **VU meters** — stereo level meters with square-root scaling, peak-hold markers, and shimmer animation
 - **Party lights** — animated light strips and stereo-reactive dots synced to the music
-- **Dance floor** — ASCII art DJ (with hype mode at high energy) and 12 dancer types (6 male + 6 female variants: swayer, jumper, headbanger, spinner, robot, raver) across multiple depth rows, energy-reactive crowd density, BPM-scaled animation, and beat-reactive DJ equipment glow
-- **Full-screen album art mode** — visually-square braille art centred on screen with party effects (wandering dancers, confetti, fireworks) or calm mode (art only). Toggle with `A`, calm with `C`
+- **Dance floor** — ASCII art DJ (with hype mode at high energy) and 12 dancer types (6 male + 6 female variants: swayer, jumper, headbanger, spinner, robot, raver) across multiple depth rows, smoothed energy-reactive crowd density (fast attack, slow decay), BPM-scaled animation, and beat-reactive DJ equipment glow
+- **Full-screen album art mode** — visually-square braille art centred on screen with party effects (wandering dancers, confetti, fireworks) or calm mode (large art with album info panel showing artist, album, year, track number, and codec details). Toggle with `A`, calm with `C`
 - **Braille album art** — renders album artwork as coloured Unicode braille dot art (2x4 pixel grid per character) next to the Now Playing panel
 - **Listening stats** — persistent per-artist and per-track play time tracking, session summary in the status bar, auto-saved to `~/.config/alfieprime-musiciser/stats.json`
 - **OS media integration** — registers with the OS so media keys, lock screen, and desktop widgets can see what's playing and send play/pause/next/previous commands (MPRIS2 on Linux, SMTC on Windows)
@@ -17,14 +17,14 @@ A party-themed TUI/GUI music player and [SendSpin](https://github.com/music-assi
 - **Terminal tab title** — sets the terminal tab/window title to the current track via OSC escape sequences
 - **Transport controls** — play/pause, next, previous, shuffle, repeat, volume via keyboard or mouse click
 - **CRT animations** — 3-phase startup (boot, static hold with animated antenna and radio wave ripples, diagonal lights-on sweep) and power-off effects. After 2 minutes of connecting, displays a "is your server running?" hint while still listening
-- **Standby screensaver** — floating phrases with dim particles after 5 minutes of idle, wakes instantly on playback
+- **Standby screensaver** — floating phrases in a bordered box with dim particles after 5 minutes of idle, wakes instantly on playback
 - **System stats** — CPU usage, memory, network throughput, and session uptime in the status bar
 - **Artwork pre-caching** — upcoming track artwork is extracted on background threads for instant theme changes on track switch
 - **Resizable UI** — all sections dynamically scale to fill the terminal or window. The spectrum analyzer expands to use all available vertical space
 - **Two connection modes**:
   - **Listen (mDNS)** — advertises via `_sendspin._tcp.local.` so Music Assistant discovers and connects automatically (recommended)
   - **Connect** — connects to a specific SendSpin server URL
-- **Settings menu** — in-app settings overlay (`/` key) with animated CRT background, fade transitions, scattered dancing easter egg, configurable auto-play, auto-volume, FPS limit (5-120), artwork toggle, album art colour toggle, static colour picker (16 presets + custom hex), and an advanced section (`A` key) for editing client name, UUID, and factory-resetting the config (with animated danger CRT warning screen)
+- **Settings menu** — in-app settings overlay (`/` key) with animated CRT background, fade transitions, scattered dancing easter egg, configurable auto-play, auto-volume, FPS limit (5-120), brightness slider (50-150%), artwork toggle, album art colour toggle, static colour picker (16 presets + custom hex), and an advanced section (`A` key) for editing client name, UUID, and factory-resetting the config (with animated danger CRT warning screen)
 - **Persistent UI state** — remembers art mode, calm mode, and settings across restarts
 - **Persistent device identity** — remembers its client ID across restarts so Music Assistant recognises it as the same speaker
 - **Standalone GUI mode** — runs in its own tkinter window (separate process) so audio never stutters from rendering load
@@ -98,8 +98,8 @@ alfieprime-musiciser-app
 | `R` | Cycle repeat (off / all / one) |
 | `A` | Toggle full-screen album art mode (party scene with wandering dancers, confetti, fireworks) |
 | `C` | Toggle calm mode in art view / close settings menu |
-| `↑` | Volume up |
-| `↓` | Volume down |
+| `↑` / `↓` | Volume up / down |
+| `←` / `→` | Adjust selected setting (in settings menu) |
 | `/` | Open settings menu (auto play, auto volume, FPS, artwork, colours, advanced) |
 | `Q` | Quit (pauses playback on Music Assistant first) |
 

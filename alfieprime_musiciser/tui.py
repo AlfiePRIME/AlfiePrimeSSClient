@@ -317,26 +317,93 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             reserved_rows += 3  # title banner
             max_h = max(8, term_h - reserved_rows)
             max_w = max(20, flush_inner)
-            # Keep visually square: art_w = 2*art_h (terminal chars ~2:1 height:width)
-            # Fill as much of the screen as possible within both constraints
-            art_h = min(max_h, max_w // 2)
-            art_w = art_h * 2
+
+            # Build info panel content from available metadata
+            info_lines: list[Text] = []
+            s = self.state
+            label_style = Style(color=th.accent, bold=True)
+            value_style = Style(color=th.text_primary)
+            dim_style = Style(color="#555555", italic=True)
+
+            if s.artist:
+                info_lines.append(Text.assemble(("Artist", label_style)))
+                info_lines.append(Text(s.artist, style=value_style))
+                info_lines.append(Text(""))
+            if s.album_artist and s.album_artist != s.artist:
+                info_lines.append(Text.assemble(("Album Artist", label_style)))
+                info_lines.append(Text(s.album_artist, style=value_style))
+                info_lines.append(Text(""))
+            if s.album:
+                info_lines.append(Text.assemble(("Album", label_style)))
+                info_lines.append(Text(s.album, style=value_style))
+                info_lines.append(Text(""))
+            if s.year:
+                info_lines.append(Text.assemble(("Year", label_style)))
+                info_lines.append(Text(str(s.year), style=value_style))
+                info_lines.append(Text(""))
+            if s.track_number:
+                info_lines.append(Text.assemble(("Track", label_style)))
+                info_lines.append(Text(f"#{s.track_number}", style=value_style))
+                info_lines.append(Text(""))
+            if s.codec and s.codec != "pcm":
+                info_lines.append(Text.assemble(("Codec", label_style)))
+                info_lines.append(Text(
+                    f"{s.codec.upper()}  {s.sample_rate // 1000}kHz / {s.bit_depth}bit",
+                    style=value_style,
+                ))
+                info_lines.append(Text(""))
+
+            if not info_lines:
+                info_lines.append(Text("No info available", style=dim_style))
+
+            # Decide layout: side-by-side if terminal wide enough for art + info panel
+            info_panel_w = 30  # width of the info box (including border)
+            has_info = bool(info_lines)
+            side_by_side = has_info and max_w >= 60 + info_panel_w
+
+            if side_by_side:
+                # Art takes remaining space left of info panel
+                avail_art_w = max_w - info_panel_w - 2
+                art_h = min(max_h, avail_art_w // 2)
+                art_w = art_h * 2
+            else:
+                art_h = min(max_h, max_w // 2)
+                art_w = art_h * 2
+
             art_lines = render_braille_art(
                 self.state.artwork_data, art_w, art_h, theme=th, hq=True,
             )
+
+            art_content: Panel | Text
             if art_lines:
-                parts.append(Panel(
+                art_content = Panel(
                     Group(*art_lines),
                     title=" \u2592 ALBUM ART \u2592 ",
                     title_align="center", border_style=th.border_now_playing, padding=(0, 0),
-                ))
+                )
             else:
-                placeholder = Text("No artwork available", style=Style(color="#555555", italic=True))
-                parts.append(Panel(
-                    placeholder,
+                art_content = Panel(
+                    Text("No artwork available", style=Style(color="#555555", italic=True)),
                     title=" \u2592 ALBUM ART \u2592 ",
                     title_align="center", border_style=th.border_now_playing, padding=(0, 0),
-                ))
+                )
+
+            if side_by_side:
+                info_content = Panel(
+                    Group(*info_lines),
+                    title=" \u266b INFO \u266b ",
+                    title_align="center",
+                    border_style=th.border_now_playing,
+                    padding=(1, 2),
+                    width=info_panel_w,
+                )
+                layout_table = Table.grid(padding=(0, 1))
+                layout_table.add_column(ratio=1)
+                layout_table.add_column(width=info_panel_w)
+                layout_table.add_row(art_content, info_content)
+                parts.append(layout_table)
+            else:
+                parts.append(art_content)
         else:
             # ── Party mode: centered art square with dancers/confetti/fireworks ──
             bands, peaks, vu_left, vu_right = self._visualizer.get_spectrum()

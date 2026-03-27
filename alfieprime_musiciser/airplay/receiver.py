@@ -53,16 +53,17 @@ def setup_file_logging() -> str:
             "%(asctime)s | %(levelname)-5s | %(name)s | %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         ))
-        # Attach to all relevant loggers
+        # Attach to the root logger so we capture EVERYTHING — including
+        # vendored AP2Handler per-connection loggers with dynamic names
+        # like "AP2Handler: ip:port<=>ip:port" and HAP/Audio/Control loggers.
+        root = logging.getLogger()
+        root.addHandler(handler)
+        # Also ensure our own loggers are at DEBUG
         for name in (
             "alfieprime_musiciser.airplay",
             "alfieprime_musiciser.airplay.receiver",
-            "zeroconf",
-            "ap2_receiver",
-            "AirPlay",
         ):
             lg = logging.getLogger(name)
-            lg.addHandler(handler)
             lg.setLevel(logging.DEBUG)
         _file_logging_active = True
         logger.info("AirPlay file log: %s", _LOG_FILE)
@@ -567,11 +568,23 @@ class AirPlayReceiver:
 
         # ── Register mDNS: both _airplay._tcp AND _raop._tcp ──
         # iPhones need BOTH services to show the device in the AirPlay list.
+        # Advertise ALL routable IPs so the iPhone can reach us regardless of
+        # which interface it routes through.
         logger.info("AirPlay: registering mDNS services on port %d...", self._port)
-        addresses = [ip4_bin]
+        all_ips: set[str] = set()
+        for _name, _ip in candidates:
+            all_ips.add(_ip)
+        # Also include any IPs we know about
+        all_ips.discard("127.0.0.1")
+        addresses: list[bytes] = []
+        for ip in sorted(all_ips, key=lambda x: _ip_priority(("", x))):
+            try:
+                addresses.append(socket.inet_pton(socket.AF_INET, ip))
+            except OSError:
+                pass
         if ip6_bin:
             addresses.append(ip6_bin)
-        logger.debug("AirPlay: mDNS addresses (binary): %s", [a.hex() for a in addresses])
+        logger.debug("AirPlay: mDNS addresses: %s", [socket.inet_ntoa(a) if len(a) == 4 else a.hex() for a in addresses])
 
         try:
             from zeroconf import IPVersion, ServiceInfo, Zeroconf  # type: ignore[import-untyped]
@@ -622,14 +635,22 @@ class AirPlayReceiver:
 
         # Update state — mark as waiting for AirPlay client (not fully "connected" yet)
         self._state.server_name = f"AirPlay: {self._device_name}"
-        logger.info("AirPlay: waiting for client connections on %s:%d", ipv4_addr, self._port)
+
+        # Bind to 0.0.0.0 so the server accepts connections from ANY interface.
+        # The mDNS registration advertises the specific IPs, but the RTSP server
+        # must be reachable from all of them (especially when netifaces picks a
+        # Hyper-V/WSL virtual adapter but the iPhone reaches us via the real LAN).
+        bind_addr = "0.0.0.0"
+        logger.info("AirPlay: waiting for client connections on %s:%d (mDNS advertises %s)",
+                     bind_addr, self._port, ipv4_addr)
 
         # Start RTSP server
         try:
-            self._server = AP2Server((ipv4_addr, self._port), HandlerClass)
+            self._server = AP2Server((bind_addr, self._port), HandlerClass)
             # Mark as connected so the TUI exits the waiting screen
             self._state.connected = True
-            logger.info("AirPlay: RTSP server started on %s:%d — ready for connections", ipv4_addr, self._port)
+            logger.info("AirPlay: RTSP server started on %s:%d — ready for connections",
+                        bind_addr, self._port)
             self._server.serve_forever()
         except Exception:
             logger.exception("AirPlay server error")

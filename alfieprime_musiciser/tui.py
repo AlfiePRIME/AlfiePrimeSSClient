@@ -322,7 +322,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             info_lines: list[Text] = []
             s = self.state
             label_style = Style(color=th.accent, bold=True)
-            value_style = Style(color=th.text_primary)
+            value_style = Style(color=th.secondary)
             dim_style = Style(color="#555555", italic=True)
 
             if s.artist:

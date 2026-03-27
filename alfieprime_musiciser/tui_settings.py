@@ -200,7 +200,7 @@ class SettingsMixin:
         t = time.time()
         bounce = int(t * 3) % 4
         rng = random.Random(42)
-        n_dancers = rng.randint(5, 8)
+        n_dancers = rng.randint(10, 16)
         colors = ["#ff55ff", "#55ffff", "#ffff55", "#55ff55", "#ff8855", "#ff5555", "#55ff88"]
         # Panel bounding box (with margin)
         px0 = panel_x - 1
@@ -436,9 +436,6 @@ class SettingsMixin:
             hint.append("[Enter] Edit  ", Style(color="#555555"))
             hint.append("[B] Back", Style(color="#555555"))
         panel_lines.append(hint)
-        panel_x = max(0, (term_w - panel_w - 2) // 2)
-        panel_y = max(0, (term_h - len(panel_lines)) // 2)
-        self._scatter_dancers_on_bg(bg_lines, term_w, term_h, panel_x, panel_y, panel_w, len(panel_lines))
         return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
 
     def _build_reset_confirm_layout(

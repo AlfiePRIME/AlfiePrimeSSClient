@@ -770,47 +770,22 @@ def render_art_scene(
         [["*o*", "/|\\", "/Y\\"], ["°o°", "\\|/", "\\A/"], ["*o*", "/|\\", ")X("], ["°o°", "\\|/", "/Y\\"]],
     ]
 
-    # Spawn dancers at base positions around the art, then drift them over time
+    # Spawn dancers at random positions around the scene, avoiding the art area
     _rng_state = _rng.Random(42)
-    base_dancers: list[tuple[int, int, int, int]] = []  # (base_x, base_y, type_idx, uid)
-    uid = 0
-    bottom_y = art_y + art_h + 1
-    if bottom_y + 3 <= scene_h:
-        x = 1
-        while x < scene_w - 4:
-            base_dancers.append((x, bottom_y, _rng_state.randint(0, len(dancer_types) - 1), uid))
-            uid += 1
-            x += max(4, int(8 - 4 * energy))
-    if art_y >= 4:
-        x = 2
-        while x < scene_w - 4:
-            base_dancers.append((x, max(0, art_y - 4), _rng_state.randint(0, len(dancer_types) - 1), uid))
-            uid += 1
-            x += max(4, int(8 - 4 * energy))
-    if art_x >= 5:
-        y = art_y
-        while y + 3 <= art_y + art_h:
-            base_dancers.append((1, y, _rng_state.randint(0, len(dancer_types) - 1), uid))
-            uid += 1
-            y += 4
-    if art_x + art_w + 4 < scene_w:
-        y = art_y
-        while y + 3 <= art_y + art_h:
-            base_dancers.append((art_x + art_w + 2, y, _rng_state.randint(0, len(dancer_types) - 1), uid))
-            uid += 1
-            y += 4
-
-    # Apply wandering drift — each dancer drifts around its base position
+    n_dancers = max(8, int((scene_w * scene_h) / 120))  # scale with screen size
     dancers: list[tuple[int, int, int]] = []  # (x, y, type_idx)
-    for bx, by, dt, di in base_dancers:
-        # Each dancer has unique phase offsets based on uid
-        drift_x = int(3 * _sin(t * 0.4 + di * 2.7))
-        drift_y = int(2 * _sin(t * 0.3 + di * 1.9 + 0.5))
+    for i in range(n_dancers):
+        dt = _rng_state.randint(0, len(dancer_types) - 1)
+        bx = _rng_state.randint(0, max(0, scene_w - 4))
+        by = _rng_state.randint(0, max(0, scene_h - 4))
+        # Drift around base position over time
+        drift_x = int(4 * _sin(t * 0.4 + i * 2.7 + bx * 0.1))
+        drift_y = int(3 * _sin(t * 0.3 + i * 1.9 + by * 0.1))
         nx = max(0, min(scene_w - 4, bx + drift_x))
         ny = max(0, min(scene_h - 4, by + drift_y))
-        # Don't overlap the art region
+        # Skip if overlapping the art region (with margin)
         if art_x - 3 <= nx <= art_x + art_w and art_y - 3 <= ny <= art_y + art_h:
-            nx, ny = bx, by
+            continue
         dancers.append((nx, ny, dt))
 
     # ── Spawn new particles on beats ──

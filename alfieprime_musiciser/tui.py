@@ -594,8 +594,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
 
         # ── Settings menu controls ──
         if self._settings_open:
-            # 'q' exits settings from any submenu (unless editing text)
-            if k == "q" and not self._advanced_editing and not self._color_hex_editing and not self._advanced_confirm_reset:
+            # 'c' exits settings from any submenu (unless editing text)
+            if k == "c" and not self._advanced_editing and not self._color_hex_editing and not self._advanced_confirm_reset:
                 self._settings_sub = ""
                 self._start_menu_fade_out(lambda: setattr(self, '_settings_open', False))
                 return

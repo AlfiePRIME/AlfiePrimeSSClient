@@ -100,7 +100,7 @@ alfieprime-musiciser-app
 | `↑` | Volume up |
 | `↓` | Volume down |
 | `/` | Open settings menu (auto play, auto volume, FPS, artwork, colours, advanced) |
-| `Q` | Quit (pauses playback on Music Assistant first) / Close settings menu |
+| `Q` | Quit (pauses playback on Music Assistant first) |
 
 ## Configuration
 

@@ -318,13 +318,13 @@ class SettingsMixin:
         footer = Text()
         footer.append("━" * panel_w, Style(color=th.primary_dim))
         panel_lines.append(footer)
-        hint_text = "[↑↓] Navigate  [Enter/Space] Toggle  [◂▸] Adjust  [Q] Close"
+        hint_text = "[↑↓] Navigate  [Enter/Space] Toggle  [◂▸] Adjust  [C] Close"
         hint = Text()
         hint.append(" " * max(0, (panel_w - len(hint_text)) // 2))
         hint.append("[↑↓] Navigate  ", Style(color="#555555"))
         hint.append("[Enter/Space] Toggle  ", Style(color="#555555"))
         hint.append("[◂▸] Adjust  ", Style(color="#555555"))
-        hint.append("[Q] Close", Style(color="#555555"))
+        hint.append("[C] Close", Style(color="#555555"))
         panel_lines.append(hint)
         dancer_lines = self._render_menu_dancers(panel_w)
         return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h, dancer_lines)

@@ -111,6 +111,35 @@ async def _run_with_config(
 
     tui._source_switch_callback = _on_source_switch
 
+    # DJ mode activation callback — mute native audio, connect mixer to receivers
+    def _on_dj_activate(active: bool, mixer) -> None:
+        if active and mixer is not None:
+            # Mute native audio outputs — mixer does its own playback
+            if receiver._audio_handler is not None:
+                receiver._audio_handler.set_volume(0, muted=True)
+            # Store mixer reference on receivers for PCM tapping
+            receiver._dj_mixer = mixer
+            if airplay_receiver is not None:
+                airplay_receiver._dj_mixer = mixer
+            logger.info("DJ mode: native audio muted, mixer connected")
+        else:
+            # Restore native audio
+            receiver._dj_mixer = None
+            if airplay_receiver is not None:
+                airplay_receiver._dj_mixer = None
+            # Unmute the active source's audio handler
+            source = tui.state.active_source or "sendspin"
+            if receiver._audio_handler is not None:
+                if source == "sendspin":
+                    receiver._audio_handler.set_volume(
+                        tui.state.volume, muted=tui.state.muted,
+                    )
+                else:
+                    receiver._audio_handler.set_volume(0, muted=True)
+            logger.info("DJ mode: native audio restored")
+
+    tui._dj_activate_callback = _on_dj_activate
+
     loop = asyncio.get_running_loop()
 
     def _stop_all():

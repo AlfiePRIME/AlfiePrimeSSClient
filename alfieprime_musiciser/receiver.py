@@ -103,6 +103,7 @@ class SendSpinReceiver:
         self._connection_lock: asyncio.Lock | None = None
         self._flac_decoder = None
         self._flac_fmt = None
+        self._dj_mixer = None  # Set by main.py when DJ mode activates
         self._running = False
         self._loop: asyncio.AbstractEventLoop | None = None
         # Pre-cached themes per artwork channel (channel 0 = current, 1+ = upcoming)
@@ -472,27 +473,37 @@ class SendSpinReceiver:
     def _on_audio_chunk(
         self, server_timestamp_us: int, audio_data: bytes | bytearray, fmt: AudioFormat,
     ) -> None:
-        """Feed audio to visualizer (audio playback is handled by AudioStreamHandler)."""
-        # Only feed visualizer when SendSpin is the active source
-        if self._state.active_source and self._state.active_source != "sendspin":
-            return
-
+        """Feed audio to visualizer and DJ mixer (playback is handled by AudioStreamHandler)."""
         from aiosendspin.models.types import AudioCodec
 
         pcm = fmt.pcm_format
-        self._visualizer.set_format(pcm.sample_rate, pcm.bit_depth, pcm.channels)
 
+        # Always decode — needed for both visualizer and DJ mixer
+        raw_pcm: bytes | bytearray | None = None
         if fmt.codec == AudioCodec.PCM:
-            self._visualizer.feed_audio(audio_data)
+            raw_pcm = audio_data
         elif fmt.codec == AudioCodec.FLAC:
-            # Decode FLAC to PCM before feeding visualizer
             if self._flac_decoder is None or self._flac_fmt != fmt:
                 from sendspin.decoder import FlacDecoder
                 self._flac_decoder = FlacDecoder(fmt)
                 self._flac_fmt = fmt
             decoded = self._flac_decoder.decode(audio_data)
             if decoded:
-                self._visualizer.feed_audio(decoded)
+                raw_pcm = decoded
+
+        if raw_pcm is None:
+            return
+
+        # Feed DJ mixer channel A (SendSpin) when active
+        mixer = self._dj_mixer
+        if mixer is not None:
+            mixer.set_format_a(pcm.sample_rate, pcm.bit_depth, pcm.channels)
+            mixer.feed_a(raw_pcm)
+
+        # Feed visualizer only when SendSpin is the active source
+        if not self._state.active_source or self._state.active_source == "sendspin":
+            self._visualizer.set_format(pcm.sample_rate, pcm.bit_depth, pcm.channels)
+            self._visualizer.feed_audio(raw_pcm)
 
     def _sendspin_is_active(self) -> bool:
         return self._state.active_source in ("sendspin", "")

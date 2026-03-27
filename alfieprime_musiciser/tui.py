@@ -157,6 +157,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         self._gui_window = None  # TerminalEmulator instance when in GUI mode
         self._command_callback: Callable[[str], None] | None = None
         self._source_switch_callback: Callable[[str], None] | None = None
+        self._dj_activate_callback: Callable | None = None
         # Track button positions for mouse clicks: {name: (col_start, col_end)}
         self._button_regions: dict[str, tuple[int, int]] = {}
         # Row (0-based from top of screen) where transport controls are rendered
@@ -1007,7 +1008,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
             self._flash_hint("c")
         elif k == "j":
             from_mode = self._get_current_mode_name()
-            self._dj_mode = True
+            self._start_dj_mode()
             self._start_transition(from_mode, "dj")
         elif k == "m":
             self._fire_command("mute")
@@ -1470,4 +1471,6 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
             gui.stop()
 
     def stop(self) -> None:
+        if self._dj_mode:
+            self._stop_dj_mode()
         self._running = False

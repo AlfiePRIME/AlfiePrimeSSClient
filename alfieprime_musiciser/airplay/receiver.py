@@ -153,6 +153,7 @@ class _PCMConsumer:
         self.channels = channels
         self._running = False
         self._thread: threading.Thread | None = None
+        self.dj_mixer = None  # Set externally when DJ mode activates
 
     def start(self) -> None:
         self._running = True
@@ -181,6 +182,15 @@ class _PCMConsumer:
                         self.sample_rate, self.sample_size, self.channels,
                     )
                     continue
+
+                # Feed DJ mixer channel B (AirPlay) when active
+                mixer = self.dj_mixer
+                if mixer is not None:
+                    mixer.set_format_b(
+                        self.sample_rate, self.sample_size, self.channels,
+                    )
+                    mixer.feed_b(data)
+
                 # Only feed visualizer when AirPlay is the active source
                 if self._state and self._state.active_source != "airplay":
                     continue
@@ -871,6 +881,18 @@ class AirPlayReceiver:
         self._pin: str | None = None
         self._remote = _RemoteControl()
         self._original_command_cb: object | None = None
+        self.__dj_mixer = None
+
+    @property
+    def _dj_mixer(self):
+        return self.__dj_mixer
+
+    @_dj_mixer.setter
+    def _dj_mixer(self, mixer):
+        self.__dj_mixer = mixer
+        # Forward to PCM consumer if it exists
+        if hasattr(self, "_pcm_consumer") and self._pcm_consumer is not None:
+            self._pcm_consumer.dj_mixer = mixer
 
     @property
     def pin(self) -> str | None:

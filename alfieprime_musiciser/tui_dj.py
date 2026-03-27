@@ -1,6 +1,7 @@
 """DJ mixing console screen mixin for BoomBoxTUI."""
 from __future__ import annotations
 
+import logging
 import math
 import time
 from typing import TYPE_CHECKING
@@ -14,9 +15,13 @@ from rich.text import Text
 from alfieprime_musiciser.colors import ColorTheme, blend_themes, _lerp_color
 from alfieprime_musiciser.dj_state import DJState, ChannelState
 from alfieprime_musiciser.renderer import _cached_style, render_spectrum
+from alfieprime_musiciser.visualizer import AudioVisualizer
 
 if TYPE_CHECKING:
+    from alfieprime_musiciser.dj_mixer import DJMixer
     from alfieprime_musiciser.state import PlayerState
+
+logger = logging.getLogger(__name__)
 
 
 # ── Turntable ASCII frames (7 lines × 13 cols) ──────────────────────────────
@@ -74,9 +79,17 @@ def _render_turntable(
     focused: bool,
     label: str,
     width: int,
+    connected: bool = True,
+    progress: float = 0.0,
 ) -> list[Text]:
     """Render a single turntable with spinning vinyl effect."""
     lines: list[Text] = []
+
+    # Dim everything when source is disconnected
+    if not connected:
+        is_playing = False
+        beat_intensity = 0.0
+
     frame_idx = int(t * 3) % 4 if is_playing else 0
     platter = _PLATTER_FRAMES[frame_idx]
 
@@ -86,11 +99,18 @@ def _render_turntable(
 
     # Colors — brighten on beat
     beat_boost = min(1.0, beat_intensity * 0.5) if is_playing else 0.0
-    border_color = _lerp_color(theme.primary_dim, theme.primary, 0.5 + beat_boost * 0.5)
-    vinyl_color = _lerp_color("#333333", theme.primary_dim, 0.3 + beat_boost * 0.2)
-    label_color = theme.accent if is_playing else "#555555"
-    groove_color = _lerp_color("#444444", theme.primary, beat_boost)
-    focus_indicator = theme.accent if focused else "#444444"
+    if not connected:
+        border_color = "#333333"
+        vinyl_color = "#222222"
+        label_color = "#444444"
+        groove_color = "#333333"
+        focus_indicator = "#333333" if not focused else "#555555"
+    else:
+        border_color = _lerp_color(theme.primary_dim, theme.primary, 0.5 + beat_boost * 0.5)
+        vinyl_color = _lerp_color("#333333", theme.primary_dim, 0.3 + beat_boost * 0.2)
+        label_color = theme.accent if is_playing else "#555555"
+        groove_color = _lerp_color("#444444", theme.primary, beat_boost)
+        focus_indicator = theme.accent if focused else "#444444"
 
     # Channel label
     ch_line = Text()
@@ -100,15 +120,19 @@ def _render_turntable(
     ch_line.append(lbl, _cached_style(focus_indicator, bold=focused))
     lines.append(ch_line)
 
-    # Tonearm
+    # Tonearm — position moves inward as track progresses
     arm_line = Text()
     if is_playing:
-        arm = "        ╲│"
+        # Arm position: 0=outer (8 spaces), 1.0=inner (5 spaces)
+        arm_offset = int(8 - progress * 3)
+        arm_offset = max(5, min(8, arm_offset))
+        arm = " " * arm_offset + "╲│"
     else:
         arm = "          │"
     arm_pad = max(0, (width - len(arm)) // 2)
     arm_line.append(" " * arm_pad)
-    arm_line.append(arm, _cached_style("#888888"))
+    arm_color = _lerp_color("#888888", theme.accent, beat_boost * 0.3) if connected else "#555555"
+    arm_line.append(arm, _cached_style(arm_color))
     lines.append(arm_line)
 
     # Platter with groove rings
@@ -290,6 +314,41 @@ class DJMixin:
         """Initialise DJ state. Called from BoomBoxTUI.__init__."""
         self._dj_mode: bool = False
         self._dj_state = DJState()
+        self._dj_mixer: DJMixer | None = None
+        self._dj_viz_a: AudioVisualizer | None = None
+        self._dj_viz_b: AudioVisualizer | None = None
+
+    def _start_dj_mode(self) -> None:
+        """Activate DJ mode: create mixer + per-channel visualizers, mute native audio."""
+        from alfieprime_musiciser.dj_mixer import DJMixer
+
+        self._dj_viz_a = AudioVisualizer()
+        self._dj_viz_b = AudioVisualizer()
+        self._dj_mixer = DJMixer(
+            self._dj_state,
+            self._visualizer,  # type: ignore[attr-defined]
+            viz_a=self._dj_viz_a,
+            viz_b=self._dj_viz_b,
+        )
+        self._dj_mixer.start()
+        self._dj_mode = True
+        # Notify receivers to mute native audio and start feeding mixer
+        if self._dj_activate_callback:  # type: ignore[attr-defined]
+            self._dj_activate_callback(True, self._dj_mixer)  # type: ignore[attr-defined]
+        logger.info("DJ mode activated")
+
+    def _stop_dj_mode(self) -> None:
+        """Deactivate DJ mode: stop mixer, restore native audio."""
+        if self._dj_mixer is not None:
+            self._dj_mixer.stop()
+            self._dj_mixer = None
+        self._dj_viz_a = None
+        self._dj_viz_b = None
+        self._dj_mode = False
+        # Notify receivers to restore native audio
+        if self._dj_activate_callback:  # type: ignore[attr-defined]
+            self._dj_activate_callback(False, None)  # type: ignore[attr-defined]
+        logger.info("DJ mode deactivated")
 
     # ── Helpers to read per-source data from snapshots ───────────────────
 
@@ -338,9 +397,24 @@ class DJMixin:
         theme_b: ColorTheme = data_b.get("theme", ColorTheme())  # type: ignore[assignment]
         master_theme = blend_themes(theme_a, theme_b, dj.crossfader)
 
-        # Get visualizer data
+        # Get visualizer data — per-channel when available
         bands, peaks, vu_left, vu_right = self._visualizer.get_spectrum()  # type: ignore[attr-defined]
         beat_count, beat_intensity = self._visualizer.get_beat()  # type: ignore[attr-defined]
+
+        # Per-channel VU/beat from dedicated visualizers
+        if self._dj_viz_a is not None:
+            _, _, vu_a_l, vu_a_r = self._dj_viz_a.get_spectrum()
+            _, beat_a = self._dj_viz_a.get_beat()
+        else:
+            vu_a_l = vu_a_r = vu_left * (1 - dj.crossfader)
+            beat_a = beat_intensity if state.active_source == "sendspin" else 0.0
+
+        if self._dj_viz_b is not None:
+            _, _, vu_b_l, vu_b_r = self._dj_viz_b.get_spectrum()
+            _, beat_b = self._dj_viz_b.get_beat()
+        else:
+            vu_b_l = vu_b_r = vu_left * dj.crossfader
+            beat_b = beat_intensity if state.active_source == "airplay" else 0.0
 
         padded_inner = max(term_w - 4, 20)
         parts: list = []
@@ -361,44 +435,48 @@ class DJMixin:
         turntable_w = max(20, (term_w - 20) // 2)
         mixer_w = max(14, term_w - turntable_w * 2 - 8)
 
+        # Track progress for tonearm position (0.0–1.0)
+        prog_a = data_a.get("progress_ms", 0) / max(1, data_a.get("duration_ms", 1))
+        prog_b = data_b.get("progress_ms", 0) / max(1, data_b.get("duration_ms", 1))
+
         # Turntable A (SendSpin)
+        a_playing = data_a.get("is_playing", False) and state.sendspin_connected
         tt_a = _render_turntable(
             theme_a,
             data_a.get("title", "") or "No track",
             data_a.get("artist", "") or "SendSpin",
-            data_a.get("is_playing", False) and state.sendspin_connected,
-            beat_intensity if state.active_source == "sendspin" else 0.0,
+            a_playing,
+            beat_a,
             t, dj.active_channel == "a",
             "A · SENDSPIN",
             turntable_w,
+            connected=state.sendspin_connected,
+            progress=min(1.0, prog_a),
         )
 
         # Turntable B (AirPlay)
+        b_playing = data_b.get("is_playing", False) and state.airplay_connected
         tt_b = _render_turntable(
             theme_b,
             data_b.get("title", "") or "No track",
             data_b.get("artist", "") or "AirPlay",
-            data_b.get("is_playing", False) and state.airplay_connected,
-            beat_intensity if state.active_source == "airplay" else 0.0,
+            b_playing,
+            beat_b,
             t, dj.active_channel == "b",
             "B · AIRPLAY",
             turntable_w,
+            connected=state.airplay_connected,
+            progress=min(1.0, prog_b),
         )
 
         # Center mixer: VU meters + crossfader
         mixer_lines: list[Text] = []
         mixer_lines.append(Text(""))
 
-        # Per-channel VU (simplified — use master VU split by crossfader)
+        # Per-channel VU
         vu_h = 6
-        vu_a_lines = _render_dj_vu(
-            vu_left * (1 - dj.crossfader), vu_right * (1 - dj.crossfader),
-            vu_h, theme_a, "A",
-        )
-        vu_b_lines = _render_dj_vu(
-            vu_left * dj.crossfader, vu_right * dj.crossfader,
-            vu_h, theme_b, "B",
-        )
+        vu_a_lines = _render_dj_vu(vu_a_l, vu_a_r, vu_h, theme_a, "A")
+        vu_b_lines = _render_dj_vu(vu_b_l, vu_b_r, vu_h, theme_b, "B")
 
         # Combine VU A and B side by side
         for i in range(max(len(vu_a_lines), len(vu_b_lines))):
@@ -442,11 +520,17 @@ class DJMixin:
             Group(*tt_b),
         )
 
+        # Beat-reactive border glow on the decks panel
+        deck_border = _lerp_color(
+            master_theme.primary_dim, master_theme.primary,
+            min(1.0, beat_intensity * 0.6),
+        )
+        mixer_status = "● MIX" if self._dj_mixer is not None else "○ OFF"
         parts.append(Panel(
             console_grid,
-            title=" ◈ DECKS ◈ ",
+            title=f" ◈ DECKS  {mixer_status} ◈ ",
             title_align="center",
-            border_style=_cached_style(master_theme.primary_dim),
+            border_style=_cached_style(deck_border),
             padding=(0, 1),
         ))
 
@@ -508,11 +592,15 @@ class DJMixin:
             Group(*eq_b_lines),
         )
 
+        eq_border = _lerp_color(
+            master_theme.primary_dim, master_theme.warm,
+            min(1.0, beat_intensity * 0.4),
+        )
         parts.append(Panel(
             eq_grid,
             title=" ◈ EQ & VOLUME ◈ ",
             title_align="center",
-            border_style=_cached_style(master_theme.primary_dim),
+            border_style=_cached_style(eq_border),
             padding=(0, 1),
         ))
 
@@ -560,7 +648,7 @@ class DJMixin:
         if k == "d":
             # Exit DJ mode
             from_mode = "dj"
-            self._dj_mode = False
+            self._stop_dj_mode()
             to_mode = self._get_current_mode_name()  # type: ignore[attr-defined]
             self._start_transition(from_mode, to_mode)  # type: ignore[attr-defined]
             return
@@ -597,6 +685,6 @@ class DJMixin:
             dj.crossfader = 0.5
         elif k == "q":
             # Allow quit from DJ mode
-            self._dj_mode = False
+            self._stop_dj_mode()
             # Re-dispatch to main handler
             self._handle_key(k)  # type: ignore[attr-defined]

@@ -384,11 +384,9 @@ class AirPlayReceiver:
             return
 
         # ── Find a network interface with an IPv4 address and MAC ──
+        # Prefer real LAN interfaces (192.168.x.x) over VPN/virtual adapters.
         logger.info("AirPlay: scanning network interfaces...")
-        iface_name = None
-        ipv4_addr = None
-        mac_addr = None
-        ipv6_addr = None
+        candidates: list[tuple[str, str]] = []  # (iface_name, ipv4)
         for name in ni.interfaces():
             addrs = ni.ifaddresses(name)
             logger.debug("  iface %s: families=%s", name, list(addrs.keys()))
@@ -397,16 +395,34 @@ class AirPlayReceiver:
                     ip = addr.get("addr", "")
                     logger.debug("    IPv4: %s", ip)
                     if ip and not ip.startswith("127."):
-                        iface_name = name
-                        ipv4_addr = ip
-                        break
-            if iface_name:
-                break
+                        candidates.append((name, ip))
 
-        if not iface_name or not ipv4_addr:
+        if not candidates:
             logger.error("No suitable network interface found for AirPlay")
             return
 
+        def _ip_priority(item: tuple[str, str]) -> int:
+            """Lower = better. Prefer real LAN IPs over virtual/VPN."""
+            ip = item[1]
+            if ip.startswith("192.168."):
+                return 0   # typical home/office LAN
+            if ip.startswith("10.") and not ip.startswith("10.10."):
+                return 1   # corporate LAN (but not Tailscale 10.10.x)
+            if ip.startswith("10."):
+                return 3   # likely Tailscale/VPN
+            # 172.16-31.x.x = private (often Docker/Hyper-V/WSL)
+            octets = ip.split(".")
+            if len(octets) == 4 and octets[0] == "172":
+                second = int(octets[1])
+                if 16 <= second <= 31:
+                    return 4   # virtual adapter
+            return 2   # anything else
+
+        candidates.sort(key=_ip_priority)
+        for name, ip in candidates:
+            logger.debug("  candidate: %s = %s (priority %d)", name, ip, _ip_priority((name, ip)))
+
+        iface_name, ipv4_addr = candidates[0]
         logger.info("AirPlay: using interface %s (IPv4: %s)", iface_name, ipv4_addr)
 
         # Get MAC address

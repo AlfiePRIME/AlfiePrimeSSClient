@@ -1235,6 +1235,7 @@ class AP2Server(socketserver.ThreadingTCPServer):
     # and port was not closed before crash (is still open).
     # AP2 client connects from random port.
     allow_reuse_address = True
+    daemon_threads = True   # handler threads die with the server
     timeout = 60  # seconds
 
     def __init__(self, addr_port, handler):

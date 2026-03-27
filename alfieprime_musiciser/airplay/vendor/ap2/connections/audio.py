@@ -643,6 +643,23 @@ class Audio:
 
     def run(self, rcvr_cmd_pipe, control_conns):
         import sys, traceback, os, logging as _logging
+        # Suppress ALSA lib error/warning messages on Linux.
+        # PyAudio's PortAudio backend probes every ALSA device and spews
+        # harmless "cannot open" / "Unknown PCM" errors to stderr.
+        if sys.platform == "linux":
+            try:
+                import ctypes
+                _asound = ctypes.cdll.LoadLibrary("libasound.so.2")
+                _err_handler_t = ctypes.CFUNCTYPE(
+                    None, ctypes.c_char_p, ctypes.c_int,
+                    ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+                )
+                # Store on self so it survives until the process exits;
+                # otherwise GC frees the callback and ALSA segfaults.
+                self._asound_handler = _err_handler_t(lambda *_: None)
+                _asound.snd_lib_error_set_handler(self._asound_handler)
+            except Exception:
+                pass
         # Route child-process diagnostics into the same file the receiver uses.
         _ap_log = os.environ.get("AIRPLAY_DEBUG_LOG")
         if _ap_log:

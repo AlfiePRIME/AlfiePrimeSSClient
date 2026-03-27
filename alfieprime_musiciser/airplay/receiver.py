@@ -214,6 +214,12 @@ class _MetadataHook:
     def _set_playing(self, playing: bool) -> None:
         """Set is_playing, gated by active source."""
         if self._is_active():
+            if not playing and self._state.is_playing:
+                # Freeze progress at the current interpolated value so the
+                # display doesn't jump when switching from interpolated to raw.
+                self._state.progress_ms = self._state.get_interpolated_progress()
+                self._state.playback_speed = 0.0
+                self._state.progress_update_time = time.monotonic()
             self._state.is_playing = playing
         else:
             self._state.write_to_snapshot("airplay", is_playing=playing)
@@ -305,135 +311,63 @@ class _MetadataHook:
 
 
 # ---------------------------------------------------------------------------
-# DACP client — sends transport commands back to the AirPlay sender
+# Local transport control via audio child pipe
 # ---------------------------------------------------------------------------
 
-# Standard DACP commands the iPhone always supports
+# AirPlay 2 has NO reverse command channel.  The event connection is
+# receive-only (iPhone → receiver).  Next/prev/shuffle/repeat require
+# the phone.  Play/pause is handled locally: we tell the audio child
+# process to stop/start writing PCM to the speaker.
 _AIRPLAY_SUPPORTED_COMMANDS = [
-    "play", "pause", "next", "previous",
-    "shuffle", "unshuffle",
-    "repeat_all", "repeat_one", "repeat_off",
+    "play", "pause",
     "volume",
 ]
 
 
-class _DACPClient:
-    """Send DACP commands to the AirPlay sender (iPhone).
+class _RemoteControl:
+    """Local playback control for AirPlay audio streams.
 
-    The sender advertises a ``_touch-able._tcp`` mDNS service whose port
-    accepts plain-HTTP GET requests authenticated by the ``Active-Remote``
-    token received during RTSP SETUP.
+    Play/pause sends "pause" / "play-0" to the vendored audio child
+    process via the multiprocessing pipe (same mechanism the RTSP
+    handler uses for SETRATEANCHORTIME).  The iPhone keeps streaming;
+    we just mute/unmute our speaker output.
     """
 
     def __init__(self) -> None:
-        self._active_remote: str = ""
-        self._dacp_id: str = ""
-        self._sender_ip: str = ""
-        self._dacp_port: int = 0
-        self._browser: object | None = None
+        self._server: object | None = None  # AP2Server reference
 
-    # -- discovery ----------------------------------------------------------
+    def set_server(self, server: object) -> None:
+        self._server = server
 
-    def set_sender_info(self, ip: str, dacp_id: str, active_remote: str) -> None:
-        self._sender_ip = ip
-        self._dacp_id = dacp_id
-        self._active_remote = active_remote
-        logger.info("DACP: sender=%s dacp_id=%s active_remote=%s",
-                     ip, dacp_id, active_remote)
-        # Start mDNS browse for the sender's DACP service
-        self._browse_for_dacp()
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        pass
 
-    def _browse_for_dacp(self) -> None:
-        """Browse mDNS for _touch-able._tcp matching our DACP-ID."""
-        try:
-            from zeroconf import ServiceBrowser, Zeroconf  # type: ignore[import-untyped]
-
-            class _Listener:
-                def __init__(self, client: _DACPClient):
-                    self._client = client
-
-                def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-                    info = zc.get_service_info(type_, name)
-                    if info is None:
-                        return
-                    # Match by DACP-ID in the service name or TXT properties
-                    dacp_match = self._client._dacp_id.upper().replace("-", "")
-                    name_clean = name.upper().replace("-", "")
-                    if dacp_match and dacp_match in name_clean:
-                        self._client._dacp_port = info.port
-                        logger.info("DACP: found sender service on port %d", info.port)
-                    elif not self._client._dacp_port and info.parsed_addresses():
-                        # Fallback: match by IP
-                        for addr in info.parsed_addresses():
-                            if addr == self._client._sender_ip:
-                                self._client._dacp_port = info.port
-                                logger.info("DACP: matched sender by IP on port %d", info.port)
-                                break
-
-                def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-                    pass
-
-                def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-                    pass
-
-            zc = Zeroconf()
-            self._browser = ServiceBrowser(zc, "_touch-able._tcp.local.", _Listener(self))
-            logger.info("DACP: browsing for _touch-able._tcp services")
-        except Exception:
-            logger.debug("DACP: mDNS browse failed", exc_info=True)
-
-    @property
-    def available(self) -> bool:
-        return bool(self._active_remote and self._sender_ip)
-
-    # -- command sending ----------------------------------------------------
-
-    def _send(self, path: str) -> bool:
-        """Send a DACP GET request. Returns True on success."""
-        if not self._sender_ip or not self._active_remote:
+    def send_to_audio(self, msg: str) -> bool:
+        """Send a control message to all active audio child processes."""
+        server = self._server
+        if server is None:
+            logger.debug("RemoteControl: no server ref")
             return False
-        port = self._dacp_port
-        if not port:
-            # Fallback: try common DACP ports
-            port = 3689
-        try:
-            import http.client
-            conn = http.client.HTTPConnection(
-                self._sender_ip, port, timeout=2,
-            )
-            conn.request("GET", path, headers={
-                "Active-Remote": self._active_remote,
-                "Host": f"{self._sender_ip}:{port}",
-            })
-            resp = conn.getresponse()
-            conn.close()
-            logger.debug("DACP: %s -> %d", path, resp.status)
-            return 200 <= resp.status < 300
-        except Exception:
-            logger.debug("DACP: %s failed", path, exc_info=True)
+        streams = getattr(server, "streams", [])
+        if not streams:
+            logger.debug("RemoteControl: no active streams")
             return False
+        sent = False
+        for s in streams:
+            try:
+                conn = s.getAudioConnection()
+                if conn is not None:
+                    conn.send(msg)
+                    sent = True
+                    logger.info("RemoteControl: sent '%s' to audio child", msg)
+                else:
+                    logger.debug("RemoteControl: stream has no audio connection")
+            except Exception:
+                logger.debug("RemoteControl: audio pipe send failed", exc_info=True)
+        return sent
 
-    def play_pause(self) -> bool:
-        return self._send("/ctrl-int/1/playpause")
-
-    def next_track(self) -> bool:
-        return self._send("/ctrl-int/1/nextitem")
-
-    def prev_track(self) -> bool:
-        return self._send("/ctrl-int/1/previtem")
-
-    def set_volume(self, volume_pct: int) -> bool:
-        """Set volume (0-100 maps to DACP 0.0-100.0)."""
-        vol = max(0.0, min(100.0, float(volume_pct)))
-        return self._send(f"/ctrl-int/1/setproperty?dmcp.volume={vol:.1f}")
-
-    def set_shuffle(self, on: bool) -> bool:
-        return self._send(f"/ctrl-int/1/setproperty?dacp.shufflestate={1 if on else 0}")
-
-    def set_repeat(self, mode: str) -> bool:
-        """mode: 'off'=0, 'one'=1, 'all'=2"""
-        val = {"off": 0, "one": 1, "all": 2}.get(mode, 0)
-        return self._send(f"/ctrl-int/1/setproperty?dacp.repeatstate={val}")
+    def close(self) -> None:
+        self._server = None
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +403,9 @@ def _extract_dmap_fields(data: bytes) -> dict[str, object]:
         # Integer fields
         elif code in ("caps", "astm", "astn", "asdc", "asdn"):
             result[code] = int.from_bytes(value_bytes, "big") if value_bytes else 0
+        # Artwork (PICT = raw image bytes in some legacy AirPlay senders)
+        elif code == "PICT" and len(value_bytes) > 100:
+            result["PICT"] = value_bytes
 
     return result
 
@@ -489,6 +426,8 @@ def _find_artwork(obj: object) -> bytes | None:
     _ARTWORK_KEYS = {
         "kMRMediaRemoteNowPlayingInfoArtworkData",
         "artworkData",
+        "ArtworkData",
+        "kMRMediaRemoteNowPlayingInfoArtworkDataBytes",
     }
     if isinstance(obj, dict):
         for k, v in obj.items():
@@ -505,7 +444,7 @@ def _find_artwork(obj: object) -> bytes | None:
     return None
 
 
-def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, config=None):
+def _create_patched_handler(meta_hook: _MetadataHook, remote: _RemoteControl, config=None):
     """Import and return a subclass of AP2Handler with our hooks injected."""
     import http.server
     _patch_vendor_imports()
@@ -523,7 +462,6 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
         """AP2Handler with metadata hooks for AlfiePRIME integration."""
 
         _meta_hook = meta_hook
-        _dacp_client = dacp_client
         _config = config
 
         def __init__(self, socket, client_address, server):
@@ -686,6 +624,10 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
                             self._meta_hook._state.duration_ms = int(astm)
                         else:
                             self._meta_hook._state.write_to_snapshot("airplay", duration_ms=int(astm))
+                    # Artwork from DMAP PICT field
+                    pict = fields.get("PICT")
+                    if pict and isinstance(pict, (bytes, bytearray)):
+                        self._meta_hook.on_artwork(bytes(pict))
                 except Exception:
                     logger.debug("Failed to parse DMAP metadata", exc_info=True)
                 self._send_ok()
@@ -760,13 +702,7 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
                 self._send_ok()
 
         def do_SETUP(self):
-            """Capture DACP headers, gate on swap prompt, then delegate to parent."""
-            dacp_id = self.headers.get("DACP-ID", "")
-            active_remote = self.headers.get("Active-Remote", "")
-            if dacp_id and active_remote:
-                client_ip = self.client_address[0]
-                self._dacp_client.set_sender_info(client_ip, dacp_id, active_remote)
-
+            """Gate on swap prompt, then delegate to parent."""
             # Swap gating: if another source is active, check config
             state = self._meta_hook._state
             if state.active_source and state.active_source != "airplay":
@@ -860,6 +796,19 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
             except Exception:
                 logger.debug("TEARDOWN: failed to peek at body", exc_info=True)
 
+            # Protect event_proc from NoneType crash — the vendored
+            # code does ``self.server.event_proc.terminate()`` on full
+            # disconnect; if it's already None (from a prior teardown
+            # or race) that crashes.
+            if getattr(self.server, 'event_proc', None) is None:
+                class _DummyProc:
+                    def terminate(self): pass
+                self.server.event_proc = _DummyProc()
+
+            # For stream-level teardown, save event_proc so vendored
+            # code can't kill it (pause should keep the session alive).
+            saved_event_proc = self.server.event_proc
+
             try:
                 super().do_TEARDOWN()
             except Exception:
@@ -871,6 +820,8 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
                 self.rfile = original_rfile
 
                 if stream_level:
+                    # Restore event_proc — pause must NOT kill it.
+                    self.server.event_proc = saved_event_proc
                     logger.info("AirPlay: stream-level teardown (pause) — session alive")
                     self._meta_hook._set_playing(False)
                 else:
@@ -915,7 +866,7 @@ class AirPlayReceiver:
         self._zeroconf: object | None = None
         self._mdns_services: list = []
         self._pin: str | None = None
-        self._dacp = _DACPClient()
+        self._remote = _RemoteControl()
         self._original_command_cb: object | None = None
 
     @property
@@ -943,46 +894,37 @@ class AirPlayReceiver:
                 self._original_command_cb(command)
             return
 
-        # AirPlay is active — send via DACP
-        dacp = self._dacp
-        if not dacp.available:
-            logger.debug("DACP not available, command '%s' dropped", command)
-            return
-
-        # Volume — send via DACP to change on the sender
+        # Volume is always local — we control our own speaker output.
         if command == "volume_up":
             new_vol = min(100, state.volume + 5)
             state.volume = new_vol
-            dacp.set_volume(new_vol)
+            logger.info("AirPlay volume up: %d%%", new_vol)
             return
         elif command == "volume_down":
             new_vol = max(0, state.volume - 5)
             state.volume = new_vol
-            dacp.set_volume(new_vol)
+            logger.info("AirPlay volume down: %d%%", new_vol)
             return
 
-        # Transport — run in a thread to avoid blocking the TUI input thread
-        def _send():
-            try:
-                if command == "play_pause":
-                    dacp.play_pause()
-                elif command == "next":
-                    dacp.next_track()
-                elif command == "previous":
-                    dacp.prev_track()
-                elif command == "shuffle":
-                    new_state = not state.shuffle
-                    if dacp.set_shuffle(new_state):
-                        state.shuffle = new_state
-                elif command == "repeat":
-                    cycle = {"off": "all", "all": "one", "one": "off"}
-                    new_mode = cycle.get(state.repeat_mode, "off")
-                    if dacp.set_repeat(new_mode):
-                        state.repeat_mode = new_mode
-            except Exception:
-                logger.debug("DACP command '%s' failed", command, exc_info=True)
+        # Play/pause — local only: mute/unmute our speaker output.
+        # The iPhone keeps streaming; we just stop/start writing PCM.
+        if command == "play_pause":
+            if state.is_playing:
+                self._remote.send_to_audio("pause")
+                state.is_playing = False
+                state.playback_speed = 0.0
+                self._visualizer.set_paused(True)
+                logger.info("AirPlay: paused (local mute)")
+            else:
+                self._remote.send_to_audio("play-0")
+                state.is_playing = True
+                state.playback_speed = 1.0
+                state.progress_update_time = time.monotonic()
+                self._visualizer.set_paused(False)
+                logger.info("AirPlay: resumed (local unmute)")
+            return
 
-        threading.Thread(target=_send, daemon=True).start()
+        logger.debug("AirPlay: command '%s' not available (use phone controls)", command)
 
     async def start(self) -> None:
         """Start the AirPlay receiver in a background thread."""
@@ -990,8 +932,9 @@ class AirPlayReceiver:
         loop = asyncio.get_running_loop()
 
         self._state.airplay_ready = True
+        self._remote.set_loop(loop)
 
-        # Intercept TUI command callback to route AirPlay commands via DACP
+        # Intercept TUI command callback to route AirPlay commands
         if self._tui is not None:
             self._original_command_cb = getattr(self._tui, "_command_callback", None)
             self._tui.set_command_callback(self._on_airplay_command)
@@ -1208,7 +1151,7 @@ class AirPlayReceiver:
         meta_hook = _MetadataHook(self._state)
 
         # Create patched handler
-        HandlerClass = _create_patched_handler(meta_hook, self._dacp, config=self._config)
+        HandlerClass = _create_patched_handler(meta_hook, self._remote, config=self._config)
 
         # Tell child processes where to log so their output reaches our file.
         os.environ["AIRPLAY_DEBUG_LOG"] = _LOG_FILE
@@ -1219,6 +1162,45 @@ class AirPlayReceiver:
         pcm_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=64)
         pcm_consumer = _PCMConsumer(pcm_queue, self._visualizer, state=self._state)
         pcm_consumer.start()
+
+        # Monkey-patch EventGeneric.spawn to use a thread instead of a
+        # subprocess (avoids multiprocessing issues on some platforms).
+        from ap2.connections.event import EventGeneric  # type: ignore[import-untyped]
+
+        @staticmethod
+        def _patched_event_spawn(addr=None, port=None, name='events', shared_key=None, isDebug=False):
+            """Thread-based event listener (read-only — receives from iPhone)."""
+            event = EventGeneric(addr, port, name, shared_key, isDebug)
+
+            def _serve():
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((event.addr, event.port))
+                sock.listen(1)
+                try:
+                    conn, peer = sock.accept()
+                    logger.info("Event connection (%s) from %s:%d", name, peer[0], peer[1])
+                    try:
+                        while True:
+                            data = conn.recv(4096)
+                            if not data:
+                                break
+                    except (OSError, ConnectionError):
+                        pass
+                    finally:
+                        conn.close()
+                        logger.info("Event connection (%s) closed", name)
+                except (OSError, KeyboardInterrupt):
+                    pass
+                finally:
+                    sock.close()
+
+            t = threading.Thread(target=_serve, daemon=True)
+            t.terminate = lambda: None  # type: ignore[attr-defined]
+            t.start()
+            return event.port, t
+
+        EventGeneric.spawn = _patched_event_spawn
 
         # Monkey-patch Stream so every audio child process gets the queue.
         from ap2.connections.stream import Stream  # type: ignore[import-untyped]
@@ -1312,6 +1294,14 @@ class AirPlayReceiver:
         # Start RTSP server
         try:
             self._server = AP2Server((bind_addr, self._port), HandlerClass)
+            # Mark server socket non-inheritable so forked audio child
+            # processes don't hold the port open after we exit.
+            try:
+                self._server.socket.set_inheritable(False)
+            except (AttributeError, OSError):
+                pass
+            # Give _RemoteControl access to server.streams for local play/pause
+            self._remote.set_server(self._server)
             # Suppress the server's vendor logger from writing to the console
             self._server.logger.setLevel(logging.WARNING)
             self._server.logger.propagate = False
@@ -1334,8 +1324,10 @@ class AirPlayReceiver:
     def stop(self) -> None:
         """Shut down the AirPlay server and unregister mDNS."""
         self._running = False
+        self._remote.close()
         if hasattr(self, "_pcm_consumer"):
             self._pcm_consumer.stop()
+
         # Unregister mDNS so the device disappears from AirPlay lists
         if self._zeroconf is not None:
             try:
@@ -1344,27 +1336,43 @@ class AirPlayReceiver:
             except Exception:
                 pass
             self._zeroconf = None
+
         if self._server is not None:
             srv = self._server
-            # Close all active client connections so senders notice immediately
+            self._server = None
+
+            # 1) Tear down every stream — kills audio & control child processes
+            for s in list(getattr(srv, "streams", [])):
+                try:
+                    s.teardown()
+                except Exception:
+                    pass
+                # Force-kill if the child didn't exit within 2 seconds
+                dp = getattr(s, "data_proc", None)
+                if dp is not None and hasattr(dp, "is_alive") and dp.is_alive():
+                    try:
+                        dp.kill()
+                    except Exception:
+                        pass
+                cp = getattr(s, "control_proc", None)
+                if cp is not None and hasattr(cp, "is_alive") and cp.is_alive():
+                    try:
+                        cp.kill()
+                    except Exception:
+                        pass
+            getattr(srv, "streams", []).clear()
+            getattr(srv, "sessions", []).clear()
+
+            # 2) Close all active client sockets — unblocks handler threads
+            #    that are stuck on rfile.read()
             for addr, sock in list(getattr(srv, "connections", {}).items()):
                 try:
                     sock.close()
                 except Exception:
                     pass
             getattr(srv, "connections", {}).clear()
-            # Tear down streams/sessions tracked by the vendor server
-            for s in getattr(srv, "streams", []):
-                try:
-                    if hasattr(s, "terminate"):
-                        s.terminate()
-                    elif hasattr(s, "close"):
-                        s.close()
-                except Exception:
-                    pass
-            getattr(srv, "streams", []).clear()
-            getattr(srv, "sessions", []).clear()
-            # Kill child processes (audio event/timing)
+
+            # 3) Terminate event/timing threads
             for attr in ("event_proc", "timing_proc"):
                 proc = getattr(srv, attr, None)
                 if proc is not None:
@@ -1372,10 +1380,9 @@ class AirPlayReceiver:
                         proc.terminate()
                     except Exception:
                         pass
-                    try:
-                        setattr(srv, attr, None)
-                    except Exception:
-                        pass
+                    setattr(srv, attr, None)
+
+            # 4) Shut down the TCPServer (signals serve_forever to stop)
             try:
                 srv.shutdown()
             except Exception:
@@ -1384,4 +1391,5 @@ class AirPlayReceiver:
                 srv.server_close()
             except Exception:
                 pass
+
         logger.info("AirPlay receiver stopped")

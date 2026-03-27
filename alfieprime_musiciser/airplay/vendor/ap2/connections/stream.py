@@ -198,7 +198,11 @@ class Stream:
                 for conn in self.control_conns:
                     conn.close()
                 self.control_proc.terminate()
-                self.control_proc.join()
+                self.control_proc.join(timeout=2)
+                if self.control_proc.is_alive():
+                    self.control_proc.kill()
             self.data_proc.terminate()
-            self.data_proc.join()
+            self.data_proc.join(timeout=2)
+            if self.data_proc.is_alive():
+                self.data_proc.kill()
             self.audio_connection.close()

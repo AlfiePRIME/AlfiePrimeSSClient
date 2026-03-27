@@ -656,17 +656,25 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             self.state.get_interpolated_progress(), self.state.duration_ms, padded_inner,
             theme=th,
         )
-        controls_text, buttons = render_transport_controls(
-            self.state.is_playing, self.state.shuffle, self.state.repeat_mode,
-            self.state.supported_commands, theme=th,
-        )
-        content_col_offset = 3
-        self._button_regions = {
-            name: (c0 + content_col_offset, c1 + content_col_offset)
-            for name, (c0, c1) in buttons.items()
-        }
+        _is_airplay = self.state.active_source == "airplay"
+        if _is_airplay:
+            controls_text = Text()
+            self._button_regions = {}
+        else:
+            controls_text, buttons = render_transport_controls(
+                self.state.is_playing, self.state.shuffle, self.state.repeat_mode,
+                self.state.supported_commands, theme=th,
+            )
+            content_col_offset = 3
+            self._button_regions = {
+                name: (c0 + content_col_offset, c1 + content_col_offset)
+                for name, (c0, c1) in buttons.items()
+            }
+        np_group_items = [*np_lines]
+        if controls_text.cell_len:
+            np_group_items += [Text(""), controls_text]
         parts.append(Panel(
-            Group(*np_lines, Text(""), controls_text),
+            Group(*np_group_items),
             border_style=th.border_now_playing, padding=(0, 1),
         ))
 
@@ -681,14 +689,20 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         ))
 
         # ── Key hint at bottom (centered) ──
+        _is_airplay_art = self.state.active_source == "airplay"
         hint_parts = [
             ("[A]rt ", "a", self._art_mode),
             ("[C]alm ", "c", self._art_calm),
-            ("[P]lay ", "p", False),
-            ("[N]ext ", "n", False),
-            ("[B]ack ", "b", False),
-            ("[S]huf ", "s", self.state.shuffle),
-            ("[R]epeat ", "r", self.state.repeat_mode != "off"),
+        ]
+        if not _is_airplay_art:
+            hint_parts += [
+                ("[P]lay ", "p", False),
+                ("[N]ext ", "n", False),
+                ("[B]ack ", "b", False),
+                ("[S]huf ", "s", self.state.shuffle),
+                ("[R]epeat ", "r", self.state.repeat_mode != "off"),
+            ]
+        hint_parts += [
             ("[↑↓]Vol ", "vol", False),
             ("[/]Settings ", "/", False),
             ("[Q]uit", "q", False),
@@ -735,21 +749,30 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         reel_l = reel_frames[int(t * 4) % 4] if self.state.is_playing else "\u25ef"
         reel_r = reel_frames[int(t * 4 + 2) % 4] if self.state.is_playing else "\u25ef"
 
-        controls_text, buttons = render_transport_controls(
-            self.state.is_playing, self.state.shuffle, self.state.repeat_mode,
-            self.state.supported_commands, theme=th,
-        )
-        # Panel border(1) + padding(0,1) means content starts at col 3 (border+space+padding)
-        content_col_offset = 3
-        self._button_regions = {
-            name: (c0 + content_col_offset, c1 + content_col_offset)
-            for name, (c0, c1) in buttons.items()
-        }
+        _is_airplay_main = self.state.active_source == "airplay"
+        if _is_airplay_main:
+            controls_text = Text()
+            self._button_regions = {}
+        else:
+            controls_text, buttons = render_transport_controls(
+                self.state.is_playing, self.state.shuffle, self.state.repeat_mode,
+                self.state.supported_commands, theme=th,
+            )
+            # Panel border(1) + padding(0,1) means content starts at col 3 (border+space+padding)
+            content_col_offset = 3
+            self._button_regions = {
+                name: (c0 + content_col_offset, c1 + content_col_offset)
+                for name, (c0, c1) in buttons.items()
+            }
         # Controls row: panel border(1) + np_lines + blank line
-        np_panel_content_lines = len(np_lines) + 1 + 1  # np_lines + blank + controls
+        has_controls = controls_text.cell_len > 0
+        np_panel_content_lines = len(np_lines) + (2 if has_controls else 0)
         self._controls_row = row + 1 + len(np_lines) + 1  # +1 for panel top border
 
-        np_content = Group(*np_lines, Text(""), controls_text)
+        if has_controls:
+            np_content = Group(*np_lines, Text(""), controls_text)
+        else:
+            np_content = Group(*np_lines)
 
         # Braille album art panel alongside now playing
         art_lines: list[Text] = []
@@ -896,6 +919,12 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
     def _handle_key(self, key: str) -> None:
         """Handle a single keypress (including special keys like 'arrow_up')."""
         k = key.lower()
+
+        # ── Dismiss screensaver on any keypress ──
+        if self._standby_active:
+            self._standby_active = False
+            self._last_playing_time = time.monotonic()
+            return  # consume the key — don't trigger any command
 
         # ── Swap prompt controls ──
         if self.state.swap_pending:

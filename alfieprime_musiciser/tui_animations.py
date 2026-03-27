@@ -194,9 +194,20 @@ class AnimationsMixin:
 
         phrase = _STANDBY_PHRASES[self._standby_phrase_idx]
 
+        # Box dimensions: phrase padded with 2 chars each side + border
+        box_w = len(phrase) + 6  # "│  phrase  │"
+        box_h = 5  # top border, blank, phrase, blank, bottom border
+
         # Floating position — gentle drift across screen
-        drift_x = int((math.sin(t * 0.15) * 0.3 + 0.5) * max(term_w - len(phrase) - 4, 0))
-        drift_y = int((math.sin(t * 0.1 + 1.0) * 0.3 + 0.5) * max(term_h - 6, 0))
+        max_dx = max(0, term_w - box_w)
+        max_dy = max(0, term_h - box_h - 4)
+        drift_x = int((math.sin(t * 0.15) * 0.3 + 0.5) * max_dx)
+        drift_y = int((math.sin(t * 0.1 + 1.0) * 0.3 + 0.5) * max_dy) + 2
+
+        # Box row indices
+        box_top = drift_y
+        box_bottom = drift_y + box_h - 1
+        phrase_row = drift_y + 2  # middle of box
 
         # Title
         title = "A L F I E P R I M E"
@@ -206,26 +217,52 @@ class AnimationsMixin:
         zzz_frames = ["z", "zz", "zzz", "zz"]
         zzz = zzz_frames[int(t * 0.8) % len(zzz_frames)]
 
+        # Border colour — gentle pulse
+        border_pulse = 0.12 + 0.08 * math.sin(t * 0.8)
+        border_br = int(255 * border_pulse)
+        border_c = _safe_hex(border_br, border_br, border_br + 20)
+
         for row in range(term_h):
             line_segs: list[tuple[str, str | None, str | None, bool]] = []
 
-            if row == drift_y:
-                # Phrase row with gentle color animation
-                pad_l = drift_x
-                line_segs.append((" " * pad_l, None, None, False))
-                # Fade-in effect based on time since phrase changed
+            if row == box_top:
+                # Top border: ╭───╮
+                line_segs.append((" " * drift_x, None, None, False))
+                line_segs.append(("╭" + "─" * (box_w - 2) + "╮", border_c, None, False))
+                pad_r = term_w - drift_x - box_w
+                if pad_r > 0:
+                    line_segs.append((" " * pad_r, None, None, False))
+            elif row == box_bottom:
+                # Bottom border: ╰───╯
+                line_segs.append((" " * drift_x, None, None, False))
+                line_segs.append(("╰" + "─" * (box_w - 2) + "╯", border_c, None, False))
+                pad_r = term_w - drift_x - box_w
+                if pad_r > 0:
+                    line_segs.append((" " * pad_r, None, None, False))
+            elif box_top < row < box_bottom and row == phrase_row:
+                # Phrase row: │  phrase  │
+                line_segs.append((" " * drift_x, None, None, False))
+                line_segs.append(("│  ", border_c, None, False))
                 age = min(1.0, (t - self._standby_phrase_time) / 1.5)
                 for i, ch in enumerate(phrase):
                     hue = (t * 0.05 + i * 0.02) % 1.0
                     r, g, b = _hsv_to_rgb(hue, 0.4, 0.3 + 0.2 * age)
                     c = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
                     line_segs.append((ch, c, None, False))
-                pad_r = term_w - pad_l - len(phrase)
+                line_segs.append(("  │", border_c, None, False))
+                pad_r = term_w - drift_x - box_w
                 if pad_r > 0:
                     line_segs.append((" " * pad_r, None, None, False))
-            elif row == drift_y - 2:
-                # Zzz above the phrase
-                zzz_x = drift_x + len(phrase) + 1
+            elif box_top < row < box_bottom:
+                # Empty rows inside box: │          │
+                line_segs.append((" " * drift_x, None, None, False))
+                line_segs.append(("│" + " " * (box_w - 2) + "│", border_c, None, False))
+                pad_r = term_w - drift_x - box_w
+                if pad_r > 0:
+                    line_segs.append((" " * pad_r, None, None, False))
+            elif row == box_top - 2:
+                # Zzz above the box
+                zzz_x = drift_x + box_w + 1
                 if zzz_x + len(zzz) < term_w:
                     line_segs.append((" " * zzz_x, None, None, False))
                     pulse = 0.2 + 0.15 * math.sin(t * 2)
@@ -415,7 +452,7 @@ class AnimationsMixin:
             f"  {w3}             {w3}                  ",
             f" {w4}               {w4}                 ",
             f"                                 ",
-            f"     {spin_ch} Connecting{dots}             ",
+            f"{(spin_ch + ' Connecting' + dots):^33}",
         ]
 
         # After 2 minutes, show a hint asking if the server is running

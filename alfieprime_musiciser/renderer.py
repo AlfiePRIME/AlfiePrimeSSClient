@@ -788,12 +788,27 @@ def render_party_scene(
             remaining = scene_width - crowd_start
             pos = 0
             dancer_idx = group_phase_offset
-            while pos < remaining - 4:
+            # Dancer spacing varies with energy: tight crowd at high energy,
+            # sparse at low energy.  Each dancer is 3 chars; spacing is the
+            # padded cell width (3 = body, rest = gap).
+            #   energy 0.0 → stride 8  (lots of space, sparse crowd)
+            #   energy 0.5 → stride 5  (normal)
+            #   energy 1.0 → stride 4  (packed, mosh pit)
+            dancer_stride = max(4, int(8 - 4 * energy))
+            # At very low energy, skip some dancers entirely
+            skip_chance = max(0.0, 0.4 - energy) if energy < 0.3 else 0.0
+            while pos < remaining - 3:
+                # Probabilistically thin the crowd at low energy
+                if skip_chance > 0 and ((dancer_idx * 7 + group_idx * 13) % 10) / 10 < skip_chance:
+                    line_chars.append(" " * dancer_stride)
+                    pos += dancer_stride
+                    dancer_idx += 1
+                    continue
                 phase = (bounce + dancer_idx) % 4
                 src = dancer_pool[dancer_idx % len(dancer_pool)][phase]
                 d_line = src[row_idx] if row_idx < len(src) else "   "
-                line_chars.append(d_line.ljust(5))
-                pos += 5
+                line_chars.append(d_line.ljust(dancer_stride))
+                pos += dancer_stride
                 dancer_idx += 1
 
             full_line = "".join(line_chars)[:scene_width]

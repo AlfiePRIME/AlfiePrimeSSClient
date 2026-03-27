@@ -243,6 +243,139 @@ class _MetadataHook:
     def on_disconnect(self) -> None:
         self._state.is_playing = False
         self._state.connected = False
+        self._state.supported_commands = []
+
+
+# ---------------------------------------------------------------------------
+# DACP client — sends transport commands back to the AirPlay sender
+# ---------------------------------------------------------------------------
+
+# Standard DACP commands the iPhone always supports
+_AIRPLAY_SUPPORTED_COMMANDS = [
+    "play", "pause", "next", "previous",
+    "shuffle", "unshuffle",
+    "repeat_all", "repeat_one", "repeat_off",
+    "volume",
+]
+
+
+class _DACPClient:
+    """Send DACP commands to the AirPlay sender (iPhone).
+
+    The sender advertises a ``_touch-able._tcp`` mDNS service whose port
+    accepts plain-HTTP GET requests authenticated by the ``Active-Remote``
+    token received during RTSP SETUP.
+    """
+
+    def __init__(self) -> None:
+        self._active_remote: str = ""
+        self._dacp_id: str = ""
+        self._sender_ip: str = ""
+        self._dacp_port: int = 0
+        self._browser: object | None = None
+
+    # -- discovery ----------------------------------------------------------
+
+    def set_sender_info(self, ip: str, dacp_id: str, active_remote: str) -> None:
+        self._sender_ip = ip
+        self._dacp_id = dacp_id
+        self._active_remote = active_remote
+        logger.info("DACP: sender=%s dacp_id=%s active_remote=%s",
+                     ip, dacp_id, active_remote)
+        # Start mDNS browse for the sender's DACP service
+        self._browse_for_dacp()
+
+    def _browse_for_dacp(self) -> None:
+        """Browse mDNS for _touch-able._tcp matching our DACP-ID."""
+        try:
+            from zeroconf import ServiceBrowser, Zeroconf  # type: ignore[import-untyped]
+
+            class _Listener:
+                def __init__(self, client: _DACPClient):
+                    self._client = client
+
+                def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+                    info = zc.get_service_info(type_, name)
+                    if info is None:
+                        return
+                    # Match by DACP-ID in the service name or TXT properties
+                    dacp_match = self._client._dacp_id.upper().replace("-", "")
+                    name_clean = name.upper().replace("-", "")
+                    if dacp_match and dacp_match in name_clean:
+                        self._client._dacp_port = info.port
+                        logger.info("DACP: found sender service on port %d", info.port)
+                    elif not self._client._dacp_port and info.parsed_addresses():
+                        # Fallback: match by IP
+                        for addr in info.parsed_addresses():
+                            if addr == self._client._sender_ip:
+                                self._client._dacp_port = info.port
+                                logger.info("DACP: matched sender by IP on port %d", info.port)
+                                break
+
+                def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+                    pass
+
+                def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+                    pass
+
+            zc = Zeroconf()
+            self._browser = ServiceBrowser(zc, "_touch-able._tcp.local.", _Listener(self))
+            logger.info("DACP: browsing for _touch-able._tcp services")
+        except Exception:
+            logger.debug("DACP: mDNS browse failed", exc_info=True)
+
+    @property
+    def available(self) -> bool:
+        return bool(self._active_remote and self._sender_ip and self._dacp_port)
+
+    # -- command sending ----------------------------------------------------
+
+    def _send(self, path: str) -> bool:
+        """Send a DACP GET request. Returns True on success."""
+        if not self._sender_ip or not self._active_remote:
+            return False
+        port = self._dacp_port
+        if not port:
+            # Fallback: try common DACP ports
+            port = 3689
+        try:
+            import http.client
+            conn = http.client.HTTPConnection(
+                self._sender_ip, port, timeout=2,
+            )
+            conn.request("GET", path, headers={
+                "Active-Remote": self._active_remote,
+                "Host": f"{self._sender_ip}:{port}",
+            })
+            resp = conn.getresponse()
+            conn.close()
+            logger.debug("DACP: %s -> %d", path, resp.status)
+            return 200 <= resp.status < 300
+        except Exception:
+            logger.debug("DACP: %s failed", path, exc_info=True)
+            return False
+
+    def play_pause(self) -> bool:
+        return self._send("/ctrl-int/1/playpause")
+
+    def next_track(self) -> bool:
+        return self._send("/ctrl-int/1/nextitem")
+
+    def prev_track(self) -> bool:
+        return self._send("/ctrl-int/1/previtem")
+
+    def set_volume(self, volume_pct: int) -> bool:
+        """Set volume (0-100 maps to DACP 0.0-100.0)."""
+        vol = max(0.0, min(100.0, float(volume_pct)))
+        return self._send(f"/ctrl-int/1/setproperty?dmcp.volume={vol:.1f}")
+
+    def set_shuffle(self, on: bool) -> bool:
+        return self._send(f"/ctrl-int/1/setproperty?dacp.shufflestate={1 if on else 0}")
+
+    def set_repeat(self, mode: str) -> bool:
+        """mode: 'off'=0, 'one'=1, 'all'=2"""
+        val = {"off": 0, "one": 1, "all": 2}.get(mode, 0)
+        return self._send(f"/ctrl-int/1/setproperty?dacp.repeatstate={val}")
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +420,7 @@ def _extract_dmap_fields(data: bytes) -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
-def _create_patched_handler(meta_hook: _MetadataHook):
+def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient):
     """Import and return a subclass of AP2Handler with our hooks injected."""
     _patch_vendor_imports()
 
@@ -299,6 +432,7 @@ def _create_patched_handler(meta_hook: _MetadataHook):
         """AP2Handler with metadata hooks for AlfiePRIME integration."""
 
         _meta_hook = meta_hook
+        _dacp_client = dacp_client
 
         def dispatch(self):
             """Override dispatch to log all requests and catch exceptions."""
@@ -504,10 +638,21 @@ def _create_patched_handler(meta_hook: _MetadataHook):
                 logger.debug("handle_feedback error", exc_info=True)
                 self._send_ok()
 
+        def do_SETUP(self):
+            """Capture DACP headers then delegate to parent."""
+            dacp_id = self.headers.get("DACP-ID", "")
+            active_remote = self.headers.get("Active-Remote", "")
+            if dacp_id and active_remote:
+                client_ip = self.client_address[0]
+                self._dacp_client.set_sender_info(client_ip, dacp_id, active_remote)
+            super().do_SETUP()
+
         def do_RECORD(self):
             """Stream start — mark as playing."""
             self._meta_hook._state.is_playing = True
             self._meta_hook._state.connected = True
+            # Populate supported commands so TUI buttons are active
+            self._meta_hook._state.supported_commands = list(_AIRPLAY_SUPPORTED_COMMANDS)
             logger.info("AirPlay: stream RECORD — playback starting")
             try:
                 super().do_RECORD()
@@ -560,6 +705,8 @@ class AirPlayReceiver:
         self._zeroconf: object | None = None
         self._mdns_services: list = []
         self._pin: str | None = None
+        self._dacp = _DACPClient()
+        self._original_command_cb: object | None = None
 
     @property
     def pin(self) -> str | None:
@@ -576,6 +723,52 @@ class AirPlayReceiver:
             self._daemon_state = PlayerState()
         return self._daemon_state
 
+    def _on_airplay_command(self, command: str) -> None:
+        """Handle transport command when AirPlay is the active source."""
+        state = self._state
+        dacp = self._dacp
+
+        # If AirPlay is not the active source, delegate to the original callback
+        if not state.connected or state.codec != "airplay" or not dacp.available:
+            if self._original_command_cb:
+                self._original_command_cb(command)
+            return
+
+        # Volume — send via DACP to change on the sender
+        if command == "volume_up":
+            new_vol = min(100, state.volume + 5)
+            state.volume = new_vol
+            dacp.set_volume(new_vol)
+            return
+        elif command == "volume_down":
+            new_vol = max(0, state.volume - 5)
+            state.volume = new_vol
+            dacp.set_volume(new_vol)
+            return
+
+        # Transport — run in a thread to avoid blocking the TUI input thread
+        def _send():
+            try:
+                if command == "play_pause":
+                    dacp.play_pause()
+                elif command == "next":
+                    dacp.next_track()
+                elif command == "previous":
+                    dacp.prev_track()
+                elif command == "shuffle":
+                    new_state = not state.shuffle
+                    if dacp.set_shuffle(new_state):
+                        state.shuffle = new_state
+                elif command == "repeat":
+                    cycle = {"off": "all", "all": "one", "one": "off"}
+                    new_mode = cycle.get(state.repeat_mode, "off")
+                    if dacp.set_repeat(new_mode):
+                        state.repeat_mode = new_mode
+            except Exception:
+                logger.debug("DACP command '%s' failed", command, exc_info=True)
+
+        threading.Thread(target=_send, daemon=True).start()
+
     async def start(self) -> None:
         """Start the AirPlay receiver in a background thread."""
         self._running = True
@@ -584,6 +777,11 @@ class AirPlayReceiver:
         self._state.server_name = f"AirPlay on :{self._port}"
         self._state.connected = False
         self._state.codec = "airplay"
+
+        # Intercept TUI command callback to route AirPlay commands via DACP
+        if self._tui is not None:
+            self._original_command_cb = getattr(self._tui, "_command_callback", None)
+            self._tui.set_command_callback(self._on_airplay_command)
 
         logger.info("Starting AirPlay 2 receiver on port %d as '%s'", self._port, self._device_name)
 
@@ -797,7 +995,7 @@ class AirPlayReceiver:
         meta_hook = _MetadataHook(self._state)
 
         # Create patched handler
-        HandlerClass = _create_patched_handler(meta_hook)
+        HandlerClass = _create_patched_handler(meta_hook, self._dacp)
 
         # Tell child processes where to log so their output reaches our file.
         os.environ["AIRPLAY_DEBUG_LOG"] = _LOG_FILE

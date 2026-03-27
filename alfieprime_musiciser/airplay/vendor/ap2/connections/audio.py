@@ -865,8 +865,8 @@ class AudioRealtime(Audio):
                                 if delay - 2 > 3:
                                     time.sleep((delay - 2) * 1e-3)
 
-                                if rtp.sequence_no % 20 == 0:
-                                    print(f'playout offset: {delay:+3.2} msec (relative to self)     ', end='\r', flush=False)
+                                # if rtp.sequence_no % 20 == 0:
+                                #     print(f'playout offset: {delay:+3.2} msec (relative to self)     ', end='\r', flush=False)
 
                             audio = self.process(rtp)
 
@@ -1008,8 +1008,8 @@ class AudioBuffered(Audio):
                         if i % 1000 == 0:
                             self.audio_screen_logger.info(f"playback: offset is {msec_to_playout:+3.2} msec")
 
-                        if i % 20 == 0:
-                            print(f'playout offset: {msec_to_playout:+3.2} msec (relative to self)     ', end='\r', flush=False)
+                        # if i % 20 == 0:
+                        #     print(f'playout offset: {msec_to_playout:+3.2} msec (relative to self)     ', end='\r', flush=False)
 
                         if msec_to_playout > 0:
                             time.sleep((msec_to_playout) * 10**-3)

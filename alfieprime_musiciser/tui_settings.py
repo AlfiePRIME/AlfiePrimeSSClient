@@ -35,14 +35,14 @@ class SettingsMixin:
         ("White", "#ffffff"), ("Silver", "#aaaaaa"), ("Grey", "#555555"), ("Custom Hex", ""),
     ]
 
-    _SKULL_GLYPHS = "☠💀⚠☢☣⛔"
+    _SKULL_GLYPHS = "☠⚠☢☣✖✕"  # single-width only — no emoji
 
     def _build_crt_background(self, term_w: int, term_h: int, danger: bool = False) -> list[Text]:
         """Generate animated CRT scanline background lines."""
         t = time.time()
         th = self.state.theme
         if danger:
-            pr, pg, pb = 180, 0, 0
+            pr, pg, pb = 140, 0, 0
         else:
             pr, pg, pb = _hex_to_rgb(th.primary)
         bg_lines: list[Text] = []
@@ -62,10 +62,10 @@ class SettingsMixin:
                 for col in range(term_w):
                     noise = random.random()
                     threshold = 0.06 + scan_glow * 0.3
-                    if noise < 0.012:
+                    if noise < 0.025:
                         glyph = random.choice(self._SKULL_GLYPHS)
-                        shade = random.randint(80, 255)
-                        g_val = random.randint(0, shade // 4)
+                        shade = random.randint(60, 200)
+                        g_val = random.randint(0, shade // 6)
                         line.append(glyph, Style(color=_safe_hex(shade, g_val, 0)))
                     elif noise < threshold * 0.4:
                         line.append(random.choice("░▒▓"), Style(color=base_c))
@@ -396,51 +396,67 @@ class SettingsMixin:
         """Big ASCII art warning confirmation for config reset."""
         panel_lines: list[Text] = []
         glow = 0.5 + 0.5 * math.sin(t * 4)
-        r_val = int(180 + 75 * glow)
+        r_val = int(140 + 80 * glow)
         warn_c = _safe_hex(r_val, 0, 0)
-        dim_c = _safe_hex(r_val // 2, 0, 0)
-        ascii_warning = [
-            r"    ___   ___   ___  ",
-            r"   /   \ /   \ /   \ ",
-            r"  / /!\ | /!\ | /!\ \\",
-            r" / /_!_\ /_!_\ /_!_\ \\",
-            r" \_____/ \_____/ \_____/",
-        ]
+        deep_c = _safe_hex(r_val * 0.6, 0, 0)
+        skull_pulse = 0.5 + 0.5 * math.sin(t * 6)
+        skull_r = int(100 + 120 * skull_pulse)
+        skull_c = _safe_hex(skull_r, 0, 0)
+        # Skull border row
+        skull_row = Text(justify="center")
+        skulls = " ".join("☠" for _ in range(min(panel_w // 3, 16)))
+        skull_row.append(skulls, Style(color=skull_c, bold=True))
+        panel_lines.append(skull_row)
         panel_lines.append(Text(""))
+        ascii_warning = [
+            r"       /\       /\       /\    ",
+            r"      /!!\     /!!\     /!!\   ",
+            r"     / !! \   / !! \   / !! \  ",
+            r"    / _!!_ \ / _!!_ \ / _!!_ \ ",
+            r"   /________\/________\/________\\",
+        ]
         for art_line in ascii_warning:
             tl = Text(justify="center")
             tl.append(art_line, Style(color=warn_c, bold=True))
             panel_lines.append(tl)
         panel_lines.append(Text(""))
+        # Skull border row again
+        skull_row2 = Text(justify="center")
+        skull_row2.append(skulls, Style(color=skull_c, bold=True))
+        panel_lines.append(skull_row2)
         title = Text(justify="center")
         title.append("━" * panel_w, Style(color=warn_c, bold=True))
         panel_lines.append(title)
         msg = Text(justify="center")
-        msg.append(" RESET ALL CONFIGURATION? ", Style(color=warn_c, bold=True))
+        msg.append("☠ RESET ALL CONFIGURATION? ☠", Style(color=warn_c, bold=True))
         panel_lines.append(msg)
         title2 = Text(justify="center")
         title2.append("━" * panel_w, Style(color=warn_c, bold=True))
         panel_lines.append(title2)
         panel_lines.append(Text(""))
         detail1 = Text(justify="center")
-        detail1.append("This will delete your config file", Style(color="#cc4444"))
+        detail1.append("This will delete your config file", Style(color="#aa2222"))
         panel_lines.append(detail1)
         detail2 = Text(justify="center")
-        detail2.append("and restart the application.", Style(color="#cc4444"))
+        detail2.append("and restart the application.", Style(color="#aa2222"))
         panel_lines.append(detail2)
         panel_lines.append(Text(""))
         detail3 = Text(justify="center")
-        detail3.append("You will need to re-run setup.", Style(color="#aa3333"))
+        detail3.append("☢ You will need to re-run setup ☢", Style(color="#881111"))
         panel_lines.append(detail3)
         panel_lines.append(Text(""))
         panel_lines.append(Text(""))
         yn = Text(justify="center")
-        yn.append("[Y] ", Style(color="#ff0000", bold=True))
-        yn.append("Yes, reset  ", Style(color="#cc4444"))
+        yn.append("[Y] ", Style(color="#cc0000", bold=True))
+        yn.append("Yes, reset  ", Style(color="#aa2222"))
         yn.append("  [N] ", Style(color="#44ff44", bold=True))
         yn.append("No, go back", Style(color="#44aa44"))
         panel_lines.append(yn)
         panel_lines.append(Text(""))
+        # Bottom skull row
+        skull_row3 = Text(justify="center")
+        skull_row3.append(skulls, Style(color=deep_c, bold=True))
+        panel_lines.append(skull_row3)
         return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
 
     def _build_color_picker_layout(self) -> Group:

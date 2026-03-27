@@ -369,12 +369,11 @@ class AnimationsMixin:
         t = time.time()
 
         # ── Build static background into a row list ──
-        # Pre-generate random characters in bulk for speed
-        _heavy = "░▒▓█▌▐╌╍·."
-        _light = "·. ·  "
+        _heavy = "░▒▓█▌▐"
+        _light = "·.  · "
         static_rows: list[str] = []
         for row in range(term_h):
-            randoms = random.random  # local ref for speed
+            randoms = random.random
             choice = random.choice
             buf_chars: list[str] = []
             for _ in range(term_w):
@@ -385,49 +384,43 @@ class AnimationsMixin:
             static_rows.append("".join(buf_chars))
 
         # ── Animated ASCII art — antenna with radio waves ──
-        spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-        spin_ch = spinner[int(t * 10) % len(spinner)]
-        dots = "." * ((int(t * 2) % 3) + 1)
+        # Use only ASCII/single-width chars for reliable rendering
+        phase = (t * 2.5) % 4.0
+        def _w(ring: int) -> str:
+            return "." if (phase - ring) % 4.0 < 1.0 else " "
+        w1, w2, w3, w4 = _w(0), _w(1), _w(2), _w(3)
 
-        # Radio wave ripples expand outward from antenna tip in all directions
-        # 4 concentric rings, each visible in turn (cycling)
-        phase = (t * 2.5) % 4.0  # 0→4 cycle
+        spinner = "|/-\\"
+        spin_ch = spinner[int(t * 8) % len(spinner)]
+        dots = "." * ((int(t * 2) % 3) + 1) + " " * (3 - (int(t * 2) % 3) - 1)
 
-        def _wave_char(ring: int) -> str:
-            """Return wave char if this ring is currently visible."""
-            # Each ring fades in and out based on phase
-            dist = (phase - ring) % 4.0
-            return "·" if dist < 1.0 else " "
-
-        r1 = _wave_char(0)
-        r2 = _wave_char(1)
-        r3 = _wave_char(2)
-        r4 = _wave_char(3)
-
+        # Fixed-width 33-char art lines — all exactly the same length
+        AW = 33
         art = [
-            f"        {r4}   {r3}  {r2} {r1}              ",
-            f"      {r4}  {r3}  {r2} {r1}   {r1}            ",
-            f"    {r4}  {r3}  {r2} {r1}  ╱    {r1}           ",
-            f"  {r4}  {r3}  {r2} {r1} ╱╱      {r1} {r2}        ",
-            f"    {r3}  {r2} {r1} ╱╱╱        {r2} {r3}      ",
-            f"      {r2}  ╱╱╱╱          {r3} {r4}    ",
-            f"       {r1}╱╱╱╱╱                  ",
-            f"        ╱╱╱╱   ☆                 ",
-            f"         ┃                       ",
-            f"         ┃                       ",
-            f"        ╱┃╲                      ",
-            f"       ╱ ┃ ╲                     ",
-            f"      ╱  ┃  ╲                    ",
-            f"    {r1}  ─────── {r1}                  ",
-            f"   {r2}           {r2}                  ",
-            f"  {r3}             {r3}                  ",
-            f" {r4}               {r4}                 ",
+            f"        {w4}   {w3}  {w2} {w1}              ",
+            f"      {w4}  {w3}  {w2} {w1}   {w1}            ",
+            f"    {w4}  {w3}  {w2} {w1}  /    {w1}           ",
+            f"  {w4}  {w3}  {w2} {w1} //      {w1} {w2}        ",
+            f"    {w3}  {w2} {w1} ///        {w2} {w3}      ",
+            f"      {w2}  ////          {w3} {w4}    ",
+            f"       {w1}/////                  ",
+            f"        ////   *                 ",
+            f"         |                       ",
+            f"         |                       ",
+            f"        /|\\                      ",
+            f"       / | \\                     ",
+            f"      /  |  \\                    ",
+            f"    {w1}  ------- {w1}                  ",
+            f"   {w2}           {w2}                  ",
+            f"  {w3}             {w3}                  ",
+            f" {w4}               {w4}                 ",
             f"                                 ",
-            f"     {spin_ch} Connecting{dots:<3}             ",
+            f"     {spin_ch} Connecting{dots}             ",
         ]
+        # Ensure all lines are exactly AW chars
+        art = [(line + " " * AW)[:AW] for line in art]
 
         art_h = len(art)
-        art_w = max(len(line) for line in art)
         mid_row = term_h // 2
         start_row = mid_row - art_h // 2
 
@@ -436,46 +429,65 @@ class AnimationsMixin:
             art_row_idx = row - start_row
             if 0 <= art_row_idx < art_h:
                 art_line = art[art_row_idx]
-                pad_l = max(0, (term_w - art_w) // 2)
-                # Build the row: static | art | static
-                left_static = static_rows[row][:pad_l]
-                right_start = pad_l + len(art_line)
-                right_static = static_rows[row][right_start:term_w]
-                # Pad art to art_w
-                art_padded = art_line.ljust(art_w)[:art_w]
+                pad_l = max(0, (term_w - AW) // 2)
 
-                # Static portions — dim
+                # Left static
+                left_static = static_rows[row][:pad_l]
                 flicker = 0.5 + 0.2 * math.sin(t * 8 + row * 0.7)
                 br = int(min(120, 70 * flicker))
                 static_c = f"#{br:02x}{br:02x}{br:02x}"
                 segs.append((left_static, static_c, None, False))
 
-                # Art portion — bright with pulse
+                # Art portion — batch consecutive chars of same category
                 pulse = 0.6 + 0.4 * math.sin(t * 2 + art_row_idx * 0.3)
                 art_br = int(120 + 135 * pulse)
-                for ch in art_padded:
-                    if ch in "╱╲┃─":
-                        # Antenna structure — warm metallic colour
-                        c_br = int(art_br * 0.7)
-                        segs.append((ch, f"#{min(255, int(c_br * 1.1)):02x}{min(255, int(c_br * 0.8)):02x}{max(0, int(c_br * 0.4)):02x}", None, False))
-                    elif ch == "☆":
-                        # Antenna tip — bright pulsing
-                        tip_pulse = 0.5 + 0.5 * math.sin(t * 5)
-                        tip_br = int(180 + 75 * tip_pulse)
-                        segs.append((ch, f"#{min(255, tip_br):02x}{min(255, int(tip_br * 0.9)):02x}{max(0, int(tip_br * 0.3)):02x}", None, True))
-                    elif ch == "·":
-                        # Radio wave ripples — animated cyan glow
-                        wave_pulse = 0.3 + 0.7 * math.sin(t * 4 + art_row_idx * 0.5)
-                        w_br = int(art_br * wave_pulse)
-                        segs.append((ch, f"#{max(20, int(w_br * 0.3)):02x}{min(255, int(w_br * 1.1)):02x}{min(255, int(w_br * 1.2)):02x}", None, True))
-                    elif ch in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏":
-                        segs.append((ch, f"#{art_br:02x}{min(255, art_br):02x}{max(0, art_br - 40):02x}", None, True))
-                    elif ch.isalpha() or ch in ".:!":
-                        segs.append((ch, f"#{art_br:02x}{art_br:02x}{min(255, art_br + 20):02x}", None, True))
-                    else:
-                        segs.append((ch, None, None, False))
+                # Precompute colours for this row
+                c_br = int(art_br * 0.7)
+                metal_c = f"#{min(255, int(c_br * 1.1)):02x}{min(255, int(c_br * 0.8)):02x}{max(0, int(c_br * 0.4)):02x}"
+                tip_pulse = 0.5 + 0.5 * math.sin(t * 5)
+                tip_br = int(180 + 75 * tip_pulse)
+                tip_c = f"#{min(255, tip_br):02x}{min(255, int(tip_br * 0.9)):02x}{max(0, int(tip_br * 0.3)):02x}"
+                wave_pulse = 0.3 + 0.7 * math.sin(t * 4 + art_row_idx * 0.5)
+                w_br = int(art_br * wave_pulse)
+                wave_c = f"#{max(20, int(w_br * 0.3)):02x}{min(255, int(w_br * 1.1)):02x}{min(255, int(w_br * 1.2)):02x}"
+                text_c = f"#{art_br:02x}{art_br:02x}{min(255, art_br + 20):02x}"
 
-                segs.append((right_static, static_c, None, False))
+                # Categorise and batch chars
+                def _cat(ch: str) -> int:
+                    if ch in "/\\|-":
+                        return 1  # metal
+                    if ch == "*":
+                        return 2  # tip
+                    if ch == ".":
+                        return 3  # wave dot
+                    if ch.isalpha() or ch in ".:!":
+                        return 4  # text
+                    return 0  # space/other
+
+                cat_colors = {0: None, 1: metal_c, 2: tip_c, 3: wave_c, 4: text_c}
+                cat_bold = {0: False, 1: False, 2: True, 3: True, 4: True}
+
+                buf: list[str] = []
+                cur_cat = -1
+                for ch in art_line:
+                    c = _cat(ch)
+                    if c != cur_cat and buf:
+                        segs.append(("".join(buf), cat_colors.get(cur_cat), None, cat_bold.get(cur_cat, False)))
+                        buf = []
+                    cur_cat = c
+                    buf.append(ch)
+                if buf:
+                    segs.append(("".join(buf), cat_colors.get(cur_cat), None, cat_bold.get(cur_cat, False)))
+
+                # Right static — fill to term_w
+                right_start = pad_l + AW
+                right_w = term_w - right_start
+                if right_w > 0:
+                    right_static = static_rows[row][right_start:term_w]
+                    # Pad if static row is shorter
+                    if len(right_static) < right_w:
+                        right_static += " " * (right_w - len(right_static))
+                    segs.append((right_static, static_c, None, False))
             else:
                 # Pure static row
                 flicker = 0.5 + 0.3 * math.sin(t * 8 + row * 0.7)

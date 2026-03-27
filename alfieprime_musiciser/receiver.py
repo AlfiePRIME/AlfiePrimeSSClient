@@ -713,14 +713,17 @@ class SendSpinReceiver:
             state.volume = new_vol
             logger.info("Volume up: %d%%", new_vol)
             if self._audio_handler is not None:
-                self._audio_handler.set_volume(new_vol, muted=state.muted)
+                # Only unmute if SendSpin is the active source
+                muted = state.muted if state.active_source in ("sendspin", "") else True
+                self._audio_handler.set_volume(new_vol, muted=muted)
             return
         elif command == "volume_down":
             new_vol = max(0, state.volume - 5)
             state.volume = new_vol
             logger.info("Volume down: %d%%", new_vol)
             if self._audio_handler is not None:
-                self._audio_handler.set_volume(new_vol, muted=state.muted)
+                muted = state.muted if state.active_source in ("sendspin", "") else True
+                self._audio_handler.set_volume(new_vol, muted=muted)
             return
 
         if self._client is None or not self._client.connected:

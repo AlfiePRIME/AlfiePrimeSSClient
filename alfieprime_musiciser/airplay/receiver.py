@@ -430,6 +430,7 @@ def _extract_dmap_fields(data: bytes) -> dict[str, object]:
 
 def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, config=None):
     """Import and return a subclass of AP2Handler with our hooks injected."""
+    import http.server
     _patch_vendor_imports()
 
     # Now we can import the vendored modules
@@ -444,10 +445,21 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
         _config = config
 
         def __init__(self, socket, client_address, server):
-            super().__init__(socket, client_address, server)
-            # Suppress vendor logger's screen output — route to file only
-            self.logger.setLevel(logging.WARNING)
+            # Replicate vendor's __init__ but suppress logger BEFORE
+            # BaseHTTPRequestHandler.__init__ processes the first request.
+            from threading import current_thread
+            from ap2.utils import get_screen_logger as _get_logger
+            server_address = socket.getsockname()
+            pair_string = (
+                f'{self.__class__.__name__}: '
+                f'{server_address[0]}:{server_address[1]}'
+                f'<=>{client_address[0]}:{client_address[1]}'
+                f'; {current_thread().name}'
+            )
+            self.logger = _get_logger(pair_string, level='WARNING')
             self.logger.propagate = False
+            # Now call BaseHTTPRequestHandler.__init__ which processes requests
+            http.server.BaseHTTPRequestHandler.__init__(self, socket, client_address, server)
 
         def log_request(self, code="-", size="-"):
             """Suppress BaseHTTPRequestHandler stderr output."""
@@ -783,14 +795,19 @@ class AirPlayReceiver:
         return self._daemon_state
 
     def _on_airplay_command(self, command: str) -> None:
-        """Handle transport command when AirPlay is the active source."""
+        """Route transport commands to the correct source."""
         state = self._state
-        dacp = self._dacp
 
-        # If AirPlay is not the active source, delegate to the original callback
-        if not state.connected or state.active_source != "airplay" or not dacp.available:
+        # Delegate to SendSpin handler when AirPlay is NOT active
+        if state.active_source != "airplay":
             if self._original_command_cb:
                 self._original_command_cb(command)
+            return
+
+        # AirPlay is active — send via DACP
+        dacp = self._dacp
+        if not dacp.available:
+            logger.debug("DACP not available, command '%s' dropped", command)
             return
 
         # Volume — send via DACP to change on the sender

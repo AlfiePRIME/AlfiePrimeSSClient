@@ -165,6 +165,37 @@ DEFAULT_SPECTRUM_COLORS = [
 _default_theme = ColorTheme()
 
 
+def _generate_monochrome_theme(hex_color: str) -> ColorTheme:
+    """Generate a full theme from a single base color."""
+    r, g, b = _hex_to_rgb(hex_color)
+    # Create lighter/darker variants
+    primary = hex_color
+    secondary = _rgb_to_hex(min(255, r + 60), min(255, g + 60), min(255, b + 60))
+    accent = _rgb_to_hex(min(255, r + 100), min(255, g + 100), min(255, b + 100))
+    warm = _rgb_to_hex(min(255, r + 40), max(0, g - 20), max(0, b - 20))
+    highlight = _rgb_to_hex(max(0, r - 30), min(255, g + 30), min(255, b + 30))
+    cool = _rgb_to_hex(max(0, r - 40), max(0, g - 40), min(255, b + 80))
+    primary_dim = _rgb_to_hex(r // 3, g // 3, b // 3)
+    bg_subtle = _rgb_to_hex(r // 10, g // 10, b // 10)
+    # Spectrum gradient: dark → base → bright
+    spectrum = []
+    for i in range(16):
+        frac = i / 15
+        sr = int(r * 0.3 + r * 0.7 * frac)
+        sg = int(g * 0.3 + g * 0.7 * frac)
+        sb = int(b * 0.3 + b * 0.7 * frac)
+        spectrum.append(_rgb_to_hex(min(255, sr), min(255, sg), min(255, sb)))
+    return ColorTheme(
+        primary=primary, secondary=secondary, accent=accent,
+        warm=warm, highlight=highlight, cool=cool,
+        primary_dim=primary_dim, bg_subtle=bg_subtle,
+        spectrum_colors=spectrum,
+        border_title=primary, border_now_playing=secondary,
+        border_spectrum=accent, border_vu=warm,
+        border_party=primary, border_dance=warm,
+    )
+
+
 def _extract_theme_from_image(image_data: bytes) -> ColorTheme | None:
     """Extract a color theme from album art image bytes."""
     if Image is None:

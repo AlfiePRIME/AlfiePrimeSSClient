@@ -137,7 +137,22 @@ class BoomBoxTUI:
         # Settings menu
         self._settings_open: bool = False
         self._settings_cursor: int = 0
-        self._settings_items: list[str] = ["auto_play", "auto_volume"]
+        self._settings_items: list[str] = [
+            "auto_play", "auto_volume", "fps_limit",
+            "show_artwork", "use_art_colors", "static_color",
+        ]
+        self._settings_sub: str = ""  # "" = main, "advanced", "color_picker"
+        self._advanced_cursor: int = 0
+        self._advanced_items: list[str] = ["client_name", "client_id"]
+        self._advanced_editing: str = ""  # which field is being text-edited
+        self._advanced_edit_buf: str = ""  # text input buffer
+        # Color picker state
+        self._color_cursor: int = 0
+        self._color_hex_editing: bool = False
+        self._color_hex_buf: str = ""
+        # Easter egg: 33% chance of menu dancers
+        self._settings_dancers: bool = False
+        self._settings_dancer_tick: float = 0.0
         # Cached Rich Console instances (reused across frames)
         self._render_console: Console | None = None
         self._render_console_size: tuple[int, int] = (0, 0)
@@ -183,6 +198,16 @@ class BoomBoxTUI:
             return self._build_art_layout()
         return self._build_main_layout()
 
+    def _get_effective_theme(self) -> ColorTheme:
+        """Return theme with config overrides applied (static color, art colors off)."""
+        from alfieprime_musiciser.colors import _generate_monochrome_theme
+        cfg = self._config
+        if cfg and not cfg.use_art_colors:
+            if cfg.static_color:
+                return _generate_monochrome_theme(cfg.static_color)
+            return ColorTheme()  # default rainbow
+        return self.state.theme
+
     def _save_ui_state(self) -> None:
         """Persist UI state (art mode, calm mode) to config file."""
         if self._config is None:
@@ -197,52 +222,38 @@ class BoomBoxTUI:
         if changed:
             self._config.save()
 
-    def _build_settings_layout(self) -> Group:
-        """Render settings menu with animated CRT background."""
-        self._term_width, self._term_height = self._get_terminal_size()
-        term_w = self._term_width
-        term_h = self._term_height
+    # ── Settings menu dancers (easter egg) ──
+
+    _MENU_DANCERS = [
+        [[" o/", "/| ", "/ \\"], ["\\o ", " |\\", "/ \\"], ["\\o/", " | ", "/ \\"], [" o ", "/|\\", "/ \\"]],
+        [["\\o/", " | ", "/ \\"], ["_o_", " | ", "| |"], ["\\o/", " | ", "/ \\"], [" o ", "-|-", "/ \\"]],
+        [["*o*", "/|\\", "/ \\"], ["°o°", "\\|/", "\\ /"], ["*o*", "/|\\", ">< "], ["°o°", "\\|/", "/ \\"]],
+        [["[o]", "/|\\", "| |"], ["[o]", "\\|/", "/ \\"], ["[o]", "-|-", "| |"], ["[o]", "_|_", "\\ /"]],
+    ]
+
+    # 16 preset colours for the static colour picker
+    _COLOR_PRESETS: list[tuple[str, str]] = [
+        ("Red", "#ff0000"), ("Orange", "#ff8800"), ("Yellow", "#ffff00"), ("Lime", "#88ff00"),
+        ("Green", "#00ff00"), ("Teal", "#00ff88"), ("Cyan", "#00ffff"), ("Sky", "#0088ff"),
+        ("Blue", "#0000ff"), ("Purple", "#8800ff"), ("Magenta", "#ff00ff"), ("Pink", "#ff0088"),
+        ("White", "#ffffff"), ("Silver", "#aaaaaa"), ("Grey", "#555555"), ("Custom Hex", ""),
+    ]
+
+    def _build_crt_background(self, term_w: int, term_h: int) -> list[Text]:
+        """Generate animated CRT scanline background lines."""
         t = time.time()
-        th = self.state.theme
-
-        lines: list[Text] = []
-
-        # ── Build animated CRT background lines ──
-        for row in range(term_h):
-            lines.append(Text())
-
-        # Settings panel content
-        cfg = self._config or Config()
-        menu_items = [
-            ("Auto Play on Connect", "auto_play", cfg.auto_play),
-            ("Auto Volume on Connect", "auto_volume", cfg.auto_volume),
-        ]
-
-        panel_w = 50
-        panel_h = len(menu_items) * 2 + 7  # title + items + spacing + footer
-        panel_x = max(0, (term_w - panel_w - 2) // 2)
-        panel_y = max(0, (term_h - panel_h) // 2)
-
-        # ── Build CRT background with scanlines ──
         bg_lines: list[Text] = []
         for row in range(term_h):
             line = Text()
-            # Animated scanline effect
-            scan_phase = (t * 2 + row * 0.1) % 1.0
             flicker = 0.03 + 0.02 * math.sin(t * 8 + row * 0.7)
             br = int(255 * flicker)
-
-            # Horizontal interference bands
             band_phase = math.sin(t * 1.5 + row * 0.15) * 0.5 + 0.5
             if band_phase > 0.85:
                 br = int(br * 2.5)
-
             br = max(0, min(255, br))
             base_c = f"#{br:02x}{br:02x}{br:02x}"
-
-            # Build background chars
             chars = []
-            for col in range(term_w):
+            for _ in range(term_w):
                 noise = random.random()
                 if noise < 0.02:
                     chars.append(random.choice("░▒"))
@@ -252,12 +263,117 @@ class BoomBoxTUI:
                     chars.append(" ")
             line.append("".join(chars), Style(color=base_c))
             bg_lines.append(line)
+        return bg_lines
 
-        # ── Overlay settings panel onto background ──
-        # Build panel content lines
+    def _compose_panel_on_bg(
+        self, bg_lines: list[Text], panel_lines: list[Text],
+        panel_w: int, term_w: int, term_h: int,
+        dancer_lines: list[Text] | None = None,
+    ) -> Group:
+        """Overlay a centered panel (with optional dancers below) onto CRT background."""
+        total_content = len(panel_lines)
+        if dancer_lines:
+            total_content += 1 + len(dancer_lines)  # 1 blank + dancers
+        panel_x = max(0, (term_w - panel_w - 2) // 2)
+        panel_y = max(0, (term_h - total_content) // 2)
+        panel_bg_style = Style(bgcolor="#0a0a0a")
+
+        result_lines: list[Text] = []
+        for row in range(term_h):
+            content_idx = row - panel_y
+            # Which content line does this map to?
+            content_line: Text | None = None
+            if 0 <= content_idx < len(panel_lines):
+                content_line = panel_lines[content_idx]
+            elif dancer_lines:
+                dancer_idx = content_idx - len(panel_lines) - 1  # -1 for blank gap
+                if dancer_idx == -1:
+                    content_line = Text("")  # blank separator
+                elif 0 <= dancer_idx < len(dancer_lines):
+                    content_line = dancer_lines[dancer_idx]
+
+            if content_line is not None:
+                line = Text()
+                bg_text = bg_lines[row].plain if row < len(bg_lines) else " " * term_w
+                line.append(bg_text[:panel_x], Style(color="#222222"))
+                content_plain = content_line.plain
+                pad_needed = panel_w - len(content_plain)
+                line.append(" ", panel_bg_style)
+                line.append_text(content_line)
+                if pad_needed > 0:
+                    line.append(" " * pad_needed, panel_bg_style)
+                line.append(" ", panel_bg_style)
+                right_start = panel_x + panel_w + 2
+                right_bg = bg_text[right_start:term_w]
+                if right_bg:
+                    line.append(right_bg, Style(color="#222222"))
+                result_lines.append(line)
+            else:
+                result_lines.append(bg_lines[row] if row < len(bg_lines) else Text(" " * term_w))
+
+        return Group(*result_lines)
+
+    def _render_menu_dancers(self, panel_w: int) -> list[Text]:
+        """Render a small row of dancers for settings menu easter egg."""
+        if not self._settings_dancers:
+            return []
+        t = time.time()
+        bounce = int(t * 3) % 4
+        # Pick 3-5 dancers spread across panel width
+        n_dancers = random.Random(42).randint(3, 5)
+        spacing = max(4, panel_w // (n_dancers + 1))
+        dancer_rows: list[list[str]] = [[] for _ in range(3)]
+        rng = random.Random(42)
+        for i in range(n_dancers):
+            dtype = rng.randint(0, len(self._MENU_DANCERS) - 1)
+            frames = self._MENU_DANCERS[dtype]
+            frame = frames[bounce]
+            for r in range(3):
+                pad = spacing - len(frame[r])
+                dancer_rows[r].append(frame[r] + " " * max(0, pad))
+
+        lines: list[Text] = []
+        colors = ["#ff55ff", "#55ffff", "#ffff55", "#55ff55", "#ff8855"]
+        for r in range(3):
+            line = Text()
+            full = "".join(dancer_rows[r])
+            # Center within panel
+            pad_l = max(0, (panel_w - len(full)) // 2)
+            line.append(" " * pad_l)
+            for ci, ch in enumerate(full):
+                c = colors[ci % len(colors)]
+                line.append(ch, Style(color=c))
+            lines.append(line)
+        return lines
+
+    def _build_settings_layout(self) -> Group:
+        """Render settings menu with animated CRT background."""
+        if self._settings_sub == "advanced":
+            return self._build_advanced_layout()
+        if self._settings_sub == "color_picker":
+            return self._build_color_picker_layout()
+
+        self._term_width, self._term_height = self._get_terminal_size()
+        term_w = self._term_width
+        term_h = self._term_height
+        th = self.state.theme
+        cfg = self._config or Config()
+
+        menu_items: list[tuple[str, str, object]] = [
+            ("Auto Play on Connect", "auto_play", cfg.auto_play),
+            ("Auto Volume on Connect", "auto_volume", cfg.auto_volume),
+            ("FPS Limit", "fps_limit", cfg.fps_limit),
+            ("Show Artwork (Normal)", "show_artwork", cfg.show_artwork),
+            ("Album Art Colours", "use_art_colors", cfg.use_art_colors),
+            ("Static Colour", "static_color", cfg.static_color),
+        ]
+
+        panel_w = 54
+        bg_lines = self._build_crt_background(term_w, term_h)
+
+        # Build panel content
         panel_lines: list[Text] = []
 
-        # Title
         title_line = Text(justify="center")
         title_line.append("━" * panel_w, Style(color=th.primary, bold=True))
         panel_lines.append(title_line)
@@ -272,7 +388,6 @@ class BoomBoxTUI:
 
         panel_lines.append(Text(""))
 
-        # Menu items
         for i, (label, key, value) in enumerate(menu_items):
             item = Text()
             selected = i == self._settings_cursor
@@ -297,15 +412,40 @@ class BoomBoxTUI:
                 item.append(f" {val_str:>6}", Style(color=val_color, bold=selected))
                 if selected:
                     item.append("  ◂▸", Style(color="#555555"))
-            else:
+            elif key == "fps_limit":
+                item.append(f" {value:>4}", Style(color=th.accent, bold=selected))
+                if selected:
+                    item.append("  ◂▸", Style(color="#555555"))
+            elif key == "static_color":
+                if value:
+                    item.append(f" {value:>8}", Style(color=value, bold=selected))
+                    item.append(" ██", Style(color=value))
+                else:
+                    item.append("     None", Style(color="#666666"))
+                if selected:
+                    item.append("  Enter▸", Style(color="#555555"))
+            elif key in ("auto_play", "show_artwork", "use_art_colors"):
                 val_str = "ON" if value else "OFF"
                 val_color = th.accent if value else "#666666"
                 item.append(f" {val_str:>6}", Style(color=val_color, bold=selected))
 
             panel_lines.append(item)
-            panel_lines.append(Text(""))  # spacing between items
+            panel_lines.append(Text(""))
+
+        # ── Advanced section link ──
+        panel_lines.append(Text(""))
+        t = time.time()
+        glow = 0.5 + 0.5 * math.sin(t * 3)
+        r_val = int(180 + 75 * glow)
+        g_val = int(30 * glow)
+        adv_color = f"#{r_val:02x}{g_val:02x}00"
+        adv_line = Text()
+        adv_line.append("    [A] ", Style(color=adv_color, bold=True))
+        adv_line.append("Advanced", Style(color=adv_color, bold=True))
+        panel_lines.append(adv_line)
 
         # Footer
+        panel_lines.append(Text(""))
         footer = Text(justify="center")
         footer.append("━" * panel_w, Style(color=th.primary_dim))
         panel_lines.append(footer)
@@ -317,38 +457,218 @@ class BoomBoxTUI:
         hint.append("[/] Close", Style(color="#555555"))
         panel_lines.append(hint)
 
-        # ── Compose: overlay panel on CRT background ──
-        result_lines: list[Text] = []
-        for row in range(term_h):
-            panel_row_idx = row - panel_y
-            if 0 <= panel_row_idx < len(panel_lines):
-                # Build line: background | panel | background
-                line = Text()
-                bg_text = bg_lines[row].plain if row < len(bg_lines) else " " * term_w
-                # Left background
-                left_bg = bg_text[:panel_x]
-                line.append(left_bg, Style(color="#222222"))
-                # Panel background
-                panel_content = panel_lines[panel_row_idx]
-                # Pad panel to panel_w
-                content_plain = panel_content.plain
-                pad_needed = panel_w - len(content_plain)
-                panel_bg_style = Style(bgcolor="#0a0a0a")
-                line.append(" ", panel_bg_style)
-                line.append_text(panel_content)
-                if pad_needed > 0:
-                    line.append(" " * pad_needed, panel_bg_style)
-                line.append(" ", panel_bg_style)
-                # Right background
-                right_start = panel_x + panel_w + 2
-                right_bg = bg_text[right_start:term_w]
-                if right_bg:
-                    line.append(right_bg, Style(color="#222222"))
-                result_lines.append(line)
-            else:
-                result_lines.append(bg_lines[row] if row < len(bg_lines) else Text(" " * term_w))
+        dancer_lines = self._render_menu_dancers(panel_w)
+        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h, dancer_lines)
 
-        return Group(*result_lines)
+    def _build_advanced_layout(self) -> Group:
+        """Render advanced settings (client name, UUID) with CRT background."""
+        self._term_width, self._term_height = self._get_terminal_size()
+        term_w = self._term_width
+        term_h = self._term_height
+        t = time.time()
+        th = self.state.theme
+        cfg = self._config or Config()
+
+        panel_w = 58
+        bg_lines = self._build_crt_background(term_w, term_h)
+
+        panel_lines: list[Text] = []
+
+        # Glowing red title
+        glow = 0.5 + 0.5 * math.sin(t * 3)
+        r_val = int(180 + 75 * glow)
+        title_c = f"#{r_val:02x}0000"
+
+        title_line = Text(justify="center")
+        title_line.append("━" * panel_w, Style(color=title_c, bold=True))
+        panel_lines.append(title_line)
+
+        header = Text(justify="center")
+        header.append(" ⚠ ADVANCED ⚠ ", Style(color=title_c, bold=True))
+        panel_lines.append(header)
+
+        title_line2 = Text(justify="center")
+        title_line2.append("━" * panel_w, Style(color=title_c, bold=True))
+        panel_lines.append(title_line2)
+
+        panel_lines.append(Text(""))
+
+        warn = Text(justify="center")
+        warn.append("Changing these may break server recognition", Style(color="#aa4444"))
+        panel_lines.append(warn)
+        panel_lines.append(Text(""))
+
+        adv_items: list[tuple[str, str, str]] = [
+            ("Client Name", "client_name", cfg.client_name),
+            ("Client UUID", "client_id", cfg.client_id),
+        ]
+
+        for i, (label, key, value) in enumerate(adv_items):
+            item = Text()
+            selected = i == self._advanced_cursor
+
+            if selected:
+                item.append("  ▸ ", Style(color="#ff4444", bold=True))
+            else:
+                item.append("    ", Style(color="#444444"))
+
+            item.append(f"{label:<14}", Style(
+                color="#ff8888" if selected else "#886666",
+                bold=selected,
+            ))
+
+            if self._advanced_editing == key:
+                # Show text input with cursor
+                display = self._advanced_edit_buf
+                cursor_blink = int(t * 2) % 2 == 0
+                item.append(f" {display}", Style(color="#ffffff", bold=True))
+                if cursor_blink:
+                    item.append("▌", Style(color="#ff4444"))
+                else:
+                    item.append(" ")
+            else:
+                display = value
+                if len(display) > 34:
+                    display = display[:31] + "..."
+                item.append(f" {display}", Style(color="#cc8888" if selected else "#666666"))
+
+            panel_lines.append(item)
+            panel_lines.append(Text(""))
+
+        # Footer
+        footer = Text(justify="center")
+        footer.append("━" * panel_w, Style(color="#661111"))
+        panel_lines.append(footer)
+
+        hint = Text(justify="center")
+        if self._advanced_editing:
+            hint.append("[Type] Edit  ", Style(color="#555555"))
+            hint.append("[Enter] Save  ", Style(color="#555555"))
+            hint.append("[Esc] Cancel", Style(color="#555555"))
+        else:
+            hint.append("[↑↓] Navigate  ", Style(color="#555555"))
+            hint.append("[Enter] Edit  ", Style(color="#555555"))
+            hint.append("[/] Back", Style(color="#555555"))
+        panel_lines.append(hint)
+
+        dancer_lines = self._render_menu_dancers(panel_w)
+        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h, dancer_lines)
+
+    def _build_color_picker_layout(self) -> Group:
+        """Render color picker submenu with 16 presets + hex input."""
+        self._term_width, self._term_height = self._get_terminal_size()
+        term_w = self._term_width
+        term_h = self._term_height
+        t = time.time()
+        th = self.state.theme
+        cfg = self._config or Config()
+
+        panel_w = 46
+        bg_lines = self._build_crt_background(term_w, term_h)
+
+        panel_lines: list[Text] = []
+
+        title_line = Text(justify="center")
+        title_line.append("━" * panel_w, Style(color=th.primary, bold=True))
+        panel_lines.append(title_line)
+
+        header = Text(justify="center")
+        header.append(" ◈ STATIC COLOUR ◈ ", Style(color=th.primary, bold=True))
+        panel_lines.append(header)
+
+        title_line2 = Text(justify="center")
+        title_line2.append("━" * panel_w, Style(color=th.primary, bold=True))
+        panel_lines.append(title_line2)
+
+        panel_lines.append(Text(""))
+
+        # Current selection
+        cur = Text(justify="center")
+        if cfg.static_color:
+            cur.append("Current: ", Style(color="#888888"))
+            cur.append(f"████ {cfg.static_color}", Style(color=cfg.static_color, bold=True))
+        else:
+            cur.append("Current: None", Style(color="#666666"))
+        panel_lines.append(cur)
+        panel_lines.append(Text(""))
+
+        # Color grid: 4 columns x 4 rows
+        for row_idx in range(4):
+            line = Text()
+            line.append("  ")
+            for col_idx in range(4):
+                i = row_idx * 4 + col_idx
+                name, hex_val = self._COLOR_PRESETS[i]
+                selected = i == self._color_cursor
+
+                if selected:
+                    line.append("▸", Style(color=th.accent, bold=True))
+                else:
+                    line.append(" ")
+
+                if hex_val:
+                    line.append("██", Style(color=hex_val))
+                    line.append(f" {name:<7}", Style(
+                        color="#ffffff" if selected else "#888888",
+                        bold=selected,
+                    ))
+                else:
+                    # Custom hex entry
+                    if self._color_hex_editing:
+                        cursor_blink = int(t * 2) % 2 == 0
+                        display = self._color_hex_buf or "#"
+                        line.append(f"{display:<7}", Style(color="#ffffff", bold=True))
+                        if cursor_blink:
+                            line.append("▌", Style(color=th.accent))
+                        else:
+                            line.append(" ")
+                        # Pad to match other entries
+                        pad = 3 - max(0, len(display) - 7)
+                        if pad > 0:
+                            line.append(" " * pad)
+                    else:
+                        line.append("## ", Style(color="#666666"))
+                        line.append(f"{'Hex':<7}", Style(
+                            color="#ffffff" if selected else "#888888",
+                            bold=selected,
+                        ))
+
+            panel_lines.append(line)
+
+        panel_lines.append(Text(""))
+
+        # Clear option
+        clear_selected = self._color_cursor == 16
+        clear_line = Text()
+        if clear_selected:
+            clear_line.append("  ▸ ", Style(color=th.accent, bold=True))
+        else:
+            clear_line.append("    ")
+        clear_line.append("Clear (use default theme)", Style(
+            color="#ffffff" if clear_selected else "#888888",
+            bold=clear_selected,
+        ))
+        panel_lines.append(clear_line)
+
+        # Footer
+        panel_lines.append(Text(""))
+        footer = Text(justify="center")
+        footer.append("━" * panel_w, Style(color=th.primary_dim))
+        panel_lines.append(footer)
+
+        hint = Text(justify="center")
+        if self._color_hex_editing:
+            hint.append("[Type] Hex  ", Style(color="#555555"))
+            hint.append("[Enter] Apply  ", Style(color="#555555"))
+            hint.append("[Esc] Cancel", Style(color="#555555"))
+        else:
+            hint.append("[↑↓◂▸] Navigate  ", Style(color="#555555"))
+            hint.append("[Enter] Select  ", Style(color="#555555"))
+            hint.append("[/] Back", Style(color="#555555"))
+        panel_lines.append(hint)
+
+        dancer_lines = self._render_menu_dancers(panel_w)
+        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h, dancer_lines)
 
     def _build_art_layout(self) -> Group:
         """Full-screen album art mode with party scene or calm view."""
@@ -357,7 +677,7 @@ class BoomBoxTUI:
         term_h = self._term_height
         padded_inner = max(term_w - 4, 20)
         flush_inner = max(term_w - 2, 20)
-        th = self.state.theme
+        th = self._get_effective_theme()
 
         parts: list = []
 
@@ -471,7 +791,7 @@ class BoomBoxTUI:
         padded_inner = max(term_w - 4, 20)    # padding=(0,1) → 2 border + 2 padding
         flush_inner = max(term_w - 2, 20)     # padding=(0,0) → 2 border only
         bands, peaks, vu_left, vu_right = self._visualizer.get_spectrum()
-        th = self.state.theme
+        th = self._get_effective_theme()
 
         parts: list = []
         row = 1  # start after boom box frame top line
@@ -513,7 +833,9 @@ class BoomBoxTUI:
 
         # Braille album art panel alongside now playing
         art_lines: list[Text] = []
-        if self.state.artwork_data:
+        cfg = self._config
+        show_art = cfg.show_artwork if cfg else True
+        if self.state.artwork_data and show_art:
             art_w = 20
             art_h = 8  # gives 16x32 effective pixel grid
             art_lines = render_braille_art(self.state.artwork_data, art_w, art_h, theme=th)
@@ -654,23 +976,20 @@ class BoomBoxTUI:
 
         # ── Settings menu controls ──
         if self._settings_open:
-            if k == "/" or k == "escape":
-                self._settings_open = False
-            elif k == "arrow_up":
-                self._settings_cursor = (self._settings_cursor - 1) % len(self._settings_items)
-            elif k == "arrow_down":
-                self._settings_cursor = (self._settings_cursor + 1) % len(self._settings_items)
-            elif k in (" ", "\r", "\n", "enter"):
-                self._settings_toggle_current()
-            elif k == "arrow_left":
-                self._settings_adjust(-1)
-            elif k == "arrow_right":
-                self._settings_adjust(1)
+            if self._settings_sub == "advanced":
+                self._handle_advanced_key(k, key)
+            elif self._settings_sub == "color_picker":
+                self._handle_color_picker_key(k, key)
+            else:
+                self._handle_settings_main_key(k)
             return
 
         if k == "/":
             self._settings_open = True
+            self._settings_sub = ""
             self._settings_cursor = 0
+            self._settings_dancers = random.random() < 0.33
+            self._settings_dancer_tick = time.time()
             return
 
         if k == "p":
@@ -696,6 +1015,130 @@ class BoomBoxTUI:
         elif k == "arrow_down":
             self._fire_command("volume_down")
 
+    def _handle_settings_main_key(self, k: str) -> None:
+        """Handle keys in the main settings menu."""
+        if k == "/" or k == "escape":
+            self._settings_open = False
+        elif k == "a":
+            self._settings_sub = "advanced"
+            self._advanced_cursor = 0
+            self._advanced_editing = ""
+        elif k == "arrow_up":
+            self._settings_cursor = (self._settings_cursor - 1) % len(self._settings_items)
+        elif k == "arrow_down":
+            self._settings_cursor = (self._settings_cursor + 1) % len(self._settings_items)
+        elif k in (" ", "\r", "\n"):
+            self._settings_toggle_current()
+        elif k == "arrow_left":
+            self._settings_adjust(-1)
+        elif k == "arrow_right":
+            self._settings_adjust(1)
+
+    def _handle_advanced_key(self, k: str, raw_key: str) -> None:
+        """Handle keys in the advanced settings submenu."""
+        if self._advanced_editing:
+            # Text editing mode
+            if k == "escape":
+                self._advanced_editing = ""
+                self._advanced_edit_buf = ""
+            elif k in ("\r", "\n"):
+                # Save the edit
+                cfg = self._config
+                if cfg and self._advanced_edit_buf:
+                    if self._advanced_editing == "client_name":
+                        cfg.client_name = self._advanced_edit_buf
+                    elif self._advanced_editing == "client_id":
+                        cfg.client_id = self._advanced_edit_buf
+                    cfg.save()
+                self._advanced_editing = ""
+                self._advanced_edit_buf = ""
+            elif k == "backspace" or raw_key == "\x7f":
+                self._advanced_edit_buf = self._advanced_edit_buf[:-1]
+            elif len(raw_key) == 1 and raw_key.isprintable():
+                self._advanced_edit_buf += raw_key
+            return
+
+        if k == "/" or k == "escape":
+            self._settings_sub = ""
+        elif k == "arrow_up":
+            self._advanced_cursor = (self._advanced_cursor - 1) % len(self._advanced_items)
+        elif k == "arrow_down":
+            self._advanced_cursor = (self._advanced_cursor + 1) % len(self._advanced_items)
+        elif k in (" ", "\r", "\n"):
+            field = self._advanced_items[self._advanced_cursor]
+            cfg = self._config or Config()
+            self._advanced_editing = field
+            if field == "client_name":
+                self._advanced_edit_buf = cfg.client_name
+            elif field == "client_id":
+                self._advanced_edit_buf = cfg.client_id
+
+    def _handle_color_picker_key(self, k: str, raw_key: str) -> None:
+        """Handle keys in the color picker submenu."""
+        if self._color_hex_editing:
+            if k == "escape":
+                self._color_hex_editing = False
+                self._color_hex_buf = ""
+            elif k in ("\r", "\n"):
+                # Validate and apply hex
+                buf = self._color_hex_buf.strip()
+                if not buf.startswith("#"):
+                    buf = "#" + buf
+                if len(buf) == 7:
+                    try:
+                        int(buf[1:], 16)
+                        if self._config:
+                            self._config.static_color = buf
+                            self._config.save()
+                    except ValueError:
+                        pass
+                self._color_hex_editing = False
+                self._color_hex_buf = ""
+                self._settings_sub = ""  # back to main
+            elif k == "backspace" or raw_key == "\x7f":
+                self._color_hex_buf = self._color_hex_buf[:-1]
+            elif len(raw_key) == 1 and raw_key in "0123456789abcdefABCDEF#":
+                if len(self._color_hex_buf) < 7:
+                    self._color_hex_buf += raw_key
+            return
+
+        total = 17  # 16 presets + 1 clear
+        if k == "/" or k == "escape":
+            self._settings_sub = ""
+        elif k == "arrow_up":
+            if self._color_cursor == 16:
+                self._color_cursor = 12  # jump to last row
+            elif self._color_cursor >= 4:
+                self._color_cursor -= 4
+        elif k == "arrow_down":
+            if self._color_cursor >= 12 and self._color_cursor < 16:
+                self._color_cursor = 16
+            elif self._color_cursor < 12:
+                self._color_cursor += 4
+        elif k == "arrow_left":
+            if self._color_cursor < 16 and self._color_cursor % 4 > 0:
+                self._color_cursor -= 1
+        elif k == "arrow_right":
+            if self._color_cursor < 16 and self._color_cursor % 4 < 3:
+                self._color_cursor += 1
+        elif k in (" ", "\r", "\n"):
+            if self._color_cursor == 16:
+                # Clear
+                if self._config:
+                    self._config.static_color = ""
+                    self._config.save()
+                self._settings_sub = ""
+            elif self._color_cursor == 15:
+                # Custom hex
+                self._color_hex_editing = True
+                self._color_hex_buf = "#"
+            else:
+                _, hex_val = self._COLOR_PRESETS[self._color_cursor]
+                if self._config:
+                    self._config.static_color = hex_val
+                    self._config.save()
+                self._settings_sub = ""
+
     def _settings_toggle_current(self) -> None:
         """Toggle the currently selected settings item."""
         cfg = self._config or Config()
@@ -703,8 +1146,17 @@ class BoomBoxTUI:
         if item == "auto_play":
             cfg.auto_play = not cfg.auto_play
         elif item == "auto_volume":
-            # Toggle between -1 (off) and 50 (default)
             cfg.auto_volume = -1 if cfg.auto_volume >= 0 else 50
+        elif item == "show_artwork":
+            cfg.show_artwork = not cfg.show_artwork
+        elif item == "use_art_colors":
+            cfg.use_art_colors = not cfg.use_art_colors
+        elif item == "static_color":
+            # Open color picker submenu
+            self._settings_sub = "color_picker"
+            self._color_cursor = 0
+            self._color_hex_editing = False
+            return
         if self._config:
             self._config = cfg
             cfg.save()
@@ -715,12 +1167,16 @@ class BoomBoxTUI:
         item = self._settings_items[self._settings_cursor]
         if item == "auto_volume":
             if cfg.auto_volume < 0:
-                cfg.auto_volume = 50  # enable at 50%
+                cfg.auto_volume = 50
             else:
                 cfg.auto_volume = max(0, min(100, cfg.auto_volume + direction * 5))
-            if self._config:
-                self._config = cfg
-                cfg.save()
+        elif item == "fps_limit":
+            cfg.fps_limit = max(5, min(120, cfg.fps_limit + direction * 5))
+        else:
+            return
+        if self._config:
+            self._config = cfg
+            cfg.save()
 
     def _handle_mouse_click(self, col: int, row: int) -> None:
         """Handle a mouse click at terminal coordinates (1-based)."""
@@ -1534,6 +1990,8 @@ class BoomBoxTUI:
 
             # ── Main render loop ──
             while self._running:
+                fps = self._config.fps_limit if self._config else 30
+                fps = max(5, min(120, fps))
                 self._update_terminal_title()
                 if self._check_standby():
                     term_w, term_h = self._get_terminal_size()
@@ -1541,12 +1999,12 @@ class BoomBoxTUI:
                     frame = self._crt_to_ansi(segs, term_w, term_h)
                     sys.stdout.write(f"\x1b[H{frame}")
                     sys.stdout.flush()
-                    await asyncio.sleep(1 / 15)  # slower refresh in standby
+                    await asyncio.sleep(1 / max(5, fps // 2))  # slower in standby
                 else:
                     frame = self._render_frame()
                     sys.stdout.write(f"\x1b[H{frame}")
                     sys.stdout.flush()
-                    await asyncio.sleep(1 / 30)
+                    await asyncio.sleep(1 / fps)
 
         finally:
             # ── CRT shutdown animation ──
@@ -1617,16 +2075,18 @@ class BoomBoxTUI:
 
             # ── Main render loop ──
             while self._running and gui.alive:
+                fps = self._config.fps_limit if self._config else 30
+                fps = max(5, min(120, fps))
                 gui.process_events()
                 if self._check_standby():
                     term_w, term_h = self._get_terminal_size()
                     segments = self._standby_segments(term_w, term_h)
                     gui.send_segments(segments)
-                    await asyncio.sleep(1 / 15)
+                    await asyncio.sleep(1 / max(5, fps // 2))
                 else:
                     segments = self._render_frame_gui()
                     gui.send_segments(segments)
-                    await asyncio.sleep(1 / 30)
+                    await asyncio.sleep(1 / fps)
 
         finally:
             # ── CRT shutdown animation ──

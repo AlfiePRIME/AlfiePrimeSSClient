@@ -29,6 +29,10 @@ class Config:
     # Settings
     auto_play: bool = False
     auto_volume: int = -1  # -1 = disabled, 0-100 = set volume on connect
+    fps_limit: int = 30  # 5-120
+    show_artwork: bool = True  # show braille art in normal mode
+    use_art_colors: bool = True  # dynamic album art colours
+    static_color: str = ""  # hex color override when art colours disabled
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)

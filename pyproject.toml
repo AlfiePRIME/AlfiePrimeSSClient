@@ -1,7 +1,7 @@
 [project]
 name = "alfieprime-musiciser"
-version = "0.1.0"
-description = "Party-themed SendSpin receiver with boom box UI and audio visualizer"
+version = "1.0.0"
+description = "Party-themed AirPlay 2 and SendSpin receiver with boom box UI and audio visualizer"
 requires-python = ">=3.12"
 dependencies = [
     "sendspin>=0.12.0",
@@ -10,6 +10,9 @@ dependencies = [
     "Pillow>=10.0.0",
     "dbus-next>=0.2.3; sys_platform == 'linux'",
 ]
+
+[project.urls]
+Homepage = "https://github.com/AlfiePRIME/AlfiePRIME-Musiciser"
 
 [project.optional-dependencies]
 smtc = ["winsdk>=1.0.0b10"]

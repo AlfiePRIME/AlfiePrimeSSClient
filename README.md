@@ -46,15 +46,15 @@ A party-themed TUI/GUI music player, [SendSpin](https://github.com/music-assista
 ### From source (recommended)
 
 ```bash
-git clone https://github.com/alfiecg24/AlfiePrimeSSClient.git
-cd AlfiePrimeSSClient
+git clone https://github.com/AlfiePRIME/AlfiePRIME-Musiciser.git
+cd AlfiePRIME-Musiciser
 pip install .
 ```
 
 ### Global install with pipx
 
 ```bash
-pipx install git+https://github.com/alfiecg24/AlfiePrimeSSClient.git
+pipx install git+https://github.com/AlfiePRIME/AlfiePRIME-Musiciser.git
 ```
 
 ### Windows one-click installer

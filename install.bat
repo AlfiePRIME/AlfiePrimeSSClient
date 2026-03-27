@@ -97,7 +97,7 @@ if exist "%~dp0pyproject.toml" (
     echo  [OK] Found project source in: %~dp0
 ) else (
     echo  [!] pyproject.toml not found next to this installer.
-    echo      Place this script in the AlfiePrimeSSClient folder,
+    echo      Place this script in the AlfiePRIME-Musiciser folder,
     echo      or enter the path/git URL below.
     echo.
     set /p "INSTALL_SOURCE=  Install source (path or git URL): "

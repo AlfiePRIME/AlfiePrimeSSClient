@@ -106,6 +106,8 @@ async def _run_with_config(
                 )
             else:
                 receiver._audio_handler.set_volume(0, muted=True)
+        # Sync visualizer pause state with the new source's play state
+        visualizer.set_paused(not tui.state.is_playing)
 
     tui._source_switch_callback = _on_source_switch
 

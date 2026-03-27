@@ -41,6 +41,8 @@ class Config:
     sendspin_enabled: bool = True
     swap_prompt: bool = True  # show Y/N when a second device connects
     swap_auto_action: str = "deny"  # "accept" or "deny" when prompt is off
+    # Devices the user has previously accepted via the swap prompt
+    accepted_devices: list[str] = field(default_factory=list)
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)

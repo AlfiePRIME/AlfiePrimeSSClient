@@ -187,6 +187,10 @@ class _PCMConsumer:
                 self._visualizer.set_format(
                     self.sample_rate, self.sample_size, self.channels,
                 )
+                # Ensure visualizer is unpaused — SendSpin may have left it
+                # paused before we switched to AirPlay.
+                if self._visualizer._paused:
+                    self._visualizer.set_paused(False)
                 self._visualizer.feed_audio(data, immediate=True)
             except Exception:
                 logger.debug("PCM consumer feed error", exc_info=True)
@@ -474,6 +478,33 @@ def _extract_dmap_fields(data: bytes) -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
+def _find_artwork(obj: object) -> bytes | None:
+    """Recursively search a plist tree for artwork data.
+
+    AirPlay 2 nests artwork under varying keys depending on iOS version:
+      - ``kMRMediaRemoteNowPlayingInfoArtworkData``
+      - ``artworkData``
+    The key may appear at any depth, so we walk the entire tree.
+    """
+    _ARTWORK_KEYS = {
+        "kMRMediaRemoteNowPlayingInfoArtworkData",
+        "artworkData",
+    }
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in _ARTWORK_KEYS and isinstance(v, (bytes, bytearray)) and len(v) > 100:
+                return bytes(v)
+            found = _find_artwork(v)
+            if found:
+                return found
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            found = _find_artwork(item)
+            if found:
+                return found
+    return None
+
+
 def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, config=None):
     """Import and return a subclass of AP2Handler with our hooks injected."""
     import http.server
@@ -482,6 +513,11 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
     # Now we can import the vendored modules
     from ap2_receiver import AP2Handler  # type: ignore[import-untyped]
     import plistlib
+    # Use biplist (same as vendored code) for consistent binary plist parsing
+    try:
+        from biplist import readPlistFromString as _parse_plist
+    except ImportError:
+        _parse_plist = plistlib.loads  # fallback to stdlib
 
     class PatchedAP2Handler(AP2Handler):
         """AP2Handler with metadata hooks for AlfiePRIME integration."""
@@ -560,7 +596,6 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
             album = info.get(f"{_MR}Album", "") or info.get("album", "")
             duration = info.get(f"{_MR}Duration", 0) or info.get("duration", 0)
             elapsed = info.get(f"{_MR}ElapsedTime", 0) or info.get("elapsed", 0)
-            artwork = info.get(f"{_MR}ArtworkData", b"") or info.get("artworkData", b"")
             rate = info.get(f"{_MR}PlaybackRate", None)
 
             if title or artist or album:
@@ -576,8 +611,10 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
                 self._meta_hook._state.progress_ms = elapsed_ms
                 self._meta_hook._state.progress_update_time = time.monotonic()
                 self._meta_hook._state.playback_speed = 1.0
-            if artwork and isinstance(artwork, (bytes, bytearray)) and len(artwork) > 0:
-                self._meta_hook.on_artwork(bytes(artwork))
+            # Search the full plist tree for artwork (nesting varies by iOS version)
+            artwork = _find_artwork(plist)
+            if artwork:
+                self._meta_hook.on_artwork(artwork)
             if rate is not None:
                 self._meta_hook._set_playing(float(rate) > 0)
 
@@ -657,7 +694,7 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
             elif content_type == "application/x-apple-binary-plist" and body:
                 # AirPlay 2 binary plist SET_PARAMETER
                 try:
-                    pl = plistlib.loads(body)
+                    pl = _parse_plist(body)
                     logger.debug("AirPlay SET_PARAMETER bplist: %s",
                                  {k: v for k, v in pl.items()
                                   if not isinstance(v, (bytes, bytearray))})
@@ -675,7 +712,7 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
             body = self._read_body()
             if body:
                 try:
-                    pl = plistlib.loads(body)
+                    pl = _parse_plist(body)
                     rate = pl.get("rate", None)
                     rtp_time = pl.get("rtpTime", 0)
                     logger.debug("AirPlay SETRATEANCHORTIME: rate=%s rtpTime=%s", rate, rtp_time)
@@ -704,7 +741,7 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
             body = self._read_body()
             if body:
                 try:
-                    pl = plistlib.loads(body)
+                    pl = _parse_plist(body)
                     # Log without artwork (too large)
                     log_pl = {k: (f"<{len(v)} bytes>" if isinstance(v, (bytes, bytearray)) else v)
                               for k, v in pl.items()}
@@ -734,13 +771,17 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
             state = self._meta_hook._state
             if state.active_source and state.active_source != "airplay":
                 cfg = self._config
-                if cfg and not cfg.swap_prompt:
+                client_ip = self.client_address[0]
+                device_key = f"airplay:{client_ip}"
+                # Auto-accept previously accepted devices
+                if cfg and device_key in cfg.accepted_devices:
+                    logger.info("Auto-accepting previously approved AirPlay device %s", client_ip)
+                elif cfg and not cfg.swap_prompt:
                     if cfg.swap_auto_action == "deny":
                         logger.info("Auto-denying AirPlay connection (active=%s)", state.active_source)
                         self._send_ok()
                         return
                 elif cfg and cfg.swap_prompt:
-                    client_ip = self.client_address[0]
                     state.swap_pending = True
                     state.swap_pending_source = "airplay"
                     state.swap_pending_name = client_ip
@@ -758,6 +799,10 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
                         logger.info("User denied AirPlay connection swap")
                         self._send_ok()
                         return
+                    # Remember this device for future connections
+                    if cfg and device_key not in cfg.accepted_devices:
+                        cfg.accepted_devices.append(device_key)
+                        cfg.save()
 
             super().do_SETUP()
 
@@ -788,15 +833,49 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
                 self._send_ok()
 
         def do_TEARDOWN(self):
-            """Stream teardown — mark as disconnected."""
-            logger.info("AirPlay: stream TEARDOWN — client disconnecting")
+            """Stream teardown — may be a pause (stream-level) or full disconnect.
+
+            iPhone sends a TEARDOWN with specific ``streams`` in the plist
+            body when pausing (stream-level).  A full disconnect sends an
+            empty plist ``{}``.  The vendored handler culls the stream list
+            in both cases, so we peek at the body *before* delegating to
+            determine which kind this is.
+            """
+            logger.info("AirPlay: stream TEARDOWN")
+            # Peek at the body to distinguish pause vs disconnect.
+            # A stream-level teardown (pause) has {"streams": [...]}.
+            # A full disconnect has an empty plist {}.
+            stream_level = False
+            original_rfile = self.rfile
+            try:
+                ct = self.headers.get("Content-Type", "")
+                cl = int(self.headers.get("Content-Length", 0))
+                if cl > 0 and "plist" in ct:
+                    body = self.rfile.read(cl)
+                    pl = _parse_plist(body)
+                    stream_level = bool(pl.get("streams"))
+                    # Put the body back so super() can read it
+                    import io
+                    self.rfile = io.BytesIO(body)
+            except Exception:
+                logger.debug("TEARDOWN: failed to peek at body", exc_info=True)
+
             try:
                 super().do_TEARDOWN()
             except Exception:
                 logger.debug("do_TEARDOWN error", exc_info=True)
                 self._send_ok()
             finally:
-                self._meta_hook.on_disconnect()
+                # Restore the real socket stream so subsequent RTSP
+                # requests on this keep-alive connection still work.
+                self.rfile = original_rfile
+
+                if stream_level:
+                    logger.info("AirPlay: stream-level teardown (pause) — session alive")
+                    self._meta_hook._set_playing(False)
+                else:
+                    logger.info("AirPlay: full teardown — client disconnected")
+                    self._meta_hook.on_disconnect()
 
     return PatchedAP2Handler
 

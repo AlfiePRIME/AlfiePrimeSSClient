@@ -281,7 +281,11 @@ class SendSpinReceiver:
         # ── Swap gating: if another source is active, ask user ──
         if self._state.active_source and self._state.active_source != "sendspin":
             cfg = self._config
-            if cfg and not cfg.swap_prompt:
+            # Auto-accept previously accepted devices
+            device_key = f"sendspin:{remote}"
+            if cfg and device_key in cfg.accepted_devices:
+                logger.info("Auto-accepting previously approved SendSpin device %s", remote)
+            elif cfg and not cfg.swap_prompt:
                 # Auto-action without prompting
                 if cfg.swap_auto_action == "deny":
                     logger.info("Auto-denying SendSpin connection (active_source=%s)", self._state.active_source)
@@ -303,6 +307,10 @@ class SendSpinReceiver:
                 if response != "accept":
                     logger.info("User denied SendSpin connection swap")
                     return
+                # Remember this device for future connections
+                if device_key not in cfg.accepted_devices:
+                    cfg.accepted_devices.append(device_key)
+                    cfg.save()
 
         async with self._connection_lock:
             # Clean up previous client if any
@@ -349,14 +357,26 @@ class SendSpinReceiver:
         if not self._state.active_source:
             self._state.active_source = "sendspin"
         self._state.sendspin_server_name = server_name
-        self._state.server_name = server_name
+        # Only update the displayed server name if SendSpin is the active source
+        if self._state.active_source == "sendspin":
+            self._state.server_name = server_name
         logger.info("Connected to server: %s (%s)", server_name, remote)
 
-        await self._apply_auto_settings()
-
-        # If another source is already active, mute SendSpin audio output
-        if self._state.active_source != "sendspin" and self._audio_handler is not None:
-            self._audio_handler.set_volume(0, muted=True)
+        # If another source is already active, mute SendSpin audio and pause
+        # playback on the MA server so it doesn't stream in the background.
+        if self._state.active_source != "sendspin":
+            if self._audio_handler is not None:
+                self._audio_handler.set_volume(0, muted=True)
+            # Ask MA to pause so it doesn't keep streaming while AirPlay is active
+            if client.connected:
+                from aiosendspin.models.types import MediaCommand
+                try:
+                    await client.send_group_command(MediaCommand.PAUSE)
+                    logger.info("Paused SendSpin playback (AirPlay is active)")
+                except Exception:
+                    logger.debug("Failed to pause SendSpin on connect", exc_info=True)
+        else:
+            await self._apply_auto_settings()
 
         # Wait for disconnect
         try:
@@ -407,10 +427,22 @@ class SendSpinReceiver:
                 if not self._state.active_source:
                     self._state.active_source = "sendspin"
                 self._state.sendspin_server_name = url
-                self._state.server_name = url
+                if self._state.active_source == "sendspin":
+                    self._state.server_name = url
                 backoff = 1.0
 
-                await self._apply_auto_settings()
+                if self._state.active_source != "sendspin":
+                    if self._audio_handler is not None:
+                        self._audio_handler.set_volume(0, muted=True)
+                    if self._client.connected:
+                        from aiosendspin.models.types import MediaCommand
+                        try:
+                            await self._client.send_group_command(MediaCommand.PAUSE)
+                            logger.info("Paused SendSpin playback (AirPlay is active)")
+                        except Exception:
+                            logger.debug("Failed to pause SendSpin on connect", exc_info=True)
+                else:
+                    await self._apply_auto_settings()
 
                 # Wait for disconnect
                 disconnect_event = asyncio.Event()
@@ -420,8 +452,8 @@ class SendSpinReceiver:
 
                 self._state.sendspin_connected = False
                 self._state.connected = self._state.airplay_connected
-                self._state.is_playing = False
                 if self._state.active_source == "sendspin":
+                    self._state.is_playing = False
                     self._state.active_source = "airplay" if self._state.airplay_connected else ""
                 if self._audio_handler:
                     await self._audio_handler.handle_disconnect()
@@ -555,7 +587,8 @@ class SendSpinReceiver:
             group_name = payload.group_name
         if payload.playback_state:
             is_playing = payload.playback_state == PlaybackStateType.PLAYING
-            self._visualizer.set_paused(not is_playing)
+            if self._sendspin_is_active():
+                self._visualizer.set_paused(not is_playing)
             self._stats.on_playing(is_playing)
 
         if self._sendspin_is_active():
@@ -596,7 +629,8 @@ class SendSpinReceiver:
     def _on_stream_event(self, event: str) -> None:
         """Handle stream start/stop events."""
         playing = event == "start"
-        self._visualizer.set_paused(not playing)
+        if self._sendspin_is_active():
+            self._visualizer.set_paused(not playing)
         if self._sendspin_is_active():
             self._state.is_playing = playing
         else:

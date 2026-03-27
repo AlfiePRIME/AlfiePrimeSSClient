@@ -97,9 +97,17 @@ class PlayerState:
         self._source_snapshots[source] = snap
 
     def restore_snapshot(self, source: str) -> None:
-        """Restore display fields from the snapshot for *source* (if any)."""
+        """Restore display fields from the snapshot for *source*.
+
+        If no snapshot exists, reset all snapshot fields to their dataclass
+        defaults so the TUI shows the "waiting for music" idle screen.
+        """
         snap = self._source_snapshots.get(source)
         if snap is None:
+            # No data yet for this source — reset to defaults.
+            defaults = PlayerState()
+            for f in _SNAPSHOT_FIELDS:
+                setattr(self, f, getattr(defaults, f))
             return
         for f, val in snap.items():
             if isinstance(val, list):

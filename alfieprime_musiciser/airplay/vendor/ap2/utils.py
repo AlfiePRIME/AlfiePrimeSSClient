@@ -20,7 +20,7 @@ logging.config.dictConfig({
     },
     'handlers': {
         'console': {
-            'level': 'NOTSET',
+            'level': 'WARNING',
             'class': 'logging.StreamHandler',
             'formatter': 'standard',
         },
@@ -102,7 +102,7 @@ logging.config.dictConfig({
         },
         '': {
             'handlers': ['console'],
-            'level': 'NOTSET',
+            'level': 'WARNING',
             'propagate': False
         },
     }
@@ -115,7 +115,7 @@ if platform.system() == "Windows":
     except ImportError:
         AudioUtilities = None
         ISimpleAudioVolume = None
-        print('[!] Pycaw is not installed - volume control will be unavailable', )
+        pass
 
 
 def get_file_logger(name, level="INFO"):
@@ -127,20 +127,14 @@ def get_file_logger(name, level="INFO"):
     fh.setFormatter(formatter)
     sh = logging.StreamHandler()
     if logger.hasHandlers():
-        print(f'[utils] removing StreamHandler from {name} file logger')
         logger.removeHandler(sh)
     logger.addHandler(fh)
-    if level == 'DEBUG':
-        print(f'[{name}] file logging level: {level}')
     return logger
 
 
 def get_screen_logger(name, level="INFO"):
     logger = logging.getLogger(name)
     logger.setLevel(level)
-    # logger.propagate = False
-    if level == 'DEBUG':
-        print(f'[{name}] logging level: {level}')
     return logger
 
 

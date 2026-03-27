@@ -301,7 +301,13 @@ if _HAS_DBUS:
 
             if self._state.is_playing != self._prev_playing:
                 self._prev_playing = self._state.is_playing
-                changed["PlaybackStatus"] = Variant("s", self.PlaybackStatus)  # type: ignore[attr-defined]
+                if self._state.is_playing:
+                    _pb_status = "Playing"
+                elif self._state.connected:
+                    _pb_status = "Paused"
+                else:
+                    _pb_status = "Stopped"
+                changed["PlaybackStatus"] = Variant("s", _pb_status)
 
             # Track metadata changes: title, artist, album, artwork
             art_id = id(self._state.artwork_data) if self._state.artwork_data else 0
@@ -320,7 +326,8 @@ if _HAS_DBUS:
 
             if self._state.volume != self._prev_volume:
                 self._prev_volume = self._state.volume
-                changed["Volume"] = Variant("d", self.Volume)  # type: ignore[attr-defined]
+                _vol = 0.0 if self._state.muted else self._state.volume / 100.0
+                changed["Volume"] = Variant("d", _vol)
 
             if self._state.shuffle != self._prev_shuffle:
                 self._prev_shuffle = self._state.shuffle
@@ -328,7 +335,9 @@ if _HAS_DBUS:
 
             if self._state.repeat_mode != self._prev_repeat:
                 self._prev_repeat = self._state.repeat_mode
-                changed["LoopStatus"] = Variant("s", self.LoopStatus)  # type: ignore[attr-defined]
+                _rm = self._state.repeat_mode
+                _loop = "Track" if _rm == "one" else ("Playlist" if _rm == "all" else "None")
+                changed["LoopStatus"] = Variant("s", _loop)
 
             # Update CanPlay/CanPause/CanControl when connection state changes
             if self._state.connected != self._prev_connected:

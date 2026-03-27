@@ -238,7 +238,8 @@ class SendSpinReceiver:
         )
         await self._listener.start()
 
-        self._state.server_name = f"Listening on :{self._listen_port}"
+        self._state.sendspin_server_name = f"Listening on :{self._listen_port}"
+        self._state.server_name = self._state.sendspin_server_name
         self._state.connected = False
         self._state.sendspin_ready = True
         logger.info(
@@ -347,6 +348,7 @@ class SendSpinReceiver:
         self._state.connected = True
         if not self._state.active_source:
             self._state.active_source = "sendspin"
+        self._state.sendspin_server_name = server_name
         self._state.server_name = server_name
         logger.info("Connected to server: %s (%s)", server_name, remote)
 
@@ -369,10 +371,16 @@ class SendSpinReceiver:
             if self._client is client:
                 self._state.sendspin_connected = False
                 self._state.connected = self._state.airplay_connected
-                self._state.is_playing = False
+                self._state.sendspin_server_name = f"Listening on :{self._listen_port}"
                 if self._state.active_source == "sendspin":
-                    self._state.active_source = "airplay" if self._state.airplay_connected else ""
-                self._state.server_name = f"Listening on :{self._listen_port}"
+                    self._state.save_snapshot("sendspin")
+                    new_src = "airplay" if self._state.airplay_connected else ""
+                    self._state.active_source = new_src
+                    if new_src:
+                        self._state.restore_snapshot(new_src)
+                    else:
+                        self._state.is_playing = False
+                self._state.server_name = self._state.sendspin_server_name
                 await self._audio_handler.handle_disconnect()
                 self._visualizer.reset()
                 reset_vu_peaks()
@@ -383,6 +391,7 @@ class SendSpinReceiver:
         """Connect to a specific URL with reconnection."""
         from aiohttp import ClientError
 
+        self._state.sendspin_server_name = url
         self._state.server_name = url
         self._state.connected = False
         self._state.sendspin_ready = True
@@ -397,6 +406,7 @@ class SendSpinReceiver:
                 self._state.connected = True
                 if not self._state.active_source:
                     self._state.active_source = "sendspin"
+                self._state.sendspin_server_name = url
                 self._state.server_name = url
                 backoff = 1.0
 
@@ -452,6 +462,9 @@ class SendSpinReceiver:
             if decoded:
                 self._visualizer.feed_audio(decoded)
 
+    def _sendspin_is_active(self) -> bool:
+        return self._state.active_source in ("sendspin", "")
+
     def _on_metadata(self, payload) -> None:
         """Handle metadata updates from server."""
         from aiosendspin.models.types import RepeatMode, UndefinedField
@@ -461,66 +474,72 @@ class SendSpinReceiver:
         if meta is None:
             return
 
-        old_title = state.title
+        # Extract raw values from the payload
+        fields: dict = {}
         if not isinstance(getattr(meta, "title", UndefinedField()), UndefinedField):
-            state.title = meta.title or ""
+            fields["title"] = meta.title or ""
         if not isinstance(getattr(meta, "artist", UndefinedField()), UndefinedField):
-            state.artist = meta.artist or ""
+            fields["artist"] = meta.artist or ""
         if not isinstance(getattr(meta, "album", UndefinedField()), UndefinedField):
-            state.album = meta.album or ""
+            fields["album"] = meta.album or ""
         if not isinstance(getattr(meta, "album_artist", UndefinedField()), UndefinedField):
-            state.album_artist = meta.album_artist or ""
+            fields["album_artist"] = meta.album_artist or ""
         if not isinstance(getattr(meta, "year", UndefinedField()), UndefinedField):
-            state.year = meta.year or 0
+            fields["year"] = meta.year or 0
         if not isinstance(getattr(meta, "track", UndefinedField()), UndefinedField):
-            state.track_number = meta.track or 0
-
-        # On track change, log and apply pre-cached artwork theme if available
-        if state.title != old_title and state.title:
-            logger.info("Now playing: %s - %s [%s]", state.artist or "?", state.title, state.album or "?")
-            self._send_desktop_notification(state.title, state.artist, state.album)
-            self._stats.on_track_change(state.artist, state.title)
-            self._state.session_stats = self._stats.get_session_summary()
-            for ch in (1, 2, 3):
-                cached = self._artwork_themes.get(ch)
-                if cached is not None and cached.primary != _default_theme.primary:
-                    state.theme = cached
-                    logger.info("Applied pre-cached theme from channel %d for new track", ch)
-                    self._artwork_themes[0] = cached
-                    self._artwork_themes.pop(ch, None)
-                    break
+            fields["track_number"] = meta.track or 0
 
         repeat = getattr(meta, "repeat", UndefinedField())
         if not isinstance(repeat, UndefinedField) and repeat is not None:
             if repeat == RepeatMode.ONE:
-                state.repeat_mode = "one"
+                fields["repeat_mode"] = "one"
             elif repeat == RepeatMode.ALL:
-                state.repeat_mode = "all"
+                fields["repeat_mode"] = "all"
             else:
-                state.repeat_mode = "off"
+                fields["repeat_mode"] = "off"
 
         shuffle = getattr(meta, "shuffle", UndefinedField())
         if not isinstance(shuffle, UndefinedField) and shuffle is not None:
-            state.shuffle = shuffle
+            fields["shuffle"] = shuffle
 
         progress = getattr(meta, "progress", UndefinedField())
         if not isinstance(progress, UndefinedField):
             if progress is not None:
-                state.progress_ms = progress.track_progress or 0
-                state.duration_ms = progress.track_duration or 0
-                # playback_speed is multiplied by 1000 (1000 = normal)
+                fields["progress_ms"] = progress.track_progress or 0
+                fields["duration_ms"] = progress.track_duration or 0
                 speed = progress.playback_speed
-                state.playback_speed = (speed or 0) / 1000.0
-                state.progress_update_time = time.monotonic()
-                logger.debug(
-                    "Progress update: %dms / %dms, speed=%s",
-                    state.progress_ms, state.duration_ms, speed,
-                )
+                fields["playback_speed"] = (speed or 0) / 1000.0
+                fields["progress_update_time"] = time.monotonic()
             else:
-                state.progress_ms = 0
-                state.duration_ms = 0
-                state.playback_speed = 0.0
-                state.progress_update_time = 0.0
+                fields["progress_ms"] = 0
+                fields["duration_ms"] = 0
+                fields["playback_speed"] = 0.0
+                fields["progress_update_time"] = 0.0
+
+        # Track-change side effects (always run regardless of active source)
+        new_title = fields.get("title", state.title)
+        old_title = state._source_snapshots.get("sendspin", {}).get("title", state.title) if not self._sendspin_is_active() else state.title
+        if new_title != old_title and new_title:
+            logger.info("Now playing: %s - %s [%s]",
+                        fields.get("artist", state.artist) or "?", new_title,
+                        fields.get("album", state.album) or "?")
+            self._send_desktop_notification(new_title, fields.get("artist", ""), fields.get("album", ""))
+            self._stats.on_track_change(fields.get("artist", ""), new_title)
+            self._state.session_stats = self._stats.get_session_summary()
+            for ch in (1, 2, 3):
+                cached = self._artwork_themes.get(ch)
+                if cached is not None and cached.primary != _default_theme.primary:
+                    fields["theme"] = cached
+                    self._artwork_themes[0] = cached
+                    self._artwork_themes.pop(ch, None)
+                    break
+
+        # Write to live state or snapshot
+        if self._sendspin_is_active():
+            for k, v in fields.items():
+                setattr(state, k, v)
+        else:
+            state.write_to_snapshot("sendspin", **fields)
 
         self._stats.tick()
         self._state.session_stats = self._stats.get_session_summary()
@@ -530,36 +549,58 @@ class SendSpinReceiver:
         from aiosendspin.models.types import PlaybackStateType
 
         state = self._state
+        is_playing = None
+        group_name = None
         if payload.group_name:
-            state.group_name = payload.group_name
+            group_name = payload.group_name
         if payload.playback_state:
-            was_playing = state.is_playing
-            state.is_playing = payload.playback_state == PlaybackStateType.PLAYING
-            self._visualizer.set_paused(not state.is_playing)
-            self._stats.on_playing(state.is_playing)
-            # Log state transitions
-            if was_playing and not state.is_playing:
-                state.progress_ms = state.get_interpolated_progress()
-                state.progress_update_time = 0.0
-                logger.info("Playback paused")
-            elif state.is_playing and not was_playing:
-                state.progress_update_time = time.monotonic()
-                logger.info("Playback started")
+            is_playing = payload.playback_state == PlaybackStateType.PLAYING
+            self._visualizer.set_paused(not is_playing)
+            self._stats.on_playing(is_playing)
+
+        if self._sendspin_is_active():
+            if group_name is not None:
+                state.group_name = group_name
+            if is_playing is not None:
+                was_playing = state.is_playing
+                state.is_playing = is_playing
+                if was_playing and not state.is_playing:
+                    state.progress_ms = state.get_interpolated_progress()
+                    state.progress_update_time = 0.0
+                elif state.is_playing and not was_playing:
+                    state.progress_update_time = time.monotonic()
+        else:
+            snap: dict = {}
+            if group_name is not None:
+                snap["group_name"] = group_name
+            if is_playing is not None:
+                snap["is_playing"] = is_playing
+            if snap:
+                state.write_to_snapshot("sendspin", **snap)
 
     def _on_format_change(
         self, codec: str | None, sample_rate: int, bit_depth: int, channels: int,
     ) -> None:
         """Handle audio format changes."""
-        self._state.codec = codec or "PCM"
-        self._state.sample_rate = sample_rate
-        self._state.bit_depth = bit_depth
         logger.info("Audio format: %s %dHz %dbit %dch", codec or "PCM", sample_rate, bit_depth, channels)
         self._visualizer.set_format(sample_rate, bit_depth, channels)
+        if self._sendspin_is_active():
+            self._state.codec = codec or "PCM"
+            self._state.sample_rate = sample_rate
+            self._state.bit_depth = bit_depth
+        else:
+            self._state.write_to_snapshot("sendspin",
+                codec=codec or "PCM", sample_rate=sample_rate, bit_depth=bit_depth,
+            )
 
     def _on_stream_event(self, event: str) -> None:
         """Handle stream start/stop events."""
-        self._state.is_playing = event == "start"
-        self._visualizer.set_paused(event != "start")
+        playing = event == "start"
+        self._visualizer.set_paused(not playing)
+        if self._sendspin_is_active():
+            self._state.is_playing = playing
+        else:
+            self._state.write_to_snapshot("sendspin", is_playing=playing)
         if event == "stop":
             # Only reset the audio pipeline — keep the visual state (bands,
             # peaks, VU) so the spectrum and meters decay gracefully on pause.
@@ -573,13 +614,17 @@ class SendSpinReceiver:
 
     def _on_controller_state(self, payload) -> None:
         """Handle controller state updates (supported commands, volume, mute)."""
-        state = self._state
         ctrl = payload.controller
         if ctrl is None:
             return
-        state.supported_commands = [cmd.value for cmd in ctrl.supported_commands]
-        state.volume = ctrl.volume
-        state.muted = ctrl.muted
+        cmds = [cmd.value for cmd in ctrl.supported_commands]
+        # Volume/mute are device-level — always apply
+        self._state.volume = ctrl.volume
+        self._state.muted = ctrl.muted
+        if self._sendspin_is_active():
+            self._state.supported_commands = cmds
+        else:
+            self._state.write_to_snapshot("sendspin", supported_commands=cmds)
 
     def _on_server_command(self, payload) -> None:
         """Handle server commands (volume, mute)."""
@@ -640,8 +685,6 @@ class SendSpinReceiver:
             theme = _extract_theme_from_image(image_data)
             self._artwork_themes[channel] = theme or ColorTheme()
             if channel == 0:
-                self._state.theme = self._artwork_themes[channel]
-                self._state.artwork_data = image_data
                 write_art_cache(image_data)
                 # Cache theme colours for next startup
                 if self._config:
@@ -660,6 +703,15 @@ class SendSpinReceiver:
                         "border_dance": th.border_dance,
                     }
                     self._config.save()
+                # Apply to live state or snapshot
+                if self._sendspin_is_active():
+                    self._state.theme = self._artwork_themes[channel]
+                    self._state.artwork_data = image_data
+                else:
+                    self._state.write_to_snapshot("sendspin",
+                        theme=self._artwork_themes[channel],
+                        artwork_data=image_data,
+                    )
                 logger.info(
                     "Updated theme from album art ch%d: primary=%s",
                     channel, self._artwork_themes[channel].primary,
@@ -673,11 +725,16 @@ class SendSpinReceiver:
         logger.debug("Artwork cleared for channel %d", channel)
         self._artwork_themes.pop(channel, None)
         if channel == 0:
-            self._state.theme = ColorTheme()
-            self._state.artwork_data = b""
             clear_art_cache()
             if self._config:
                 self._config.cached_theme = {}
+            if self._sendspin_is_active():
+                self._state.theme = ColorTheme()
+                self._state.artwork_data = b""
+            else:
+                self._state.write_to_snapshot("sendspin",
+                    theme=ColorTheme(), artwork_data=b"",
+                )
                 self._config.save()
 
     async def _apply_auto_settings(self) -> None:

@@ -1471,6 +1471,8 @@ def render_source_info(
     codec: str, sample_rate: int, bit_depth: int,
     airplay_connected: bool, sendspin_connected: bool,
     theme: ColorTheme | None = None,
+    sendspin_server_name: str = "",
+    airplay_server_name: str = "",
 ) -> Text:
     """Render single-line status: active source + server name + codec + source indicators."""
     th = theme or _default_theme
@@ -1488,10 +1490,17 @@ def render_source_info(
     else:
         text.append(" Waiting", _cached_style("#ff6600", italic=True))
 
-    # Server/device name
-    if server_name and active_source:
+    # Server/device name — pick the right name for the active source
+    _display_name = ""
+    if active_source == "airplay" and airplay_server_name:
+        _display_name = airplay_server_name
+    elif active_source == "sendspin" and sendspin_server_name:
+        _display_name = sendspin_server_name
+    elif server_name:
+        _display_name = server_name
+    if _display_name and active_source:
         text.append(" ⚡ ", _cached_style(th.accent))
-        text.append(server_name, _cached_style(th.secondary))
+        text.append(_display_name, _cached_style(th.secondary))
     if group_name and active_source == "sendspin":
         text.append(" │ ", _style_dim)
         text.append(group_name, _cached_style(th.warm))

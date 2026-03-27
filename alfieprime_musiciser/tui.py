@@ -767,6 +767,9 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             art_panel = Panel(Group(*art_lines), border_style=th.border_now_playing, padding=(0, 0))
             np_grid.add_row(art_panel, np_content)
             np_inner = np_grid
+            # Art panel inside grid: art_h lines + 2 borders for sub-panel
+            art_panel_h = len(art_lines) + 2
+            np_panel_content_lines = max(np_panel_content_lines, art_panel_h)
         else:
             np_inner = np_content
 
@@ -783,7 +786,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         #   + VU(4) + party_lights(4) + status(2 or 3) + frame_bot(1)
         #   + spectrum borders(2) + dance_floor borders(2)
         np_rows = np_panel_content_lines + 2
-        status_rows = 2  # single-line source info bar + border
+        status_rows = 3  # single-line source info bar + 2 panel borders
         fixed_rows = 1 + 3 + np_rows + 4 + 4 + status_rows + 1 + 2 + 2
         available = max(self._term_height - fixed_rows, 8)
         # Dance floor gets a fixed size; spectrum expands to fill all remaining space
@@ -863,6 +866,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
                 airplay_connected=self.state.airplay_connected,
                 sendspin_connected=self.state.sendspin_connected,
                 theme=th,
+                sendspin_server_name=self.state.sendspin_server_name,
+                airplay_server_name=self.state.airplay_server_name,
             ),
             border_style="#444444", padding=(0, 0),
         ))
@@ -976,12 +981,18 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             # Toggle active source between connected protocols
             s = self.state
             if s.sendspin_connected and s.airplay_connected:
-                if s.active_source == "sendspin":
-                    s.active_source = "airplay"
-                else:
-                    s.active_source = "sendspin"
+                old_source = s.active_source
+                new_source = "airplay" if old_source == "sendspin" else "sendspin"
+                # Pause the outgoing source before switching
+                if s.is_playing:
+                    self._fire_command("play_pause")
+                # Save current display state under old source
+                s.save_snapshot(old_source)
+                s.active_source = new_source
+                # Restore the new source's cached state (theme, metadata, artwork)
+                s.restore_snapshot(new_source)
                 if self._source_switch_callback:
-                    self._source_switch_callback(s.active_source)
+                    self._source_switch_callback(new_source)
         elif k == "d":
             self._toggle_debug()
 

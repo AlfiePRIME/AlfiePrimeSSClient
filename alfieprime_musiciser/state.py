@@ -1,9 +1,22 @@
 from __future__ import annotations
 
+import dataclasses
 import time
 from dataclasses import dataclass, field
 
 from alfieprime_musiciser.colors import ColorTheme
+
+
+# Fields saved/restored when switching between sources.
+_SNAPSHOT_FIELDS = (
+    "title", "artist", "album", "album_artist", "year", "track_number",
+    "progress_ms", "duration_ms", "is_playing",
+    "codec", "sample_rate", "bit_depth",
+    "playback_speed", "progress_update_time",
+    "supported_commands", "repeat_mode", "shuffle",
+    "group_name",
+    "theme", "artwork_data",
+)
 
 
 # ─── Player State ────────────────────────────────────────────────────────────
@@ -21,6 +34,8 @@ class PlayerState:
     duration_ms: int = 0
     is_playing: bool = False
     server_name: str = ""
+    sendspin_server_name: str = ""
+    airplay_server_name: str = ""
     group_name: str = ""
     connected: bool = False
     codec: str = "pcm"
@@ -57,6 +72,8 @@ class PlayerState:
     swap_pending_source: str = ""  # "sendspin" or "airplay"
     swap_pending_name: str = ""  # display name of the new device
     swap_response: str = ""  # "accept", "deny", or "" (pending)
+    # Per-source state snapshots: {"sendspin": {...}, "airplay": {...}}
+    _source_snapshots: dict[str, dict] = field(default_factory=dict, repr=False)
 
     def get_interpolated_progress(self) -> int:
         """Get progress interpolated from last server update."""
@@ -66,3 +83,37 @@ class PlayerState:
         speed = self.playback_speed if self.playback_speed > 0 else 1.0
         interpolated = self.progress_ms + int(elapsed * 1000 * speed)
         return max(0, min(interpolated, self.duration_ms))
+
+    def save_snapshot(self, source: str) -> None:
+        """Save current display fields into the snapshot for *source*."""
+        snap: dict = {}
+        for f in _SNAPSHOT_FIELDS:
+            val = getattr(self, f)
+            if isinstance(val, list):
+                val = list(val)
+            elif isinstance(val, ColorTheme):
+                val = dataclasses.replace(val)
+            snap[f] = val
+        self._source_snapshots[source] = snap
+
+    def restore_snapshot(self, source: str) -> None:
+        """Restore display fields from the snapshot for *source* (if any)."""
+        snap = self._source_snapshots.get(source)
+        if snap is None:
+            return
+        for f, val in snap.items():
+            if isinstance(val, list):
+                val = list(val)
+            elif isinstance(val, ColorTheme):
+                val = dataclasses.replace(val)
+            setattr(self, f, val)
+
+    def write_to_snapshot(self, source: str, **fields: object) -> None:
+        """Buffer field updates into *source*'s snapshot without touching live state."""
+        snap = self._source_snapshots.setdefault(source, {})
+        for k, v in fields.items():
+            if isinstance(v, list):
+                v = list(v)
+            elif isinstance(v, ColorTheme):
+                v = dataclasses.replace(v)
+            snap[k] = v

@@ -89,14 +89,13 @@ async def _run_with_config(
     airplay_receiver = None
     if config.airplay_enabled and _HAS_AIRPLAY:
         from alfieprime_musiciser.airplay.receiver import AirPlayReceiver
-        ap_name = airplay_name or config.client_name
         airplay_receiver = AirPlayReceiver(
             tui, visualizer,
-            device_name=ap_name,
+            device_name=airplay_name or "",
             port=airplay_port,
             config=config,
         )
-        logger.info("AirPlay receiver enabled as '%s' on port %d", ap_name, airplay_port)
+        logger.info("AirPlay receiver enabled on port %d", airplay_port)
 
     # Source switch callback — mute/unmute audio handlers when user switches
     def _on_source_switch(new_source: str) -> None:
@@ -168,6 +167,9 @@ def main() -> None:
         logging.basicConfig(level=logging.DEBUG, format="%(name)s: %(message)s")
     else:
         logging.basicConfig(level=logging.WARNING)
+        # Explicitly suppress chatty library loggers
+        logging.getLogger("aiosendspin").setLevel(logging.WARNING)
+        logging.getLogger("sendspin").setLevel(logging.WARNING)
 
     # GUI headless path: skip interactive console setup, load existing config
     # or use defaults, and go straight to the GUI.

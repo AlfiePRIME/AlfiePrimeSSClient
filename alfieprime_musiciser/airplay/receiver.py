@@ -204,28 +204,54 @@ class _MetadataHook:
         self._state = state
         self._last_title = ""
 
+    def _is_active(self) -> bool:
+        return self._state.active_source in ("airplay", "")
+
     def on_metadata(self, title: str, artist: str, album: str) -> None:
         s = self._state
-        old_title = s.title
+        fields: dict = {}
         if title:
-            s.title = title
+            fields["title"] = title
         if artist:
-            s.artist = artist
+            fields["artist"] = artist
         if album:
-            s.album = album
-        s.is_playing = True
-        s.connected = True
+            fields["album"] = album
+        fields["is_playing"] = True
 
-        if s.title != old_title and s.title:
-            logger.info("AirPlay now playing: %s - %s [%s]", s.artist, s.title, s.album)
+        if self._is_active():
+            old_title = s.title
+            for k, v in fields.items():
+                setattr(s, k, v)
+            s.connected = True
+            if s.title != old_title and s.title:
+                logger.info("AirPlay now playing: %s - %s [%s]", s.artist, s.title, s.album)
+        else:
+            s.write_to_snapshot("airplay", **fields)
 
     def on_artwork(self, data: bytes) -> None:
-        if data:
-            self._state.artwork_data = data
-            logger.info("AirPlay artwork received (%d bytes)", len(data))
+        if not data:
+            return
+        logger.info("AirPlay artwork received (%d bytes)", len(data))
+
+        def _extract_and_apply() -> None:
+            from alfieprime_musiciser.colors import _extract_theme_from_image, ColorTheme
+            from alfieprime_musiciser.mpris import write_art_cache
+            theme = _extract_theme_from_image(data) or ColorTheme()
+            write_art_cache(data)
+            if self._is_active():
+                self._state.artwork_data = data
+                self._state.theme = theme
+            else:
+                self._state.write_to_snapshot("airplay",
+                    artwork_data=data, theme=theme,
+                )
+
+        import threading
+        threading.Thread(target=_extract_and_apply, daemon=True).start()
 
     def on_volume(self, volume_db: float) -> None:
         # AirPlay volume is -144..0 dB (linear-ish). Map to 0-100.
+        # Volume is device-level — always apply regardless of active source.
         if volume_db <= -144:
             self._state.volume = 0
             self._state.muted = True
@@ -240,18 +266,31 @@ class _MetadataHook:
             return
         duration_ms = int((stop_ts - start_ts) / sample_rate * 1000)
         progress_ms = int((current_ts - start_ts) / sample_rate * 1000)
-        self._state.duration_ms = max(0, duration_ms)
-        self._state.progress_ms = max(0, min(progress_ms, duration_ms))
-        self._state.progress_update_time = time.monotonic()
-        self._state.playback_speed = 1.0
+        if self._is_active():
+            self._state.duration_ms = max(0, duration_ms)
+            self._state.progress_ms = max(0, min(progress_ms, duration_ms))
+            self._state.progress_update_time = time.monotonic()
+            self._state.playback_speed = 1.0
+        else:
+            self._state.write_to_snapshot("airplay",
+                duration_ms=max(0, duration_ms),
+                progress_ms=max(0, min(progress_ms, duration_ms)),
+                progress_update_time=time.monotonic(),
+                playback_speed=1.0,
+            )
 
     def on_disconnect(self) -> None:
-        self._state.is_playing = False
         self._state.airplay_connected = False
         self._state.connected = self._state.sendspin_connected
-        self._state.supported_commands = []
         if self._state.active_source == "airplay":
+            # Save AirPlay state, switch to SendSpin, restore its snapshot
+            self._state.save_snapshot("airplay")
             self._state.active_source = "sendspin" if self._state.sendspin_connected else ""
+            if self._state.active_source:
+                self._state.restore_snapshot(self._state.active_source)
+            else:
+                self._state.is_playing = False
+                self._state.supported_commands = []
 
 
 # ---------------------------------------------------------------------------
@@ -714,14 +753,23 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
 
         def do_RECORD(self):
             """Stream start — mark as playing."""
-            self._meta_hook._state.is_playing = True
-            self._meta_hook._state.airplay_connected = True
-            self._meta_hook._state.connected = True
-            if not self._meta_hook._state.active_source:
-                self._meta_hook._state.active_source = "airplay"
-            self._meta_hook._state.codec = "airplay"
-            # Populate supported commands so TUI buttons are active
-            self._meta_hook._state.supported_commands = list(_AIRPLAY_SUPPORTED_COMMANDS)
+            state = self._meta_hook._state
+            # Infrastructure state — always set
+            state.airplay_connected = True
+            state.connected = True
+            if not state.active_source:
+                state.active_source = "airplay"
+            # Display state — only set live if airplay is the active source
+            if state.active_source == "airplay":
+                state.is_playing = True
+                state.codec = "airplay"
+                state.supported_commands = list(_AIRPLAY_SUPPORTED_COMMANDS)
+            else:
+                state.write_to_snapshot("airplay",
+                    is_playing=True,
+                    codec="airplay",
+                    supported_commands=list(_AIRPLAY_SUPPORTED_COMMANDS),
+                )
             logger.info("AirPlay: stream RECORD — playback starting")
             try:
                 super().do_RECORD()
@@ -761,12 +809,14 @@ class AirPlayReceiver:
         tui: BoomBoxTUI | None,
         visualizer: AudioVisualizer,
         *,
-        device_name: str = "AlfiePRIME Musiciser",
+        device_name: str = "",
         port: int = 7000,
         config=None,
     ):
         self._tui = tui
         self._visualizer = visualizer
+        if not device_name:
+            device_name = f"{socket.gethostname()}@Musiciser"
         self._device_name = device_name
         self._port = port
         self._config = config
@@ -804,10 +854,12 @@ class AirPlayReceiver:
                 self._original_command_cb(command)
             return
 
-        # AirPlay is active — send via DACP
+        # AirPlay is active — try DACP, fall back to SendSpin if unavailable
         dacp = self._dacp
         if not dacp.available:
-            logger.debug("DACP not available, command '%s' dropped", command)
+            logger.debug("DACP not available, falling back to SendSpin for '%s'", command)
+            if self._original_command_cb:
+                self._original_command_cb(command)
             return
 
         # Volume — send via DACP to change on the sender
@@ -1160,7 +1212,7 @@ class AirPlayReceiver:
             logger.warning("mDNS registration FAILED — AirPlay discovery will not work", exc_info=True)
 
         # Update state — mark as waiting for AirPlay client (not fully "connected" yet)
-        self._state.server_name = f"AirPlay: {self._device_name}"
+        self._state.airplay_server_name = self._device_name
 
         # Bind to 0.0.0.0 so the server accepts connections from ANY interface.
         # The mDNS registration advertises the specific IPs, but the RTSP server
@@ -1206,8 +1258,43 @@ class AirPlayReceiver:
                 pass
             self._zeroconf = None
         if self._server is not None:
+            srv = self._server
+            # Close all active client connections so senders notice immediately
+            for addr, sock in list(getattr(srv, "connections", {}).items()):
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            getattr(srv, "connections", {}).clear()
+            # Tear down streams/sessions tracked by the vendor server
+            for s in getattr(srv, "streams", []):
+                try:
+                    if hasattr(s, "terminate"):
+                        s.terminate()
+                    elif hasattr(s, "close"):
+                        s.close()
+                except Exception:
+                    pass
+            getattr(srv, "streams", []).clear()
+            getattr(srv, "sessions", []).clear()
+            # Kill child processes (audio event/timing)
+            for attr in ("event_proc", "timing_proc"):
+                proc = getattr(srv, attr, None)
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    try:
+                        setattr(srv, attr, None)
+                    except Exception:
+                        pass
             try:
-                self._server.shutdown()
+                srv.shutdown()
+            except Exception:
+                pass
+            try:
+                srv.server_close()
             except Exception:
                 pass
         logger.info("AirPlay receiver stopped")

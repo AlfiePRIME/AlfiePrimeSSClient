@@ -47,6 +47,9 @@ class PlayerState:
     airplay_ready: bool = False
     # SendSpin server is listening (not yet connected to a client)
     sendspin_ready: bool = False
+    # Per-protocol connection state
+    sendspin_connected: bool = False
+    airplay_connected: bool = False
     # Which protocol is currently active: "" (none), "sendspin", "airplay"
     active_source: str = ""
     # Device swap prompt state

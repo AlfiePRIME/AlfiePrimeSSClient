@@ -1464,3 +1464,37 @@ def render_stats_info(theme: ColorTheme | None = None) -> Text:
         text.append(f"{mins}m{secs:02d}s", _style_888)
 
     return text
+
+
+def render_source_info(
+    active_source: str, server_name: str, airplay_connected: bool,
+    sendspin_connected: bool, theme: ColorTheme | None = None,
+) -> Text:
+    """Render connected source info with switch hint."""
+    th = theme or _default_theme
+    text = Text()
+
+    _style_label = _cached_style("#666666")
+    _style_active = _cached_style(th.accent, bold=True)
+    _style_inactive = _cached_style("#555555")
+
+    def _src_label(name: str, connected: bool, is_active: bool) -> None:
+        if is_active and connected:
+            text.append(f" ▸{name}", _style_active)
+        elif connected:
+            text.append(f"  {name}", _cached_style(th.secondary))
+        else:
+            text.append(f"  {name}", _style_inactive)
+        if connected:
+            text.append(" ●", _cached_style(th.accent if is_active else "#555555"))
+        else:
+            text.append(" ○", _style_inactive)
+
+    _src_label("SendSpin", sendspin_connected, active_source == "sendspin")
+    text.append("  │", _style_label)
+    _src_label("AirPlay", airplay_connected, active_source == "airplay")
+
+    if sendspin_connected and airplay_connected:
+        text.append("  [T]Switch", _cached_style("#555555"))
+
+    return text

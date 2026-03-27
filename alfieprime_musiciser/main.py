@@ -98,6 +98,18 @@ async def _run_with_config(
         )
         logger.info("AirPlay receiver enabled as '%s' on port %d", ap_name, airplay_port)
 
+    # Source switch callback — mute/unmute audio handlers when user switches
+    def _on_source_switch(new_source: str) -> None:
+        if receiver._audio_handler is not None:
+            if new_source == "sendspin":
+                receiver._audio_handler.set_volume(
+                    tui.state.volume, muted=tui.state.muted,
+                )
+            else:
+                receiver._audio_handler.set_volume(0, muted=True)
+
+    tui._source_switch_callback = _on_source_switch
+
     loop = asyncio.get_running_loop()
 
     def _stop_all():

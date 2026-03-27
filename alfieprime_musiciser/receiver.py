@@ -307,7 +307,8 @@ class SendSpinReceiver:
             # Clean up previous client if any
             if self._client is not None:
                 logger.info("Disconnecting from previous server")
-                self._state.connected = False
+                self._state.sendspin_connected = False
+                self._state.connected = self._state.airplay_connected
                 self._state.is_playing = False
                 await self._audio_handler.handle_disconnect()
                 if self._client.connected:
@@ -342,12 +343,18 @@ class SendSpinReceiver:
         # Handshake complete - update TUI
         server_info = client.server_info
         server_name = server_info.name if server_info else "Server"
+        self._state.sendspin_connected = True
         self._state.connected = True
-        self._state.active_source = "sendspin"
+        if not self._state.active_source:
+            self._state.active_source = "sendspin"
         self._state.server_name = server_name
         logger.info("Connected to server: %s (%s)", server_name, remote)
 
         await self._apply_auto_settings()
+
+        # If another source is already active, mute SendSpin audio output
+        if self._state.active_source != "sendspin" and self._audio_handler is not None:
+            self._audio_handler.set_volume(0, muted=True)
 
         # Wait for disconnect
         try:
@@ -360,10 +367,11 @@ class SendSpinReceiver:
             logger.exception("Error waiting for server disconnect")
         finally:
             if self._client is client:
-                self._state.connected = False
+                self._state.sendspin_connected = False
+                self._state.connected = self._state.airplay_connected
                 self._state.is_playing = False
                 if self._state.active_source == "sendspin":
-                    self._state.active_source = ""
+                    self._state.active_source = "airplay" if self._state.airplay_connected else ""
                 self._state.server_name = f"Listening on :{self._listen_port}"
                 await self._audio_handler.handle_disconnect()
                 self._visualizer.reset()
@@ -385,8 +393,10 @@ class SendSpinReceiver:
                 logger.info("Connecting to %s", url)
                 assert self._client is not None
                 await self._client.connect(url)
+                self._state.sendspin_connected = True
                 self._state.connected = True
-                self._state.active_source = "sendspin"
+                if not self._state.active_source:
+                    self._state.active_source = "sendspin"
                 self._state.server_name = url
                 backoff = 1.0
 
@@ -398,17 +408,19 @@ class SendSpinReceiver:
                 await disconnect_event.wait()
                 unsub()
 
-                self._state.connected = False
+                self._state.sendspin_connected = False
+                self._state.connected = self._state.airplay_connected
                 self._state.is_playing = False
                 if self._state.active_source == "sendspin":
-                    self._state.active_source = ""
+                    self._state.active_source = "airplay" if self._state.airplay_connected else ""
                 if self._audio_handler:
                     await self._audio_handler.handle_disconnect()
                 logger.info("Disconnected, reconnecting...")
 
             except (TimeoutError, OSError, ClientError) as e:
                 logger.warning("Connection error (%s), retrying in %.0fs", type(e).__name__, backoff)
-                self._state.connected = False
+                self._state.sendspin_connected = False
+                self._state.connected = self._state.airplay_connected
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 300.0)
             except Exception:
@@ -419,6 +431,10 @@ class SendSpinReceiver:
         self, server_timestamp_us: int, audio_data: bytes | bytearray, fmt: AudioFormat,
     ) -> None:
         """Feed audio to visualizer (audio playback is handled by AudioStreamHandler)."""
+        # Only feed visualizer when SendSpin is the active source
+        if self._state.active_source and self._state.active_source != "sendspin":
+            return
+
         from aiosendspin.models.types import AudioCodec
 
         pcm = fmt.pcm_format

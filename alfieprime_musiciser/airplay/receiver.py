@@ -140,12 +140,14 @@ class _PCMConsumer:
         self,
         pcm_queue: multiprocessing.Queue,
         visualizer: AudioVisualizer,
+        state: PlayerState | None = None,
         sample_rate: int = 44100,
         sample_size: int = 16,
         channels: int = 2,
     ):
         self._queue = pcm_queue
         self._visualizer = visualizer
+        self._state = state
         self.sample_rate = sample_rate
         self.sample_size = sample_size
         self.channels = channels
@@ -178,6 +180,9 @@ class _PCMConsumer:
                         "AirPlay audio format: %d Hz, %d-bit, %d ch",
                         self.sample_rate, self.sample_size, self.channels,
                     )
+                    continue
+                # Only feed visualizer when AirPlay is the active source
+                if self._state and self._state.active_source != "airplay":
                     continue
                 self._visualizer.set_format(
                     self.sample_rate, self.sample_size, self.channels,
@@ -242,10 +247,11 @@ class _MetadataHook:
 
     def on_disconnect(self) -> None:
         self._state.is_playing = False
-        self._state.connected = False
+        self._state.airplay_connected = False
+        self._state.connected = self._state.sendspin_connected
         self._state.supported_commands = []
         if self._state.active_source == "airplay":
-            self._state.active_source = ""
+            self._state.active_source = "sendspin" if self._state.sendspin_connected else ""
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +334,7 @@ class _DACPClient:
 
     @property
     def available(self) -> bool:
-        return bool(self._active_remote and self._sender_ip and self._dacp_port)
+        return bool(self._active_remote and self._sender_ip)
 
     # -- command sending ----------------------------------------------------
 
@@ -697,8 +703,10 @@ def _create_patched_handler(meta_hook: _MetadataHook, dacp_client: _DACPClient, 
         def do_RECORD(self):
             """Stream start — mark as playing."""
             self._meta_hook._state.is_playing = True
+            self._meta_hook._state.airplay_connected = True
             self._meta_hook._state.connected = True
-            self._meta_hook._state.active_source = "airplay"
+            if not self._meta_hook._state.active_source:
+                self._meta_hook._state.active_source = "airplay"
             self._meta_hook._state.codec = "airplay"
             # Populate supported commands so TUI buttons are active
             self._meta_hook._state.supported_commands = list(_AIRPLAY_SUPPORTED_COMMANDS)
@@ -1053,7 +1061,7 @@ class AirPlayReceiver:
         # The vendored audio.py writes decoded PCM to this queue; a consumer
         # thread in the parent feeds it to the visualizer.
         pcm_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=64)
-        pcm_consumer = _PCMConsumer(pcm_queue, self._visualizer)
+        pcm_consumer = _PCMConsumer(pcm_queue, self._visualizer, state=self._state)
         pcm_consumer.start()
 
         # Monkey-patch Stream so every audio child process gets the queue.
@@ -1163,7 +1171,8 @@ class AirPlayReceiver:
         finally:
             pcm_consumer.stop()
             self._running = False
-            self._state.connected = False
+            self._state.airplay_connected = False
+            self._state.connected = self._state.sendspin_connected
             self._state.airplay_ready = False
 
     def stop(self) -> None:

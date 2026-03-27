@@ -49,6 +49,7 @@ from alfieprime_musiciser.renderer import (
     render_server_info,
     render_codec_info,
     render_stats_info,
+    render_source_info,
     render_braille_art,
     render_binary_background,
     render_art_scene,
@@ -158,6 +159,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         self._restore_cached_state(config)
         self._gui_window = None  # TerminalEmulator instance when in GUI mode
         self._command_callback: Callable[[str], None] | None = None
+        self._source_switch_callback: Callable[[str], None] | None = None
         # Track button positions for mouse clicks: {name: (col_start, col_end)}
         self._button_regions: dict[str, tuple[int, int]] = {}
         # Row (0-based from top of screen) where transport controls are rendered
@@ -862,14 +864,19 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             render_server_info(self.state.server_name, self.state.group_name, self.state.connected, theme=th),
             render_codec_info(self.state.codec, self.state.sample_rate, self.state.bit_depth, theme=th),
         )
-        # Only show system stats row if psutil is available, or session stats exist
-        if _psutil_process is not None or self.state.session_stats:
-            stats_row = render_stats_info(theme=th) if _psutil_process is not None else Text()
-            session_text = Text()
-            if self.state.session_stats:
-                session_text.append(" \U0001f3a7 ", Style(color="#666666"))
-                session_text.append(self.state.session_stats, Style(color=th.secondary))
-            status_table.add_row(stats_row, session_text)
+        # Source info row — connected clients and active source
+        source_row = render_source_info(
+            active_source=self.state.active_source,
+            server_name=self.state.server_name,
+            airplay_connected=self.state.airplay_connected,
+            sendspin_connected=self.state.sendspin_connected,
+            theme=th,
+        )
+        session_text = Text()
+        if self.state.session_stats:
+            session_text.append(" \U0001f3a7 ", Style(color="#666666"))
+            session_text.append(self.state.session_stats, Style(color=th.secondary))
+        status_table.add_row(source_row, session_text)
         parts.append(Panel(status_table, border_style="#444444", padding=(0, 0)))
 
         # Boom box frame accents
@@ -977,6 +984,16 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             else:
                 self._fire_command("volume_down")
                 self._flash_hint("vol")
+        elif k == "t":
+            # Toggle active source between connected protocols
+            s = self.state
+            if s.sendspin_connected and s.airplay_connected:
+                if s.active_source == "sendspin":
+                    s.active_source = "airplay"
+                else:
+                    s.active_source = "sendspin"
+                if self._source_switch_callback:
+                    self._source_switch_callback(s.active_source)
         elif k == "d":
             self._toggle_debug()
 

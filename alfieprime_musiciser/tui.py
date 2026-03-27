@@ -6,6 +6,7 @@ import io as _io
 import math
 import os
 import random
+import re
 import shutil
 import signal
 import sys
@@ -116,7 +117,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         self._settings_open: bool = False
         self._settings_cursor: int = 0
         self._settings_items: list[str] = [
-            "auto_play", "auto_volume", "fps_limit",
+            "auto_play", "auto_volume", "fps_limit", "brightness",
             "show_artwork", "use_art_colors", "static_color",
         ]
         self._settings_sub: str = ""  # "" = main, "advanced", "color_picker"
@@ -795,6 +796,17 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         self._render_console.print(layout)
 
         rendered = buf.getvalue()
+
+        # Apply brightness multiplier to all RGB colours in ANSI escapes
+        br = (self._config.brightness if self._config else 100) / 100.0
+        if br != 1.0:
+            def _scale(m: re.Match) -> str:
+                prefix = m.group(1)  # "38;2;" or "48;2;"
+                r = min(255, int(int(m.group(2)) * br))
+                g = min(255, int(int(m.group(3)) * br))
+                b = min(255, int(int(m.group(4)) * br))
+                return f"{prefix}{r};{g};{b}"
+            rendered = re.sub(r"([34]8;2;)(\d+);(\d+);(\d+)", _scale, rendered)
 
         # Trim/pad lines to exactly term_h — use rsplit to avoid full copy
         lines = rendered.split("\n")

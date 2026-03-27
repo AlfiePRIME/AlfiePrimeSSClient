@@ -33,6 +33,7 @@ class Config:
     show_artwork: bool = True  # show braille art in normal mode
     use_art_colors: bool = True  # dynamic album art colours
     static_color: str = ""  # hex color override when art colours disabled
+    brightness: int = 110  # terminal brightness percentage (50-150)
     # Cached theme from last session (restored on startup for intro animation)
     cached_theme: dict = field(default_factory=dict)
 

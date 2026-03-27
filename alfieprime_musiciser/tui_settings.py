@@ -258,6 +258,7 @@ class SettingsMixin:
             ("Auto Play on Connect", "auto_play", cfg.auto_play),
             ("Auto Volume on Connect", "auto_volume", cfg.auto_volume),
             ("FPS Limit", "fps_limit", cfg.fps_limit),
+            ("Brightness", "brightness", cfg.brightness),
             ("Show Artwork (Normal)", "show_artwork", cfg.show_artwork),
             ("Album Art Colours", "use_art_colors", cfg.use_art_colors),
             ("Static Colour", "static_color", cfg.static_color),
@@ -302,6 +303,10 @@ class SettingsMixin:
                     item.append("  ◂▸", Style(color="#555555"))
             elif key == "fps_limit":
                 item.append(f"{value:>8}", Style(color=th.accent, bold=selected))
+                if selected:
+                    item.append("  ◂▸", Style(color="#555555"))
+            elif key == "brightness":
+                item.append(f"{value}%".rjust(8), Style(color=th.accent, bold=selected))
                 if selected:
                     item.append("  ◂▸", Style(color="#555555"))
             elif key == "static_color":
@@ -793,6 +798,8 @@ class SettingsMixin:
                 cfg.auto_volume = max(0, min(100, cfg.auto_volume + direction * 5))
         elif item == "fps_limit":
             cfg.fps_limit = max(5, min(120, cfg.fps_limit + direction * 5))
+        elif item == "brightness":
+            cfg.brightness = max(50, min(150, cfg.brightness + direction * 10))
         else:
             return
         if self._config:

@@ -668,8 +668,10 @@ class SendSpinReceiver:
             return
 
         if self._client is None or not self._client.connected:
+            logger.debug("Command '%s' dropped — not connected", command)
             return
         if self._loop is None:
+            logger.debug("Command '%s' dropped — no event loop", command)
             return
 
         from aiosendspin.models.types import MediaCommand

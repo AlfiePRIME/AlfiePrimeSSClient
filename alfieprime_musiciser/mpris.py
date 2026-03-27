@@ -137,36 +137,46 @@ if _HAS_DBUS:
             # Cache for change detection
             self._prev_playing: bool | None = None
             self._prev_title: str = ""
+            self._prev_artist: str = ""
+            self._prev_album: str = ""
+            self._prev_artwork_id: int = 0
             self._prev_volume: int = -1
             self._prev_shuffle: bool | None = None
             self._prev_repeat: str = ""
+            self._prev_connected: bool = False
 
         # ── Methods ──
 
         @method()
         def Next(self) -> None:  # noqa: N802
+            logger.info("MPRIS: Next pressed")
             self._command_cb("next")
 
         @method()
         def Previous(self) -> None:  # noqa: N802
+            logger.info("MPRIS: Previous pressed")
             self._command_cb("previous")
 
         @method()
         def Pause(self) -> None:  # noqa: N802
+            logger.info("MPRIS: Pause pressed (is_playing=%s)", self._state.is_playing)
             if self._state.is_playing:
                 self._command_cb("play_pause")
 
         @method()
         def PlayPause(self) -> None:  # noqa: N802
+            logger.info("MPRIS: PlayPause pressed (is_playing=%s)", self._state.is_playing)
             self._command_cb("play_pause")
 
         @method()
         def Stop(self) -> None:  # noqa: N802
+            logger.info("MPRIS: Stop pressed")
             if self._state.is_playing:
                 self._command_cb("play_pause")
 
         @method()
         def Play(self) -> None:  # noqa: N802
+            logger.info("MPRIS: Play pressed (is_playing=%s)", self._state.is_playing)
             if not self._state.is_playing:
                 self._command_cb("play_pause")
 
@@ -293,8 +303,19 @@ if _HAS_DBUS:
                 self._prev_playing = self._state.is_playing
                 changed["PlaybackStatus"] = Variant("s", self.PlaybackStatus)  # type: ignore[attr-defined]
 
-            if self._state.title != self._prev_title:
+            # Track metadata changes: title, artist, album, artwork
+            art_id = id(self._state.artwork_data) if self._state.artwork_data else 0
+            metadata_changed = (
+                self._state.title != self._prev_title
+                or self._state.artist != self._prev_artist
+                or self._state.album != self._prev_album
+                or art_id != self._prev_artwork_id
+            )
+            if metadata_changed:
                 self._prev_title = self._state.title
+                self._prev_artist = self._state.artist
+                self._prev_album = self._state.album
+                self._prev_artwork_id = art_id
                 changed["Metadata"] = Variant("a{sv}", _build_metadata(self._state))
 
             if self._state.volume != self._prev_volume:
@@ -308,6 +329,13 @@ if _HAS_DBUS:
             if self._state.repeat_mode != self._prev_repeat:
                 self._prev_repeat = self._state.repeat_mode
                 changed["LoopStatus"] = Variant("s", self.LoopStatus)  # type: ignore[attr-defined]
+
+            # Update CanPlay/CanPause/CanControl when connection state changes
+            if self._state.connected != self._prev_connected:
+                self._prev_connected = self._state.connected
+                changed["CanPlay"] = Variant("b", self._state.connected)
+                changed["CanPause"] = Variant("b", self._state.connected)
+                changed["CanControl"] = Variant("b", self._state.connected)
 
             if changed:
                 self.emit_properties_changed(changed)
@@ -361,7 +389,7 @@ class MPRIS2Server:
     async def _poll_changes(self) -> None:
         """Periodically check for state changes and emit D-Bus signals."""
         while True:
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.5)
             if self._player_iface is not None:
                 try:
                     self._player_iface.check_and_emit_changes()

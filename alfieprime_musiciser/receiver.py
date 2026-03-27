@@ -583,6 +583,23 @@ class SendSpinReceiver:
                 self._state.theme = self._artwork_themes[channel]
                 self._state.artwork_data = image_data
                 write_art_cache(image_data)
+                # Cache theme colours for next startup
+                if self._config:
+                    th = self._artwork_themes[channel]
+                    self._config.cached_theme = {
+                        "primary": th.primary, "secondary": th.secondary,
+                        "accent": th.accent, "warm": th.warm,
+                        "highlight": th.highlight, "cool": th.cool,
+                        "primary_dim": th.primary_dim, "bg_subtle": th.bg_subtle,
+                        "spectrum_colors": th.spectrum_colors,
+                        "border_title": th.border_title,
+                        "border_now_playing": th.border_now_playing,
+                        "border_spectrum": th.border_spectrum,
+                        "border_vu": th.border_vu,
+                        "border_party": th.border_party,
+                        "border_dance": th.border_dance,
+                    }
+                    self._config.save()
                 logger.info(
                     "Updated theme from album art ch%d: primary=%s",
                     channel, self._artwork_themes[channel].primary,
@@ -599,6 +616,9 @@ class SendSpinReceiver:
             self._state.theme = ColorTheme()
             self._state.artwork_data = b""
             clear_art_cache()
+            if self._config:
+                self._config.cached_theme = {}
+                self._config.save()
 
     def _on_transport_command(self, command: str) -> None:
         """Handle a transport command from the TUI (called from input thread)."""

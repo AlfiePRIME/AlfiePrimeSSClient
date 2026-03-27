@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
 from rich.console import Console
@@ -33,6 +33,8 @@ class Config:
     show_artwork: bool = True  # show braille art in normal mode
     use_art_colors: bool = True  # dynamic album art colours
     static_color: str = ""  # hex color override when art colours disabled
+    # Cached theme from last session (restored on startup for intro animation)
+    cached_theme: dict = field(default_factory=dict)
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)

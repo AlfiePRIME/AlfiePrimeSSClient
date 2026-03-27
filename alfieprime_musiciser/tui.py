@@ -121,6 +121,8 @@ class BoomBoxTUI:
         self._running = False
         self._gui_mode = gui
         self._config = config
+        # Restore cached theme and artwork from last session
+        self._restore_cached_state(config)
         self._gui_window = None  # TerminalEmulator instance when in GUI mode
         self._command_callback: Callable[[str], None] | None = None
         # Track button positions for mouse clicks: {name: (col_start, col_end)}
@@ -171,6 +173,45 @@ class BoomBoxTUI:
         self._gui_console_size: tuple[int, int] = (0, 0)
         self._crt_console: Console | None = None
         self._crt_console_size: tuple[int, int] = (0, 0)
+
+    def _restore_cached_state(self, config: Config | None) -> None:
+        """Restore theme and artwork from last session for the intro animation."""
+        if not config:
+            return
+        # Restore theme colours from config cache
+        ct = config.cached_theme
+        if ct and isinstance(ct, dict) and "primary" in ct:
+            try:
+                self.state.theme = ColorTheme(
+                    primary=ct.get("primary", "#ff00ff"),
+                    secondary=ct.get("secondary", "#00ccff"),
+                    accent=ct.get("accent", "#00ff88"),
+                    warm=ct.get("warm", "#ffaa00"),
+                    highlight=ct.get("highlight", "#ff6644"),
+                    cool=ct.get("cool", "#8855ff"),
+                    primary_dim=ct.get("primary_dim", "#666666"),
+                    bg_subtle=ct.get("bg_subtle", "#1a1a1a"),
+                    spectrum_colors=ct.get("spectrum_colors", []),
+                    border_title=ct.get("border_title", "bright_magenta"),
+                    border_now_playing=ct.get("border_now_playing", "bright_cyan"),
+                    border_spectrum=ct.get("border_spectrum", "bright_green"),
+                    border_vu=ct.get("border_vu", "bright_yellow"),
+                    border_party=ct.get("border_party", "bright_magenta"),
+                    border_dance=ct.get("border_dance", "bright_yellow"),
+                )
+            except (TypeError, ValueError):
+                pass
+        # Restore cached artwork image from temp file (used by MPRIS too)
+        if config.art_mode:
+            from alfieprime_musiciser.mpris import _get_art_cache_path
+            art_path = _get_art_cache_path()
+            try:
+                if art_path.exists():
+                    data = art_path.read_bytes()
+                    if data:
+                        self.state.artwork_data = data
+            except OSError:
+                pass
 
     def set_command_callback(self, callback: Callable[[str], None]) -> None:
         """Set callback for transport commands (play_pause, next, previous, shuffle, repeat)."""

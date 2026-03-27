@@ -31,6 +31,13 @@ from alfieprime_musiciser.receiver import SendSpinReceiver
 from alfieprime_musiciser.tui import BoomBoxTUI
 from alfieprime_musiciser.visualizer import AudioVisualizer
 
+# Optional AirPlay support
+try:
+    from alfieprime_musiciser.airplay import _HAS_AIRPLAY, _MISSING_REASON
+except ImportError:
+    _HAS_AIRPLAY = False
+    _MISSING_REASON = "airplay module not found"
+
 IS_WINDOWS = sys.platform == "win32"
 
 logger = logging.getLogger(__name__)
@@ -38,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 async def _run_with_config(
     config: Config, demo: bool = False, gui: bool = False, daemon: bool = False,
+    airplay: bool = False, airplay_name: str | None = None, airplay_port: int = 7000,
 ) -> None:
     """Run the TUI + receiver using the given config."""
     visualizer = AudioVisualizer()
@@ -77,18 +85,41 @@ async def _run_with_config(
         config=config,
     )
 
+    # Optional AirPlay receiver
+    airplay_receiver = None
+    if airplay and _HAS_AIRPLAY:
+        from alfieprime_musiciser.airplay.receiver import AirPlayReceiver
+        ap_name = airplay_name or config.client_name
+        airplay_receiver = AirPlayReceiver(
+            tui, visualizer,
+            device_name=ap_name,
+            port=airplay_port,
+        )
+        logger.info("AirPlay receiver enabled as '%s' on port %d", ap_name, airplay_port)
+
     loop = asyncio.get_running_loop()
+
+    def _stop_all():
+        receiver.stop()
+        if airplay_receiver:
+            airplay_receiver.stop()
+        tui.stop()
+
     if IS_WINDOWS:
-        signal.signal(signal.SIGINT, lambda *_: (receiver.stop(), tui.stop()))
+        signal.signal(signal.SIGINT, lambda *_: _stop_all())
     else:
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda: (receiver.stop(), tui.stop()))
+            loop.add_signal_handler(sig, _stop_all)
 
+    tasks: list = [tui.run()]
     if demo:
         receiver._running = True
-        await asyncio.gather(tui.run(), receiver._run_demo_mode())
+        tasks.append(receiver._run_demo_mode())
     else:
-        await asyncio.gather(tui.run(), receiver.start())
+        tasks.append(receiver.start())
+    if airplay_receiver:
+        tasks.append(airplay_receiver.start())
+    await asyncio.gather(*tasks)
 
 
 def main() -> None:
@@ -105,6 +136,12 @@ def main() -> None:
     parser.add_argument("--gui", action="store_true", help="Run in a standalone GUI window instead of the terminal")
     parser.add_argument("--daemon", "-d", action="store_true", help="Run as a headless service (no GUI/TUI, audio only)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--airplay", action="store_true",
+        help="Also run as an AirPlay 2 receiver (requires av, pyaudio, pycryptodome, biplist, netifaces)",
+    )
+    parser.add_argument("--airplay-name", default=None, help="AirPlay device name (default: client name)")
+    parser.add_argument("--airplay-port", type=int, default=7000, help="AirPlay RTSP port (default: 7000)")
     args = parser.parse_args()
 
     # When launched via pythonw.exe (gui_scripts), stdout/stderr are None.
@@ -165,6 +202,14 @@ def main() -> None:
             pass
         return
 
+    # Check AirPlay deps if requested
+    if args.airplay and not _HAS_AIRPLAY:
+        console.print(
+            f"[bold yellow]Warning:[/] AirPlay dependencies not available ({_MISSING_REASON}).\n"
+            "Install with: [bright_cyan]pip install av pyaudio pycryptodome biplist netifaces[/]\n"
+            "Continuing without AirPlay.\n"
+        )
+
     # Check sendspin is installed
     try:
         from aiosendspin.client import SendspinClient  # noqa: F401
@@ -217,7 +262,12 @@ def main() -> None:
 
     # Run!
     try:
-        asyncio.run(_run_with_config(config, gui=args.gui))
+        asyncio.run(_run_with_config(
+            config, gui=args.gui,
+            airplay=args.airplay,
+            airplay_name=args.airplay_name,
+            airplay_port=args.airplay_port,
+        ))
     except KeyboardInterrupt:
         pass
 

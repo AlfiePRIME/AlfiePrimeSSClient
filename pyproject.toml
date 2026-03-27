@@ -13,6 +13,16 @@ dependencies = [
 
 [project.optional-dependencies]
 smtc = ["winsdk>=1.0.0b10"]
+airplay = [
+    "av>=10.0.0",
+    "pyaudio>=0.2.13",
+    "pycryptodome>=3.18.0",
+    "biplist>=1.0.3",
+    "netifaces>=0.11.0",
+    "srptools>=1.0.1",
+    "hkdf>=0.0.3",
+    "cryptography>=41.0.0",
+]
 
 [project.scripts]
 alfieprime-musiciser = "alfieprime_musiciser.main:main"

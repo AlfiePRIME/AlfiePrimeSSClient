@@ -744,12 +744,24 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
 
     async def _input_loop_windows(self) -> None:
         """Windows keyboard input using msvcrt."""
+        _ARROW_MAP = {
+            b"H": "arrow_up",
+            b"P": "arrow_down",
+            b"M": "arrow_right",
+            b"K": "arrow_left",
+        }
         loop = asyncio.get_event_loop()
         while self._running:
             has_key = await loop.run_in_executor(None, msvcrt.kbhit)
             if has_key:
                 data = await loop.run_in_executor(None, msvcrt.getch)
-                if data:
+                if data in (b"\xe0", b"\x00"):
+                    # Special key prefix — read the second byte for the actual key
+                    data2 = await loop.run_in_executor(None, msvcrt.getch)
+                    arrow = _ARROW_MAP.get(data2)
+                    if arrow:
+                        self._handle_key(arrow)
+                elif data:
                     self._parse_input(data)
             else:
                 await asyncio.sleep(0.05)

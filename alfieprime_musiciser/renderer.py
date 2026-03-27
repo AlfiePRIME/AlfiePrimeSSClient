@@ -638,6 +638,25 @@ def render_braille_art(
         gray_arr = np.array(img_gray, dtype=np.float64)
         rgb_arr = np.array(img_rgb, dtype=np.int32)
 
+        # Pass 1: Floyd-Steinberg dithering in standard raster order (row by row)
+        # so error propagates evenly across the full image instead of per-cell.
+        dithered = np.zeros((px_h, px_w), dtype=np.bool_)
+        for py in range(px_h):
+            for px in range(px_w):
+                old = gray_arr[py, px]
+                new = 255.0 if old >= 128.0 else 0.0
+                dithered[py, px] = new > 0
+                err = old - new
+                if px + 1 < px_w:
+                    gray_arr[py, px + 1] += err * 0.4375
+                if py + 1 < px_h:
+                    if px > 0:
+                        gray_arr[py + 1, px - 1] += err * 0.1875
+                    gray_arr[py + 1, px] += err * 0.3125
+                    if px + 1 < px_w:
+                        gray_arr[py + 1, px + 1] += err * 0.0625
+
+        # Pass 2: convert dithered pixels to braille characters with averaged colour
         for by in range(height):
             line = Text()
             for bx in range(width):
@@ -652,19 +671,8 @@ def render_braille_art(
                     px = ox + dx
                     py = oy + dy
                     if px < px_w and py < px_h:
-                        old = gray_arr[py, px]
-                        new = 255.0 if old >= 128.0 else 0.0
-                        if new > 0:
+                        if dithered[py, px]:
                             code |= bit
-                        err = old - new
-                        if px + 1 < px_w:
-                            gray_arr[py, px + 1] += err * 0.4375
-                        if py + 1 < px_h:
-                            if px > 0:
-                                gray_arr[py + 1, px - 1] += err * 0.1875
-                            gray_arr[py + 1, px] += err * 0.3125
-                            if px + 1 < px_w:
-                                gray_arr[py + 1, px + 1] += err * 0.0625
                         r_sum += rgb_arr[py, px, 0]
                         g_sum += rgb_arr[py, px, 1]
                         b_sum += rgb_arr[py, px, 2]

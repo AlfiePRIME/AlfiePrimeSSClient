@@ -1,6 +1,6 @@
 # AlfiePRIME Musiciser
 
-A party-themed TUI/GUI music player and [SendSpin](https://github.com/music-assistant/aiosendspin) receiver for [Music Assistant](https://music-assistant.io/). Displays a retro boom box interface with a real-time spectrum analyzer, VU meters, party lights, dancing crowd, and dynamic album art colouring.
+A party-themed TUI/GUI music player, [SendSpin](https://github.com/music-assistant/aiosendspin) receiver, and **AirPlay 2 receiver** for [Music Assistant](https://music-assistant.io/). Displays a retro boom box interface with a real-time spectrum analyzer, VU meters, party lights, dancing crowd, and dynamic album art colouring. Stream from any Apple device via AirPlay or from Music Assistant via SendSpin — simultaneously if you like.
 
 ## Features
 
@@ -9,22 +9,25 @@ A party-themed TUI/GUI music player and [SendSpin](https://github.com/music-assi
 - **VU meters** — stereo level meters with square-root scaling, peak-hold markers, and shimmer animation
 - **Party lights** — animated light strips and stereo-reactive dots synced to the music
 - **Dance floor** — ASCII art DJ (with hype mode at high energy) and 12 dancer types (6 male + 6 female variants: swayer, jumper, headbanger, spinner, robot, raver) across multiple depth rows, smoothed energy-reactive crowd density (fast attack, slow decay), BPM-scaled animation, and beat-reactive DJ equipment glow
+- **AirPlay 2 receiver** — appears as an AirPlay speaker on your network. Stream audio from any iPhone, iPad, or Mac. Receives album artwork, track metadata (title, artist, album, duration), and progress. Supports transient pairing (no PIN required), buffered and realtime audio streams, and automatic codec negotiation (PCM, ALAC, AAC)
+- **Dual-protocol support** — run AirPlay and SendSpin receivers simultaneously. Switch between active sources with `T` when both are connected. Each source maintains independent playback state (artwork, metadata, progress) with seamless hot-switching
 - **Full-screen album art mode** — visually-square braille art centred on screen with party effects (wandering dancers, confetti, fireworks) or calm mode (large art with album info panel showing artist, album, year, track number, and codec details). Toggle with `A`, calm with `C`
-- **Braille album art** — renders album artwork as coloured Unicode braille dot art (2x4 pixel grid per character) next to the Now Playing panel
+- **Braille album art** — renders album artwork as coloured Unicode braille dot art (2x4 pixel grid per character) with Floyd-Steinberg dithering next to the Now Playing panel
 - **Listening stats** — persistent per-artist and per-track play time tracking, session summary in the status bar, auto-saved to `~/.config/alfieprime-musiciser/stats.json`
 - **OS media integration** — registers with the OS so media keys, lock screen, and desktop widgets can see what's playing and send play/pause/next/previous commands (MPRIS2 on Linux, SMTC on Windows)
 - **Desktop notifications** — shows a notification on track change via `notify-send` (Linux)
 - **Terminal tab title** — sets the terminal tab/window title to the current track via OSC escape sequences
 - **Transport controls** — play/pause, next, previous, shuffle, repeat, volume via keyboard or mouse click
 - **CRT animations** — 3-phase startup (boot, static hold with animated antenna and radio wave ripples, diagonal lights-on sweep) and power-off effects. After 2 minutes of connecting, displays a "is your server running?" hint while still listening
-- **Standby screensaver** — floating phrases in a bordered box with dim particles after 5 minutes of idle, wakes instantly on playback
+- **Standby screensaver** — floating phrases in a bordered box with dim particles after 5 minutes of idle, wakes instantly on playback or any keypress
 - **System stats** — CPU usage, memory, network throughput, and session uptime in the status bar
 - **Artwork pre-caching** — upcoming track artwork is extracted on background threads for instant theme changes on track switch
 - **Resizable UI** — all sections dynamically scale to fill the terminal or window. The spectrum analyzer expands to use all available vertical space
-- **Two connection modes**:
+- **Three connection modes**:
   - **Listen (mDNS)** — advertises via `_sendspin._tcp.local.` so Music Assistant discovers and connects automatically (recommended)
   - **Connect** — connects to a specific SendSpin server URL
-- **Settings menu** — in-app settings overlay (`/` key) with animated CRT background, fade transitions, scattered dancing easter egg, configurable auto-play, auto-volume, FPS limit (5-120), brightness slider (50-150%), artwork toggle, album art colour toggle, static colour picker (16 presets + custom hex), and an advanced section (`A` key) for editing client name, UUID, and factory-resetting the config (with animated danger CRT warning screen)
+  - **AirPlay** — advertises as an AirPlay 2 speaker via mDNS (enabled by default, toggle in settings)
+- **Settings menu** — in-app settings overlay (`/` key) with animated CRT background, fade transitions, scattered dancing easter egg, configurable auto-play, auto-volume, FPS limit (5-120), brightness slider (50-150%), artwork toggle, album art colour toggle, static colour picker (16 presets + custom hex), protocol settings (enable/disable AirPlay/SendSpin, device swap prompt, forget AirPlay devices), and an advanced section (`A` key) for editing client name, UUID, and factory-resetting the config (with animated danger CRT warning screen)
 - **Persistent UI state** — remembers art mode, calm mode, and settings across restarts
 - **Persistent device identity** — remembers its client ID across restarts so Music Assistant recognises it as the same speaker
 - **Standalone GUI mode** — runs in its own tkinter window (separate process) so audio never stutters from rendering load
@@ -34,8 +37,9 @@ A party-themed TUI/GUI music player and [SendSpin](https://github.com/music-assi
 ## Requirements
 
 - Python 3.12+
-- A running [Music Assistant](https://music-assistant.io/) server (or any SendSpin-compatible server)
+- A running [Music Assistant](https://music-assistant.io/) server (or any SendSpin-compatible server), and/or any AirPlay 2 sender (iPhone, iPad, Mac)
 - An audio output device
+- `libasound2` (Linux) or equivalent for AirPlay audio playback
 
 ## Installation
 
@@ -96,12 +100,16 @@ alfieprime-musiciser-app
 | `B` | Previous track |
 | `S` | Toggle shuffle |
 | `R` | Cycle repeat (off / all / one) |
+| `M` | Toggle mute / unmute |
 | `A` | Toggle full-screen album art mode (party scene with wandering dancers, confetti, fireworks) |
 | `C` | Toggle calm mode in art view / close settings menu |
-| `↑` / `↓` | Volume up / down |
+| `T` | Switch active source (when both AirPlay and SendSpin are connected) |
+| `↑` / `↓` | Volume up / down (auto-unmutes if muted) |
 | `←` / `→` | Adjust selected setting (in settings menu) |
-| `/` | Open settings menu (auto play, auto volume, FPS, artwork, colours, advanced) |
+| `/` | Open settings menu (auto play, auto volume, FPS, artwork, colours, protocol, advanced) |
 | `Q` | Quit (pauses playback on Music Assistant first) |
+
+> **Note:** When AirPlay is the active source, transport controls (play/pause, next, previous, shuffle, repeat) are hidden since AirPlay 2 has no reverse command channel for third-party receivers. Use the iPhone/iPad controls instead. Volume and mute work locally.
 
 ## Configuration
 
@@ -125,6 +133,9 @@ tui.py             BoomBoxTUI (layout, input handling, run loops) — uses mixin
 tui_settings.py    SettingsMixin (settings menu, colour picker, advanced, reset config)
 tui_animations.py  AnimationsMixin (CRT startup/shutdown, standby screensaver, transitions)
 receiver.py        SendSpinReceiver (WebSocket, audio, metadata, artwork, notifications)
+airplay/           AirPlay 2 receiver package
+  receiver.py      AirPlayReceiver (RTSP server, metadata hooks, PCM consumer, mDNS)
+  vendor/          Vendored ap2-receiver with patches for our pipeline
 stats.py           ListeningStats (persistent per-artist/track play time tracking)
 mpris.py           MPRIS2 D-Bus integration (Linux media keys, lock screen, KDE Connect)
 smtc.py            Windows SMTC integration (media keys, lock screen, taskbar overlay)
@@ -145,10 +156,17 @@ Main Process                          GUI Process (optional)
 |   - Desktop notifications       |   +------------------------+
 |   - ListeningStats              |        ^           |
 |                                 |        | segments  | size/keys
-| MPRIS2Server (Linux)            |        |           v
-|   or SMTCServer (Windows)       |   +------------------------+
-|   - OS media key routing        |   | multiprocessing.Pipe   |
-|   - Track info to desktop       |   +------------------------+
+| AirPlayReceiver                 |        |           v
+|   - RTSP server (vendor ap2)    |   +------------------------+
+|   - HAP transient pairing       |   | multiprocessing.Pipe   |
+|   - Audio child processes       |   +------------------------+
+|   - mDNS advertisement          |
+|   - PCM queue → visualizer      |
+|                                 |
+| MPRIS2Server (Linux)            |
+|   or SMTCServer (Windows)       |
+|   - OS media key routing        |
+|   - Track info to desktop       |
 |                                 |
 | AudioVisualizer                 |
 |   - FFT spectrum analysis       |
@@ -189,6 +207,21 @@ The app connects as a SendSpin client with four roles:
 
 Album artwork arrives as binary WebSocket messages. Since the client library doesn't expose artwork listeners directly, the binary message handler is monkey-patched to intercept artwork channels.
 
+### AirPlay 2 Protocol
+
+The AirPlay receiver is built on a vendored fork of [ap2-receiver](https://github.com/openairplay/airplay2-receiver), patched to integrate with our audio and metadata pipeline:
+
+- **RTSP server** on port 7000 handling SETUP, RECORD, SET_PARAMETER, SETPEERSEX, SETRATEANCHORTIME, TEARDOWN
+- **Transient pairing** (feature bit 48) — devices connect without a PIN prompt
+- **Audio delivery** via child processes: `AudioRealtime` (UDP, low-latency) and `AudioBuffered` (TCP, buffered)
+- **PCM queue** bridges decoded audio from child processes to the parent's visualizer thread
+- **Metadata** arrives through three channels: DMAP tagged data, binary plist SET_PARAMETER, and `/command` POST
+- **Artwork** arrives as `image/*` SET_PARAMETER (enabled by feature bit 15: `AudioMetaCovers`)
+- **Progress** via DMAP `progress` field and SETRATEANCHORTIME rate changes
+- **Clean shutdown** with stream teardown, force-kill timeouts, HAP state cleanup, and mDNS deregistration
+
+AirPlay pairing state is stored in `~/.cache/alfieprime/pairings/`. Client pairings are cleared on shutdown to ensure clean reconnection; the server keypair persists unless "Forget AirPlay Devices" is enabled in settings.
+
 ## Dependencies
 
 | Package | Purpose |
@@ -197,6 +230,12 @@ Album artwork arrives as binary WebSocket messages. Since the client library doe
 | [numpy](https://numpy.org/) | FFT spectrum analysis, audio signal processing |
 | [rich](https://rich.readthedocs.io/) | Terminal UI rendering with 24-bit colour |
 | [Pillow](https://pillow.readthedocs.io/) | Album art colour extraction via median-cut quantization |
+| [PyAudio](https://pypi.org/project/PyAudio/) | AirPlay audio output via PortAudio |
+| [zeroconf](https://pypi.org/project/zeroconf/) | mDNS advertisement for AirPlay 2 discovery |
+| [cryptography](https://cryptography.io/) | AirPlay HAP pairing (ed25519, x25519) |
+| [PyCryptodome](https://pypi.org/project/pycryptodome/) | AirPlay ChaCha20-Poly1305 encryption |
+| [biplist](https://pypi.org/project/biplist/) | Binary plist parsing for AirPlay 2 metadata |
+| [hkdf](https://pypi.org/project/hkdf/) | HKDF key derivation for AirPlay pairing |
 | [psutil](https://psutil.readthedocs.io/) | System stats (CPU, memory, network) — optional |
 | [dbus-next](https://github.com/altdesktop/python-dbus-next) | MPRIS2 media controls — Linux only, auto-installed |
 | [winsdk](https://github.com/pywinrt/python-winsdk) | SMTC media controls — Windows only, optional (requires Visual Studio Build Tools to compile) |

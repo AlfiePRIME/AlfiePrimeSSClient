@@ -61,7 +61,7 @@ class AudioVisualizer:
         self._bit_depth = bit_depth
         self._channels = channels
 
-    def feed_audio(self, audio_data: bytes | bytearray) -> None:
+    def feed_audio(self, audio_data: bytes | bytearray, immediate: bool = False) -> None:
         try:
             # _decode_pcm writes to _vu_pending_left/right for queued VU capture
             self._vu_pending_left = 0.0
@@ -73,10 +73,19 @@ class AudioVisualizer:
             return
 
         with self._lock:
-            if self._stream_start_time == 0.0:
-                self._stream_start_time = time.monotonic()
-            self._total_samples_queued += len(samples)
-            self._delay_queue.append((samples, self._vu_pending_left, self._vu_pending_right, self._total_samples_queued))
+            if immediate:
+                # Bypass the delay queue — write directly to ring buffer.
+                # Used for AirPlay where audio already has inherent latency
+                # from the cross-process queue and batching.
+                self._write_to_ring_buffer(samples)
+                self._vu_left = self._vu_pending_left
+                self._vu_right = self._vu_pending_right
+                self._has_data = True
+            else:
+                if self._stream_start_time == 0.0:
+                    self._stream_start_time = time.monotonic()
+                self._total_samples_queued += len(samples)
+                self._delay_queue.append((samples, self._vu_pending_left, self._vu_pending_right, self._total_samples_queued))
 
     def _write_to_ring_buffer(self, samples: np.ndarray) -> None:
         """Write mono samples to the ring buffer."""

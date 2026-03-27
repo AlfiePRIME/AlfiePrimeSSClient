@@ -1192,7 +1192,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
 
             # ── Phase 2: Hold on static until connected ──
             self._connect_wait_start = time.monotonic()
-            while self._running and not self.state.connected:
+            while self._running and not self.state.connected and not self.state.airplay_ready:
                 term_w, term_h = self._get_terminal_size()
                 segs = self._crt_static_hold_segments(term_w, term_h)
                 frame = self._crt_to_ansi(segs, term_w, term_h)
@@ -1280,7 +1280,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
 
             # ── Phase 2: Hold on static until connected ──
             self._connect_wait_start = time.monotonic()
-            while self._running and gui.alive and not self.state.connected:
+            while self._running and gui.alive and not self.state.connected and not self.state.airplay_ready:
                 gui.process_events()
                 term_w, term_h = self._get_terminal_size()
                 segs = self._crt_static_hold_segments(term_w, term_h)

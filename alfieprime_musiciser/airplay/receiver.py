@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import uuid
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from alfieprime_musiciser.state import PlayerState
@@ -129,49 +129,62 @@ def _patch_vendor_imports() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _AudioHook:
-    """Replaces ``pyaudio`` sink writes to capture decoded PCM."""
+class _PCMConsumer:
+    """Reads PCM chunks from a multiprocessing.Queue and feeds the visualizer.
+
+    The queue is written to by the audio child process (in vendored audio.py).
+    This consumer runs a daemon thread in the parent process.
+    """
 
     def __init__(
         self,
+        pcm_queue: multiprocessing.Queue,
         visualizer: AudioVisualizer,
         sample_rate: int = 44100,
         sample_size: int = 16,
         channels: int = 2,
-        on_audio: Callable[[bytes], None] | None = None,
     ):
-        self.visualizer = visualizer
+        self._queue = pcm_queue
+        self._visualizer = visualizer
         self.sample_rate = sample_rate
         self.sample_size = sample_size
         self.channels = channels
-        self._on_audio = on_audio
-        self._pa: object | None = None
-        self._real_sink: object | None = None
+        self._running = False
+        self._thread: threading.Thread | None = None
 
-    # Called by Audio.init_audio_sink – we still open a real pyaudio stream
-    # for playback, but *also* feed the visualizer.
-    def wrap_sink(self, audio_obj: object) -> None:
-        """Monkey-patch *audio_obj*.sink.write to also feed our visualizer."""
-        sink = getattr(audio_obj, "sink", None)
-        if sink is None:
-            return
+    def start(self) -> None:
+        self._running = True
+        self._thread = threading.Thread(target=self._consume, daemon=True)
+        self._thread.start()
+        logger.info("PCM consumer thread started")
 
-        original_write = sink.write
+    def stop(self) -> None:
+        self._running = False
 
-        def _hooked_write(data: bytes) -> int:
-            # Feed visualizer
-            self.visualizer.set_format(self.sample_rate, self.sample_size, self.channels)
-            self.visualizer.feed_audio(data)
-            if self._on_audio:
-                self._on_audio(data)
-            # Still play through speakers
-            return original_write(data)
-
-        sink.write = _hooked_write
-        logger.info(
-            "AirPlay audio hook installed (%d Hz, %d-bit, %d ch)",
-            self.sample_rate, self.sample_size, self.channels,
-        )
+    def _consume(self) -> None:
+        import queue as _queue_mod
+        while self._running:
+            try:
+                data = self._queue.get(timeout=0.02)
+            except _queue_mod.Empty:
+                continue
+            except (OSError, EOFError):
+                break
+            try:
+                # Format update message from audio child process
+                if isinstance(data, tuple) and len(data) == 4 and data[0] == "_fmt":
+                    _, self.sample_rate, self.sample_size, self.channels = data
+                    logger.info(
+                        "AirPlay audio format: %d Hz, %d-bit, %d ch",
+                        self.sample_rate, self.sample_size, self.channels,
+                    )
+                    continue
+                self._visualizer.set_format(
+                    self.sample_rate, self.sample_size, self.channels,
+                )
+                self._visualizer.feed_audio(data, immediate=True)
+            except Exception:
+                logger.debug("PCM consumer feed error", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +287,7 @@ def _extract_dmap_fields(data: bytes) -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
-def _create_patched_handler(audio_hook: _AudioHook, meta_hook: _MetadataHook):
+def _create_patched_handler(meta_hook: _MetadataHook):
     """Import and return a subclass of AP2Handler with our hooks injected."""
     _patch_vendor_imports()
 
@@ -283,10 +296,22 @@ def _create_patched_handler(audio_hook: _AudioHook, meta_hook: _MetadataHook):
     import plistlib
 
     class PatchedAP2Handler(AP2Handler):
-        """AP2Handler with audio/metadata hooks for AlfiePRIME integration."""
+        """AP2Handler with metadata hooks for AlfiePRIME integration."""
 
-        _audio_hook = audio_hook
         _meta_hook = meta_hook
+
+        def dispatch(self):
+            """Override dispatch to log all requests and catch exceptions."""
+            path = self.path.split("?")[0] if "?" in self.path else self.path
+            logger.info("AirPlay: %s %s from %s", self.command, path, self.client_address[0])
+            try:
+                super().dispatch()
+            except Exception:
+                logger.exception("AirPlay: handler crashed on %s %s", self.command, path)
+                try:
+                    self.send_error(500)
+                except Exception:
+                    pass
 
         # -- helpers --------------------------------------------------
 
@@ -534,6 +559,12 @@ class AirPlayReceiver:
         self._server_thread: threading.Thread | None = None
         self._zeroconf: object | None = None
         self._mdns_services: list = []
+        self._pin: str | None = None
+
+    @property
+    def pin(self) -> str | None:
+        """The current 4-digit pairing PIN, or None if not yet generated."""
+        return self._pin
 
     @property
     def _state(self) -> PlayerState:
@@ -743,6 +774,14 @@ class AirPlayReceiver:
             ap2mod.DEV_PROPS = DeviceProperties(ap2mod.PI, False)
             logger.debug("AirPlay: DeviceProperties created with PI=%s", ap2mod.PI)
             setup_global_structs(mock_args, isDebug=False)
+
+            # Transient pairing (Ft48) — iPhone connects without PIN prompt.
+            # The vendored SRP uses the default password from DEV_PROPS
+            # (defaults to "3939") for the transient handshake.
+            self._pin = None
+            self._state.airplay_pin = ""
+            logger.info("AirPlay: transient pairing enabled (no PIN required)")
+
             logger.info("AirPlay: global structs ready")
         except Exception:
             logger.exception("Failed to setup AirPlay global structs")
@@ -754,25 +793,32 @@ class AirPlayReceiver:
                      self._device_name, mac_addr, ipv4_addr, ipv6_addr)
         logger.debug("AirPlay: mDNS TXT props: %s", {k: v for k, v in mdns_props.items() if k != 'pk'})
 
-        # Create hooks
-        audio_hook = _AudioHook(self._visualizer)
+        # Create metadata hook
         meta_hook = _MetadataHook(self._state)
 
         # Create patched handler
-        HandlerClass = _create_patched_handler(audio_hook, meta_hook)
+        HandlerClass = _create_patched_handler(meta_hook)
 
-        # Monkey-patch Audio.init_audio_sink to install our hook after real init
-        from ap2.connections.audio import Audio  # type: ignore[import-untyped]
-        original_init_sink = Audio.init_audio_sink
+        # Tell child processes where to log so their output reaches our file.
+        os.environ["AIRPLAY_DEBUG_LOG"] = _LOG_FILE
 
-        def _patched_init_sink(self_audio):
-            original_init_sink(self_audio)
-            audio_hook.sample_rate = self_audio.sample_rate
-            audio_hook.sample_size = self_audio.sample_size
-            audio_hook.channels = self_audio.channel_count
-            audio_hook.wrap_sink(self_audio)
+        # Create a multiprocessing queue for PCM audio from child processes.
+        # The vendored audio.py writes decoded PCM to this queue; a consumer
+        # thread in the parent feeds it to the visualizer.
+        pcm_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=64)
+        pcm_consumer = _PCMConsumer(pcm_queue, self._visualizer)
+        pcm_consumer.start()
 
-        Audio.init_audio_sink = _patched_init_sink
+        # Monkey-patch Stream so every audio child process gets the queue.
+        from ap2.connections.stream import Stream  # type: ignore[import-untyped]
+        _original_stream_init = Stream.__init__
+
+        def _patched_stream_init(self_stream, *args, **kwargs):
+            kwargs.setdefault("pcm_queue", pcm_queue)
+            logger.debug("Stream.__init__ patched: pcm_queue=%r injected", pcm_queue)
+            _original_stream_init(self_stream, *args, **kwargs)
+
+        Stream.__init__ = _patched_stream_init
 
         # ── Register mDNS: both _airplay._tcp AND _raop._tcp ──
         # iPhones need BOTH services to show the device in the AirPlay list.
@@ -825,11 +871,11 @@ class AirPlayReceiver:
             zc = Zeroconf(ip_version=IPVersion.V4Only)
             self._zeroconf = zc
 
-            zc.register_service(airplay_info)
+            zc.register_service(airplay_info, allow_name_change=True)
             logger.info("AirPlay: mDNS registered _airplay._tcp ─ name=%s server=%s port=%d",
                         airplay_info.name, airplay_info.server, airplay_info.port)
 
-            zc.register_service(raop_info)
+            zc.register_service(raop_info, allow_name_change=True)
             logger.info("AirPlay: mDNS registered _raop._tcp ─ name=%s server=%s port=%d",
                         raop_info.name, raop_info.server, raop_info.port)
 
@@ -855,20 +901,26 @@ class AirPlayReceiver:
         # Start RTSP server
         try:
             self._server = AP2Server((bind_addr, self._port), HandlerClass)
-            # Mark as connected so the TUI exits the waiting screen
-            self._state.connected = True
+            self._pcm_consumer = pcm_consumer
+            # Mark server as ready (listening) — actual connected=True happens
+            # in do_RECORD when a client starts streaming.
+            self._state.airplay_ready = True
             logger.info("AirPlay: RTSP server started on %s:%d — ready for connections",
                         bind_addr, self._port)
             self._server.serve_forever()
         except Exception:
             logger.exception("AirPlay server error")
         finally:
+            pcm_consumer.stop()
             self._running = False
             self._state.connected = False
+            self._state.airplay_ready = False
 
     def stop(self) -> None:
         """Shut down the AirPlay server and unregister mDNS."""
         self._running = False
+        if hasattr(self, "_pcm_consumer"):
+            self._pcm_consumer.stop()
         # Unregister mDNS so the device disappears from AirPlay lists
         if self._zeroconf is not None:
             try:

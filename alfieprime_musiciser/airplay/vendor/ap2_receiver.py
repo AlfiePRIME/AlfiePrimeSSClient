@@ -279,7 +279,7 @@ def setup_global_structs(args, isDebug=False):
         # "protovers": "1.1",
         # PassWord enabled: 0/false off, 1/true on.
         # -This requires Method POST Path /pair-pin-start endpoint
-        # "pw": "false",
+        "pw": "true" if (STATUS_FLAGS & StatusFlags.PasswordNeeded) else "false",
         # Status Flags (bitmask): see StatusFlags class.
         "sf": get_hex_bitmask(STATUS_FLAGS),
         # Software Mute (whether needed)

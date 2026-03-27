@@ -529,6 +529,12 @@ class AnimationsMixin:
             f"{(spin_ch + ' Connecting' + dots):^33}",
         ]
 
+        # AirPlay pairing PIN
+        pin = getattr(self.state, 'airplay_pin', '')
+        if pin:
+            art.append(f"                                 ")
+            art.append(f"{'PIN: ' + pin:^33}")
+
         # Debug mode hint (show after 3 seconds)
         elapsed = time.monotonic() - self._connect_wait_start if self._connect_wait_start else 0
         if elapsed >= 3 and not getattr(self, '_airplay_debug', False):

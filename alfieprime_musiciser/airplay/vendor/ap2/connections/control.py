@@ -234,7 +234,11 @@ class Control:
                             # self.logger.debug(f'Rcv retransmission')
                             """ Send rexmit response out from socket to audio listen port"""
                             try:
-                                s.sendto(rtcp.getOriginalRtpPkt(), self.dataaddr_ours.getsockname())
+                                dest = self.dataaddr_ours.getsockname()
+                                # Windows cannot send to 0.0.0.0; use loopback instead
+                                if dest[0] == '0.0.0.0':
+                                    dest = ('127.0.0.1', dest[1])
+                                s.sendto(rtcp.getOriginalRtpPkt(), dest)
                             except OSError as e:
                                 self.logger.error(f'{repr(e)}')
                         if rtcp.ptype == RTCP.PktType.TIME_ANNOUNCE_PTP or rtcp.ptype == RTCP.PktType.TIME_ANNOUNCE_NTP:

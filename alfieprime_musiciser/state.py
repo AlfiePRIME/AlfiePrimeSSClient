@@ -41,6 +41,10 @@ class PlayerState:
     artwork_data: bytes = b""
     # Session stats summary string (updated periodically by receiver)
     session_stats: str = ""
+    # AirPlay pairing PIN (shown on connecting screen)
+    airplay_pin: str = ""
+    # AirPlay server is listening (not yet connected to a client)
+    airplay_ready: bool = False
 
     def get_interpolated_progress(self) -> int:
         """Get progress interpolated from last server update."""

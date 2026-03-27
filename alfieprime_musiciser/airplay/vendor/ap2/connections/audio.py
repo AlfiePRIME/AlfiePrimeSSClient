@@ -444,6 +444,7 @@ class Audio:
         sk_len = len(session_key)
         self.key_and_iv = True if ((sk_len % 8 == True) and not session_iv is None) else False
         self.set_audio_params(self, audio_format)
+        self._pcm_queue = None  # optional multiprocessing.Queue for PCM tap
 
         """ variables we get via RTCP from Control class """
         self.senderRtpTimestamp, self.playAtRtpTimestamp = None, None
@@ -452,11 +453,14 @@ class Audio:
     def init_audio_sink(self):
         codecLatencySec = 0
         self.pa = pyaudio.PyAudio()
+        import sys as _sys
+        # Windows audio backends need a larger buffer to avoid underruns.
+        _fpb = 2048 if _sys.platform == "win32" else 4
         self.sink = self.pa.open(format=self.pa.get_format_from_width(2),
                                  channels=self.channel_count,
                                  rate=self.sample_rate,
                                  output=True,
-                                 frames_per_buffer=4,
+                                 frames_per_buffer=_fpb,
                                  )
         # nice Python3 crash if we don't check self.sink is null. Not harmful, but should check.
         if not self.sink:
@@ -500,15 +504,47 @@ class Audio:
         if self.codec is not None:
             self.codecContext = av.codec.CodecContext.create(self.codec)
             self.codecContext.sample_rate = self.sample_rate
-            self.codecContext.channels = self.channel_count
-            self.codecContext.format = av.AudioFormat('s' + str(self.sample_size) + 'p')
+            # PyAV >=12: 'channels' is read-only; set layout instead.
+            _layouts = {1: 'mono', 2: 'stereo'}
+            try:
+                self.codecContext.channels = self.channel_count
+            except (AttributeError, TypeError):
+                try:
+                    self.codecContext.layout = av.AudioLayout(
+                        _layouts.get(self.channel_count, 'stereo')
+                    )
+                except (AttributeError, TypeError):
+                    # Fallback: set layout as string (some PyAV builds)
+                    self.codecContext.layout = _layouts.get(self.channel_count, 'stereo')
+            # Don't force decoder output format — let codec use its native
+            # format (e.g. fltp for AAC, s16p/s32p for ALAC).  The resampler
+            # handles conversion to the sink format below.
         if ed is not None:
             self.codecContext.extradata = ed
 
-        self.resampler = av.AudioResampler(
-            format=av.AudioFormat('s' + str(self.sample_size)).packed,
-            layout='stereo',
-            rate=self.sample_rate,
+        # Always resample to s16 packed (matches pyaudio sink width=2).
+        # Note: FFmpeg has no 's24' sample format, so we must not use
+        # sample_size directly — always target s16.
+        _out_fmt = av.AudioFormat('s16').packed
+        try:
+            self.resampler = av.AudioResampler(
+                format=_out_fmt,
+                layout='stereo',
+                rate=self.sample_rate,
+            )
+        except TypeError:
+            # PyAV >=12 may use channel_layout instead of layout
+            self.resampler = av.AudioResampler(
+                format=_out_fmt,
+                channel_layout='stereo',
+                rate=self.sample_rate,
+            )
+        self.audio_screen_logger.info(
+            f"Codec: {self.codec.name} ctx_rate={self.codecContext.sample_rate} "
+            f"ctx_channels={getattr(self.codecContext, 'channels', '?')} "
+            f"ctx_layout={getattr(self.codecContext, 'layout', '?')} "
+            f"ctx_format={self.codecContext.format} "
+            f"resampler_out={_out_fmt}"
         )
 
         audioDevicelatency = \
@@ -520,6 +556,15 @@ class Audio:
         ptpDelay = 0.002
         self.sample_delay = pyAudioDelay + audioDevicelatency + codecLatencySec + ptpDelay
         self.audio_screen_logger.info(f"Total sample_delay (sec): {self.sample_delay:0.5f}")
+
+        # Notify parent of actual audio format via the PCM queue
+        if self._pcm_queue is not None:
+            try:
+                self._pcm_queue.put_nowait(
+                    ("_fmt", self.sample_rate, self.sample_size, self.channel_count)
+                )
+            except Exception:
+                pass
 
     def decrypt(self, rtp):
         data = b''
@@ -558,6 +603,20 @@ class Audio:
             msg += f" seq={rtp.sequence_no} ts={rtp.timestamp} ssrc={rtp.ssrc}"
             self.audio_file_logger.debug(msg)
 
+    @staticmethod
+    def _frame_bytes(frame):
+        """Extract audio bytes from a packed AudioFrame, trimming any padding.
+
+        PyAV/FFmpeg may pad plane buffers to alignment boundaries (typically
+        128 bytes extra).  Writing that padding to pyaudio causes distortion
+        and slowed-down playback.
+        """
+        raw = bytes(frame.planes[0])
+        expected = frame.samples * frame.format.bytes * frame.layout.nb_channels
+        if len(raw) != expected:
+            return raw[:expected]
+        return raw
+
     def process(self, rtp):
         data = self.decrypt(rtp)
         if isinstance(rtp, RTP_REALTIME) and rtp.hasredundancy:
@@ -568,28 +627,50 @@ class Audio:
         if(len(data) > 0):
             try:
                 for frame in self.codecContext.decode(packet):
-                    frame = self.resampler.resample(frame)
-                    if isinstance(frame, list):
-                        if len(frame) == 1: # if no resampling was needed, resample returns [frame]
-                            frame = frame[0]
-                    return bytes(frame.planes[0])
+                    resampled = self.resampler.resample(frame)
+                    # PyAV >=12 returns list[AudioFrame]; older returns AudioFrame
+                    if isinstance(resampled, list):
+                        if len(resampled) == 0:
+                            continue
+                        if len(resampled) == 1:
+                            return self._frame_bytes(resampled[0])
+                        # Multiple output frames — concatenate all planes
+                        return b"".join(self._frame_bytes(f) for f in resampled)
+                    return self._frame_bytes(resampled)
             except ValueError as e:
                 self.audio_screen_logger.error(repr(e))
                 pass  # noqa
 
     def run(self, rcvr_cmd_pipe, control_conns):
-        # This pipe is between player (read data) and server (write data)
-        here, there = multiprocessing.Pipe()
-        if control_conns:
-            control_recv, control_send = control_conns
-        else:
-            control_recv, control_send = None, None
+        import sys, traceback, os, logging as _logging
+        # Route child-process diagnostics into the same file the receiver uses.
+        _ap_log = os.environ.get("AIRPLAY_DEBUG_LOG")
+        if _ap_log:
+            _fh = _logging.FileHandler(_ap_log)
+            _fh.setFormatter(_logging.Formatter(
+                "%(asctime)s | %(levelname)-5s | %(name)s | %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            ))
+            _logging.getLogger().addHandler(_fh)
+            _logging.getLogger().setLevel(_logging.DEBUG)
+        _log = _logging.getLogger("ap2.audio.child")
+        _log.info("Audio child process started, _pcm_queue=%r", self._pcm_queue)
+        try:
+            # This pipe is between player (read data) and server (write data)
+            here, there = multiprocessing.Pipe()
+            if control_conns:
+                control_recv, control_send = control_conns
+            else:
+                control_recv, control_send = None, None
 
-        server_thread = threading.Thread(target=self.serve, args=(there, control_recv, control_send))
-        player_thread = threading.Thread(target=self.play, args=(rcvr_cmd_pipe, here))
+            server_thread = threading.Thread(target=self.serve, args=(there, control_recv, control_send))
+            player_thread = threading.Thread(target=self.play, args=(rcvr_cmd_pipe, here))
 
-        server_thread.start()
-        player_thread.start()
+            server_thread.start()
+            player_thread.start()
+        except Exception:
+            _log.exception("Audio child process crashed")
+            traceback.print_exc(file=sys.stderr)
 
     def msec_to_playout(self, rtp_ts):
         """
@@ -620,6 +701,7 @@ class Audio:
             control_conns=None,
             isDebug=False,
             aud_params: AudioSetup = None,
+            pcm_queue=None,
     ):
         audio = cls(
             addr,
@@ -631,6 +713,7 @@ class Audio:
             isDebug,
             aud_params,
         )
+        audio._pcm_queue = pcm_queue
         # This pipe is reachable from receiver
         rcvr_cmd_pipe, audio.command_chan = multiprocessing.Pipe()
         audio_proc = multiprocessing.Process(target=audio.run, args=(rcvr_cmd_pipe, control_conns))
@@ -712,7 +795,15 @@ class AudioRealtime(Audio):
             time.sleep((self.spf / self.sample_rate) * 5)
 
     def play(self, rtspconn, serverconn):
-        self.init_audio_sink()
+        import logging as _logging
+        _log = _logging.getLogger("ap2.audio.child")
+        _log.info("AudioRealtime.play() starting init_audio_sink")
+        try:
+            self.init_audio_sink()
+        except Exception:
+            _log.exception("init_audio_sink FAILED")
+            raise
+        _log.info("AudioRealtime.play() sink ready, entering receive loop")
         RTP_SEQ_SIZE = 2**16
         RTP_ROLLOVER = RTP_SEQ_SIZE - 1  # 65535
         lastRecvdSeqNo = 0
@@ -720,6 +811,8 @@ class AudioRealtime(Audio):
         playing = False
         starting = True
         one_pkt = (self.spf / self.sample_rate) * 1e3
+        _pcm_accum = []   # accumulate frames before sending to queue
+        _pcm_frames = 0
         p_write_avg = deque(maxlen=20)
         p_write = p_write_a = None
 
@@ -787,6 +880,19 @@ class AudioRealtime(Audio):
                                 p_write_a = sum(p_write_avg) / len(p_write_avg)
 
                                 playing = True
+
+                                # Accumulate contiguous PCM and send batches
+                                # to the visualizer (~4 frames ≈ 32ms per send).
+                                if self._pcm_queue is not None:
+                                    _pcm_accum.append(audio)
+                                    _pcm_frames += 1
+                                    if _pcm_frames >= 4:
+                                        try:
+                                            self._pcm_queue.put_nowait(b"".join(_pcm_accum))
+                                        except Exception:
+                                            pass
+                                        _pcm_accum.clear()
+                                        _pcm_frames = 0
                         else:
                             playing = False
 
@@ -842,6 +948,8 @@ class AudioBuffered(Audio):
         p_write = p_write_a = None
         pkt_time_one = ((self.spf / self.sample_rate) * 1e3)
         synced = True
+        _pcm_accum = []
+        _pcm_frames = 0
 
         i = 0
         while True:
@@ -923,9 +1031,29 @@ class AudioBuffered(Audio):
 
                         i += 1
 
+                        # Accumulate contiguous PCM and send batches
+                        if self._pcm_queue is not None:
+                            _pcm_accum.append(audio)
+                            _pcm_frames += 1
+                            if _pcm_frames >= 4:
+                                try:
+                                    self._pcm_queue.put_nowait(b"".join(_pcm_accum))
+                                except Exception:
+                                    pass
+                                _pcm_accum.clear()
+                                _pcm_frames = 0
+
     # server fills the buffer, and admits packets within desired timestamp ranges.
     def serve(self, playerconn, control_recv, control_send):
-        self.init_audio_sink()
+        import logging as _logging
+        _log = _logging.getLogger("ap2.audio.child")
+        _log.info("AudioBuffered.serve() starting init_audio_sink")
+        try:
+            self.init_audio_sink()
+        except Exception:
+            _log.exception("AudioBuffered init_audio_sink FAILED")
+            raise
+        _log.info("AudioBuffered.serve() sink ready")
 
         conn, addr = self.socket.accept()
         flush_until = None

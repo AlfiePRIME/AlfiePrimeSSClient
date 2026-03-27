@@ -19,6 +19,9 @@ _hex_to_rgb_cache: dict[str, tuple[int, int, int]] = {}
 
 
 def _rgb_to_hex(r: int, g: int, b: int) -> str:
+    r = max(0, min(255, int(r)))
+    g = max(0, min(255, int(g)))
+    b = max(0, min(255, int(b)))
     key = (r, g, b)
     cached = _rgb_to_hex_cache.get(key)
     if cached is not None:

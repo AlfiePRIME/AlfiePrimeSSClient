@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random as _rng
 import time
 from functools import lru_cache
 
@@ -34,22 +35,25 @@ _HEX_LUT = [f"{i:02x}" for i in range(256)]
 
 def _fast_rgb_hex(r: float, g: float, b: float) -> str:
     """Convert float (0-1) RGB to hex string using lookup table."""
-    ri = min(255, int(r * 255))
-    gi = min(255, int(g * 255))
-    bi = min(255, int(b * 255))
+    ri = max(0, min(255, int(r * 255)))
+    gi = max(0, min(255, int(g * 255)))
+    bi = max(0, min(255, int(b * 255)))
     return f"#{_HEX_LUT[ri]}{_HEX_LUT[gi]}{_HEX_LUT[bi]}"
 
 
 def _fast_rgb_hex_int(r: int, g: int, b: int) -> str:
     """Convert int (0-255) RGB to hex string using lookup table."""
-    return f"#{_HEX_LUT[r]}{_HEX_LUT[g]}{_HEX_LUT[b]}"
+    return f"#{_HEX_LUT[max(0, min(255, r))]}{_HEX_LUT[max(0, min(255, g))]}{_HEX_LUT[max(0, min(255, b))]}"
 
 
 @lru_cache(maxsize=1024)
 def _cached_style(color: str, bold: bool = False, dim: bool = False,
                   italic: bool = False) -> Style:
     """Return a cached Style object for the given parameters."""
-    return Style(color=color, bold=bold, dim=dim, italic=italic)
+    try:
+        return Style(color=color, bold=bold, dim=dim, italic=italic)
+    except Exception:
+        return Style(color="#ffffff", bold=bold, dim=dim, italic=italic)
 
 
 # Quantize a float to 512 steps for cache-friendly lookups
@@ -582,13 +586,14 @@ def render_stereo_lights(width: int, vu_left: float, vu_right: float) -> Text:
 
 def render_braille_art(
     image_data: bytes, width: int, height: int,
-    theme: ColorTheme | None = None,
+    theme: ColorTheme | None = None, hq: bool = False,
 ) -> list[Text]:
     """Convert raw JPEG image bytes into colored Unicode braille art for terminal display.
 
     Each braille character encodes a 2x4 pixel grid, so the image is resized to
-    width*2 x height*4 pixels.  Brightness determines dot pattern; color is sampled
-    from the centre of each 2x4 block of the original RGB image.
+    width*2 x height*4 pixels.  When *hq* is True, Floyd-Steinberg dithering
+    replaces the hard threshold and colours are averaged over the full 2x4 block
+    instead of sampling the centre pixel, giving noticeably better clarity.
     """
     if _PILImage is None or _io is None:
         return []
@@ -604,44 +609,314 @@ def render_braille_art(
     img_gray = img_rgb.convert("L")
 
     rgb_pixels = img_rgb.load()
-    gray_pixels = img_gray.load()
 
     # Braille dot bit offsets for a 2-wide x 4-tall grid
-    # (col, row) -> bit
-    _dot_bits = {
-        (0, 0): 0x01, (1, 0): 0x08,
-        (0, 1): 0x02, (1, 1): 0x10,
-        (0, 2): 0x04, (1, 2): 0x20,
-        (0, 3): 0x40, (1, 3): 0x80,
-    }
+    _dot_bits = (
+        (0, 0, 0x01), (1, 0, 0x08),
+        (0, 1, 0x02), (1, 1, 0x10),
+        (0, 2, 0x04), (1, 2, 0x20),
+        (0, 3, 0x40), (1, 3, 0x80),
+    )
 
     lines: list[Text] = []
-    threshold = 128
 
-    for by in range(height):
+    if hq:
+        import numpy as np
+        gray_arr = np.array(img_gray, dtype=np.float64)
+        rgb_arr = np.array(img_rgb, dtype=np.int32)
+
+        for by in range(height):
+            line = Text()
+            for bx in range(width):
+                ox = bx * 2
+                oy = by * 4
+                code = 0
+                r_sum = 0
+                g_sum = 0
+                b_sum = 0
+                count = 0
+                for dx, dy, bit in _dot_bits:
+                    px = ox + dx
+                    py = oy + dy
+                    if px < px_w and py < px_h:
+                        old = gray_arr[py, px]
+                        new = 255.0 if old >= 128.0 else 0.0
+                        if new > 0:
+                            code |= bit
+                        err = old - new
+                        if px + 1 < px_w:
+                            gray_arr[py, px + 1] += err * 0.4375
+                        if py + 1 < px_h:
+                            if px > 0:
+                                gray_arr[py + 1, px - 1] += err * 0.1875
+                            gray_arr[py + 1, px] += err * 0.3125
+                            if px + 1 < px_w:
+                                gray_arr[py + 1, px + 1] += err * 0.0625
+                        r_sum += rgb_arr[py, px, 0]
+                        g_sum += rgb_arr[py, px, 1]
+                        b_sum += rgb_arr[py, px, 2]
+                        count += 1
+
+                char = chr(0x2800 + code)
+                if count > 0:
+                    color = _fast_rgb_hex_int(
+                        min(255, r_sum // count),
+                        min(255, g_sum // count),
+                        min(255, b_sum // count),
+                    )
+                else:
+                    color = "#000000"
+                line.append(char, _cached_style(color))
+            lines.append(line)
+    else:
+        gray_pixels = img_gray.load()
+        threshold = 128
+        for by in range(height):
+            line = Text()
+            for bx in range(width):
+                ox = bx * 2
+                oy = by * 4
+                code = 0
+                for dx, dy, bit in _dot_bits:
+                    px = ox + dx
+                    py = oy + dy
+                    if px < px_w and py < px_h and gray_pixels[px, py] >= threshold:
+                        code |= bit
+                char = chr(0x2800 + code)
+                cx = min(ox + 1, px_w - 1)
+                cy = min(oy + 2, px_h - 1)
+                r, g, b = rgb_pixels[cx, cy]
+                color = _fast_rgb_hex_int(r, g, b)
+                line.append(char, _cached_style(color))
+            lines.append(line)
+
+    return lines
+
+
+# ─── Confetti / firework characters ───────────────────────────────────────────
+
+_CONFETTI_CHARS = "✦✧◆◇⬥⬦★☆❋❊❉❈•·"
+_FIREWORK_BURST = ["✴", "✳", "✵", "❇", "✺", "✹", "✸", "✷"]
+_FIREWORK_TRAIL = ["│", "╎", "╏", "┃", "╵"]
+_FIREWORK_SPARK = ["·", "∙", "•", "*", "✧"]
+
+
+def render_art_scene(
+    image_data: bytes, scene_w: int, scene_h: int,
+    vu_left: float, vu_right: float,
+    beat_count: int, beat_intensity: float, bpm: float,
+    particles: list[dict],
+    theme: ColorTheme | None = None,
+) -> list[Text]:
+    """Render centered album art (~40% of area) surrounded by party effects.
+
+    *particles* is a mutable list managed by the caller (persists across frames).
+    Each particle dict has: type, x, y, dx, dy, age, max_age, color, char.
+    """
+    th = theme or _default_theme
+    t = time.time()
+    avg_level = (vu_left + vu_right) / 2.0
+    energy = min(1.0, avg_level + beat_intensity * 0.5)
+    _sin = math.sin
+
+    # ── Centered square art dimensions (~40% of area) ──
+    target_area = scene_w * scene_h * 0.4
+    art_side = int(math.sqrt(target_area))
+    art_w = min(art_side, scene_w - 4)
+    art_h = min(art_side, scene_h - 2)
+    art_w = max(art_w, 12)
+    art_h = max(art_h, 6)
+
+    art_x = max(0, (scene_w - art_w) // 2)
+    art_y = max(0, (scene_h - art_h) // 2)
+
+    art_lines = render_braille_art(image_data, art_w, art_h, theme=th, hq=True)
+
+    # ── Build scene grid ──
+
+    # BPM-scaled animation
+    if bpm <= 0 or bpm < 160:
+        beat_div = 1
+    elif bpm < 240:
+        beat_div = 2
+    elif bpm < 360:
+        beat_div = 3
+    else:
+        beat_div = 4
+    bounce = (beat_count // beat_div) % 4
+
+    # ── Dancer definitions (compact, 3 rows x 3 chars, 4 poses) ──
+    dancer_types = [
+        [[" o/", "/| ", "/ \\"], ["\\o ", " |\\", "/ \\"], ["\\o/", " | ", "/ \\"], [" o ", "/|\\", "/ \\"]],
+        [["\\o/", " | ", "/ \\"], ["_o_", " | ", "| |"], ["\\o/", " | ", "/ \\"], [" o ", "-|-", "/ \\"]],
+        [["\\o/", " | ", "< >"], [" o>", " | ", " >\\"], ["/o\\", " | ", "< >"], ["<o ", " | ", "/< "]],
+        [["*o*", "/|\\", "/ \\"], ["°o°", "\\|/", "\\ /"], ["*o*", "/|\\", ">< "], ["°o°", "\\|/", "/ \\"]],
+        [[" o/", "/| ", "/Y\\"], ["\\o ", " |\\", "/Y\\"], ["\\o/", " | ", "/ \\"], [" o ", "/|\\", "/A\\"]],
+        [["\\o/", " | ", ")V("], ["_o_", " | ", "/V\\"], ["\\o/", " | ", ")V("], [" o ", "-|-", "/A\\"]],
+        [["\\o/", " | ", ")X("], [" o>", " | ", "/X\\"], ["/o\\", " | ", ")X("], ["<o ", " | ", "/X\\"]],
+        [["*o*", "/|\\", "/Y\\"], ["°o°", "\\|/", "\\A/"], ["*o*", "/|\\", ")X("], ["°o°", "\\|/", "/Y\\"]],
+    ]
+
+    # Spawn dancers along the bottom and sides (avoiding art region)
+    dancers: list[tuple[int, int, int]] = []  # (x, y, type_idx)
+    _rng_state = _rng.Random(42)
+    bottom_y = art_y + art_h + 1
+    if bottom_y + 3 <= scene_h:
+        x = 1
+        while x < scene_w - 4:
+            dancers.append((x, bottom_y, _rng_state.randint(0, len(dancer_types) - 1)))
+            x += max(4, int(8 - 4 * energy))
+    if art_y >= 4:
+        x = 2
+        while x < scene_w - 4:
+            dancers.append((x, max(0, art_y - 4), _rng_state.randint(0, len(dancer_types) - 1)))
+            x += max(4, int(8 - 4 * energy))
+    if art_x >= 5:
+        y = art_y
+        while y + 3 <= art_y + art_h:
+            dancers.append((1, y, _rng_state.randint(0, len(dancer_types) - 1)))
+            y += 4
+    if art_x + art_w + 4 < scene_w:
+        y = art_y
+        while y + 3 <= art_y + art_h:
+            dancers.append((art_x + art_w + 2, y, _rng_state.randint(0, len(dancer_types) - 1)))
+            y += 4
+
+    # ── Spawn new particles on beats ──
+    if beat_intensity > 0.5:
+        n_confetti = int(3 + 8 * beat_intensity)
+        for _ in range(n_confetti):
+            sx = _rng.randint(0, scene_w - 1)
+            sy = _rng.randint(0, max(0, scene_h // 3))
+            particles.append({
+                'type': 'confetti', 'x': float(sx), 'y': float(sy),
+                'dx': _rng.uniform(-0.8, 0.8), 'dy': _rng.uniform(0.3, 1.2),
+                'age': 0, 'max_age': _rng.randint(15, 40),
+                'char': _rng.choice(_CONFETTI_CHARS),
+                'hue': _rng.random(),
+            })
+    if beat_intensity > 0.7 and _rng.random() < 0.6:
+        fx = _rng.randint(3, scene_w - 4)
+        particles.append({
+            'type': 'firework', 'x': float(fx), 'y': float(scene_h - 1),
+            'dx': _rng.uniform(-0.2, 0.2), 'dy': -_rng.uniform(1.5, 3.0),
+            'age': 0, 'max_age': _rng.randint(8, 15),
+            'char': _rng.choice(_FIREWORK_TRAIL),
+            'hue': _rng.random(),
+        })
+
+    # ── Update particles ──
+    new_particles: list[dict] = []
+    spawn_burst: list[dict] = []
+    for p in particles:
+        p['age'] += 1
+        if p['age'] > p['max_age']:
+            if p['type'] == 'firework':
+                for _ in range(_rng.randint(6, 14)):
+                    spawn_burst.append({
+                        'type': 'spark', 'x': p['x'], 'y': p['y'],
+                        'dx': _rng.uniform(-1.5, 1.5), 'dy': _rng.uniform(-1.5, 0.8),
+                        'age': 0, 'max_age': _rng.randint(5, 12),
+                        'char': _rng.choice(_FIREWORK_SPARK),
+                        'hue': p['hue'],
+                    })
+            continue
+        p['x'] += p['dx']
+        p['y'] += p['dy']
+        if p['type'] == 'confetti':
+            p['dy'] += 0.05
+            p['dx'] *= 0.95
+        elif p['type'] == 'spark':
+            p['dy'] += 0.12
+        if 0 <= p['x'] < scene_w and 0 <= p['y'] < scene_h:
+            new_particles.append(p)
+    new_particles.extend(spawn_burst)
+    if len(new_particles) > 200:
+        new_particles = new_particles[-200:]
+    particles.clear()
+    particles.extend(new_particles)
+
+    # ── Compose scene line by line ──
+    lines: list[Text] = []
+    beat_hue_off = beat_intensity * 0.08
+
+    for row in range(scene_h):
         line = Text()
-        for bx in range(width):
-            # Pixel origin for this braille cell
-            ox = bx * 2
-            oy = by * 4
+        col = 0
+        while col < scene_w:
+            if art_y <= row < art_y + art_h and art_x <= col < art_x + art_w:
+                art_row = row - art_y
+                if art_row < len(art_lines):
+                    art_col = col - art_x
+                    end_col = min(art_x + art_w, scene_w)
+                    art_end = end_col - art_x
+                    segment = art_lines[art_row][art_col:art_end]
+                    line.append_text(segment)
+                    col = end_col
+                else:
+                    line.append(" ", _STYLE_EMPTY)
+                    col += 1
+                continue
 
-            # Build braille codepoint from luminance
-            code = 0
-            for (dx, dy), bit in _dot_bits.items():
-                px = ox + dx
-                py = oy + dy
-                if px < px_w and py < px_h and gray_pixels[px, py] >= threshold:
-                    code |= bit
+            dancer_hit = False
+            for dx_pos, dy_pos, dt in dancers:
+                for r_off in range(3):
+                    if row == dy_pos + r_off and dx_pos <= col < dx_pos + 3:
+                        frame = dancer_types[dt][bounce]
+                        row_str = frame[r_off]
+                        c_off = col - dx_pos
+                        if c_off < len(row_str):
+                            ch = row_str[c_off]
+                            qhue = int(((t * 0.15 + dx_pos * 0.02 + beat_hue_off) % 1.0) * 256) / 256
+                            brightness = (0.4 + 0.4 * energy) * max(0.5, 1.0 - abs(row - scene_h) * 0.02)
+                            qval = int(min(brightness, 0.9) * 64) / 64
+                            color = _hsv_to_hex_cached(qhue, 0.5, qval)
+                            line.append(ch, _cached_style(color))
+                            dancer_hit = True
+                            break
+                if dancer_hit:
+                    break
 
-            char = chr(0x2800 + code)
+            if dancer_hit:
+                col += 1
+                continue
 
-            # Sample colour from centre of the 2x4 block
-            cx = min(ox + 1, px_w - 1)
-            cy = min(oy + 2, px_h - 1)
-            r, g, b = rgb_pixels[cx, cy]
-            color = _fast_rgb_hex_int(r, g, b)
+            particle_hit = False
+            px_int = col
+            py_int = row
+            for p in particles:
+                if int(p['x']) == px_int and int(p['y']) == py_int:
+                    fade = 1.0 - (p['age'] / p['max_age'])
+                    qhue = int(((p['hue'] + t * 0.1) % 1.0) * 256) / 256
+                    qval = int(min(fade * 0.9, 1.0) * 64) / 64
+                    sat = 1.0 if p['type'] != 'spark' else 0.6
+                    color = _hsv_to_hex_cached(qhue, sat, qval)
+                    line.append(p['char'], _cached_style(color, bold=bool(fade > 0.5)))
+                    particle_hit = True
+                    break
 
-            line.append(char, _cached_style(color))
+            if particle_hit:
+                col += 1
+                continue
+
+            hue = (t * 0.06 + col * 0.008 + row * 0.012 + beat_hue_off) % 1.0
+            pulse = 0.5 + 0.5 * _sin(t * 2.5 + col * 0.3 + row * 0.5)
+            brightness = (0.04 + 0.08 * avg_level) * (0.5 + 0.5 * pulse)
+            edge_dist = min(col, scene_w - 1 - col, row, scene_h - 1 - row)
+            if edge_dist <= 1:
+                brightness += 0.15 + 0.2 * avg_level * pulse
+            qhue = int(hue * 256) / 256
+            qval = int(min(brightness, 0.5) * 64) / 64
+            color = _hsv_to_hex_cached(qhue, 0.7, qval)
+            if edge_dist <= 1:
+                line.append("░", _cached_style(color))
+            else:
+                if int((t * 7 + col * 17 + row * 31) * 100) % 400 == 0:
+                    line.append("·", _cached_style(color))
+                else:
+                    line.append(" ", _STYLE_EMPTY)
+            col += 1
+
         lines.append(line)
 
     return lines

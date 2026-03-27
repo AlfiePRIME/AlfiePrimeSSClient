@@ -23,6 +23,12 @@ class Config:
     server_url: str = ""  # only used when mode == "connect"
     listen_port: int = 8928  # only used when mode == "listen"
     client_id: str = ""  # stable ID so Music Assistant remembers this device
+    # UI state (persisted across restarts)
+    art_mode: bool = False
+    art_calm: bool = False
+    # Settings
+    auto_play: bool = False
+    auto_volume: int = -1  # -1 = disabled, 0-100 = set volume on connect
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)

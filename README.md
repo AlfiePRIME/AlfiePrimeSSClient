@@ -23,6 +23,8 @@ A party-themed TUI/GUI music player and [SendSpin](https://github.com/music-assi
 - **Two connection modes**:
   - **Listen (mDNS)** — advertises via `_sendspin._tcp.local.` so Music Assistant discovers and connects automatically (recommended)
   - **Connect** — connects to a specific SendSpin server URL
+- **Settings menu** — in-app settings overlay (`/` key) with animated CRT background, configurable auto-play and auto-volume on connect
+- **Persistent UI state** — remembers art mode, calm mode, and settings across restarts
 - **Persistent device identity** — remembers its client ID across restarts so Music Assistant recognises it as the same speaker
 - **Standalone GUI mode** — runs in its own tkinter window (separate process) so audio never stutters from rendering load
 - **Daemon mode** — run as a headless service with `--daemon` for background audio playback without any UI
@@ -93,9 +95,11 @@ alfieprime-musiciser-app
 | `B` | Previous track |
 | `S` | Toggle shuffle |
 | `R` | Cycle repeat (off / all / one) |
-| `A` | Toggle full-screen album art mode |
+| `A` | Toggle full-screen album art mode (party scene with dancers, confetti, fireworks) |
+| `C` | Toggle calm mode in art view (full-screen art only, no party effects) |
 | `↑` | Volume up |
 | `↓` | Volume down |
+| `/` | Open settings menu (auto play, auto volume) |
 | `Q` | Quit (pauses playback on Music Assistant first) |
 
 ## Configuration

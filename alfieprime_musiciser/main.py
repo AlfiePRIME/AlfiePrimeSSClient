@@ -65,7 +65,7 @@ async def _run_with_config(
         await asyncio.gather(receiver.start(), stop_event.wait())
         return
 
-    tui = BoomBoxTUI(visualizer, gui=gui)
+    tui = BoomBoxTUI(visualizer, gui=gui, config=config)
 
     server_url = config.server_url if config.mode == "connect" else None
 

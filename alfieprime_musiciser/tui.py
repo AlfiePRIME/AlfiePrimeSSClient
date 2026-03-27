@@ -28,6 +28,7 @@ from rich.table import Table
 from rich.text import Text
 
 from alfieprime_musiciser.colors import ColorTheme, _hex_to_rgb, _hsv_to_rgb, _rgb_to_hex
+from alfieprime_musiciser.config import Config
 from alfieprime_musiciser.state import PlayerState
 from alfieprime_musiciser.visualizer import AudioVisualizer
 from alfieprime_musiciser.renderer import (
@@ -44,6 +45,7 @@ from alfieprime_musiciser.renderer import (
     render_codec_info,
     render_stats_info,
     render_braille_art,
+    render_art_scene,
     _process as _psutil_process,
 )
 
@@ -108,11 +110,12 @@ STANDBY_TIMEOUT = 5 * 60  # seconds
 class BoomBoxTUI:
     """The party-themed boom box terminal UI."""
 
-    def __init__(self, visualizer: AudioVisualizer, gui: bool = False) -> None:
+    def __init__(self, visualizer: AudioVisualizer, gui: bool = False, config: Config | None = None) -> None:
         self._visualizer = visualizer
         self.state = PlayerState()
         self._running = False
         self._gui_mode = gui
+        self._config = config
         self._gui_window = None  # TerminalEmulator instance when in GUI mode
         self._command_callback: Callable[[str], None] | None = None
         # Track button positions for mouse clicks: {name: (col_start, col_end)}
@@ -127,8 +130,14 @@ class BoomBoxTUI:
         self._standby_active: bool = False
         self._standby_phrase_idx: int = 0
         self._standby_phrase_time: float = 0.0
-        # Full-screen album art mode
-        self._art_mode: bool = False
+        # Full-screen album art mode (restore from config)
+        self._art_mode: bool = config.art_mode if config else False
+        self._art_calm: bool = config.art_calm if config else False
+        self._art_particles: list[dict] = []
+        # Settings menu
+        self._settings_open: bool = False
+        self._settings_cursor: int = 0
+        self._settings_items: list[str] = ["auto_play", "auto_volume"]
         # Cached Rich Console instances (reused across frames)
         self._render_console: Console | None = None
         self._render_console_size: tuple[int, int] = (0, 0)
@@ -168,12 +177,181 @@ class BoomBoxTUI:
         sys.stdout.write(f"\x1b]0;{title}\x07")
 
     def _build_layout(self) -> Group:
+        if self._settings_open:
+            return self._build_settings_layout()
         if self._art_mode and self.state.artwork_data:
             return self._build_art_layout()
         return self._build_main_layout()
 
+    def _save_ui_state(self) -> None:
+        """Persist UI state (art mode, calm mode) to config file."""
+        if self._config is None:
+            return
+        changed = False
+        if self._config.art_mode != self._art_mode:
+            self._config.art_mode = self._art_mode
+            changed = True
+        if self._config.art_calm != self._art_calm:
+            self._config.art_calm = self._art_calm
+            changed = True
+        if changed:
+            self._config.save()
+
+    def _build_settings_layout(self) -> Group:
+        """Render settings menu with animated CRT background."""
+        self._term_width, self._term_height = self._get_terminal_size()
+        term_w = self._term_width
+        term_h = self._term_height
+        t = time.time()
+        th = self.state.theme
+
+        lines: list[Text] = []
+
+        # ── Build animated CRT background lines ──
+        for row in range(term_h):
+            lines.append(Text())
+
+        # Settings panel content
+        cfg = self._config or Config()
+        menu_items = [
+            ("Auto Play on Connect", "auto_play", cfg.auto_play),
+            ("Auto Volume on Connect", "auto_volume", cfg.auto_volume),
+        ]
+
+        panel_w = 50
+        panel_h = len(menu_items) * 2 + 7  # title + items + spacing + footer
+        panel_x = max(0, (term_w - panel_w - 2) // 2)
+        panel_y = max(0, (term_h - panel_h) // 2)
+
+        # ── Build CRT background with scanlines ──
+        bg_lines: list[Text] = []
+        for row in range(term_h):
+            line = Text()
+            # Animated scanline effect
+            scan_phase = (t * 2 + row * 0.1) % 1.0
+            flicker = 0.03 + 0.02 * math.sin(t * 8 + row * 0.7)
+            br = int(255 * flicker)
+
+            # Horizontal interference bands
+            band_phase = math.sin(t * 1.5 + row * 0.15) * 0.5 + 0.5
+            if band_phase > 0.85:
+                br = int(br * 2.5)
+
+            br = max(0, min(255, br))
+            base_c = f"#{br:02x}{br:02x}{br:02x}"
+
+            # Build background chars
+            chars = []
+            for col in range(term_w):
+                noise = random.random()
+                if noise < 0.02:
+                    chars.append(random.choice("░▒"))
+                elif noise < 0.04:
+                    chars.append("·")
+                else:
+                    chars.append(" ")
+            line.append("".join(chars), Style(color=base_c))
+            bg_lines.append(line)
+
+        # ── Overlay settings panel onto background ──
+        # Build panel content lines
+        panel_lines: list[Text] = []
+
+        # Title
+        title_line = Text(justify="center")
+        title_line.append("━" * panel_w, Style(color=th.primary, bold=True))
+        panel_lines.append(title_line)
+
+        header = Text(justify="center")
+        header.append(" ◈ SETTINGS ◈ ", Style(color=th.primary, bold=True))
+        panel_lines.append(header)
+
+        title_line2 = Text(justify="center")
+        title_line2.append("━" * panel_w, Style(color=th.primary, bold=True))
+        panel_lines.append(title_line2)
+
+        panel_lines.append(Text(""))
+
+        # Menu items
+        for i, (label, key, value) in enumerate(menu_items):
+            item = Text()
+            selected = i == self._settings_cursor
+
+            if selected:
+                item.append("  ▸ ", Style(color=th.accent, bold=True))
+            else:
+                item.append("    ", Style(color="#444444"))
+
+            item.append(f"{label:<30}", Style(
+                color=th.secondary if selected else "#888888",
+                bold=selected,
+            ))
+
+            if key == "auto_volume":
+                if value == -1:
+                    val_str = "OFF"
+                    val_color = "#666666"
+                else:
+                    val_str = f"{value}%"
+                    val_color = th.accent
+                item.append(f" {val_str:>6}", Style(color=val_color, bold=selected))
+                if selected:
+                    item.append("  ◂▸", Style(color="#555555"))
+            else:
+                val_str = "ON" if value else "OFF"
+                val_color = th.accent if value else "#666666"
+                item.append(f" {val_str:>6}", Style(color=val_color, bold=selected))
+
+            panel_lines.append(item)
+            panel_lines.append(Text(""))  # spacing between items
+
+        # Footer
+        footer = Text(justify="center")
+        footer.append("━" * panel_w, Style(color=th.primary_dim))
+        panel_lines.append(footer)
+
+        hint = Text(justify="center")
+        hint.append("[↑↓] Navigate  ", Style(color="#555555"))
+        hint.append("[Enter/Space] Toggle  ", Style(color="#555555"))
+        hint.append("[◂▸] Adjust  ", Style(color="#555555"))
+        hint.append("[/] Close", Style(color="#555555"))
+        panel_lines.append(hint)
+
+        # ── Compose: overlay panel on CRT background ──
+        result_lines: list[Text] = []
+        for row in range(term_h):
+            panel_row_idx = row - panel_y
+            if 0 <= panel_row_idx < len(panel_lines):
+                # Build line: background | panel | background
+                line = Text()
+                bg_text = bg_lines[row].plain if row < len(bg_lines) else " " * term_w
+                # Left background
+                left_bg = bg_text[:panel_x]
+                line.append(left_bg, Style(color="#222222"))
+                # Panel background
+                panel_content = panel_lines[panel_row_idx]
+                # Pad panel to panel_w
+                content_plain = panel_content.plain
+                pad_needed = panel_w - len(content_plain)
+                panel_bg_style = Style(bgcolor="#0a0a0a")
+                line.append(" ", panel_bg_style)
+                line.append_text(panel_content)
+                if pad_needed > 0:
+                    line.append(" " * pad_needed, panel_bg_style)
+                line.append(" ", panel_bg_style)
+                # Right background
+                right_start = panel_x + panel_w + 2
+                right_bg = bg_text[right_start:term_w]
+                if right_bg:
+                    line.append(right_bg, Style(color="#222222"))
+                result_lines.append(line)
+            else:
+                result_lines.append(bg_lines[row] if row < len(bg_lines) else Text(" " * term_w))
+
+        return Group(*result_lines)
+
     def _build_art_layout(self) -> Group:
-        """Full-screen album art mode: large braille art, progress, volume, controls."""
+        """Full-screen album art mode with party scene or calm view."""
         self._term_width, self._term_height = self._get_terminal_size()
         term_w = self._term_width
         term_h = self._term_height
@@ -183,32 +361,57 @@ class BoomBoxTUI:
 
         parts: list = []
 
-        # ── Title banner ──
-        parts.append(Panel(
-            render_title_banner(padded_inner, theme=th),
-            border_style=th.border_title, padding=(0, 1),
-        ))
+        # Reserve rows: now_playing(~5) + volume(3) + hint(1) + panel borders(~6)
+        reserved_rows = 5 + 3 + 1 + 6
 
-        # ── Large braille album art (fills most of the screen) ──
-        # Reserve rows: title(3) + now_playing(~5) + volume(4) + controls(3) + borders
-        reserved_rows = 3 + 5 + 4 + 3 + 4
-        art_h = max(8, term_h - reserved_rows)
-        art_w = max(20, flush_inner)
-        art_lines = render_braille_art(self.state.artwork_data, art_w, art_h, theme=th)
-        if art_lines:
+        if self._art_calm:
+            # ── Calm mode: full-screen HQ braille art (no effects) ──
             parts.append(Panel(
-                Group(*art_lines),
-                title=" \u2592 ALBUM ART \u2592 ",
-                title_align="center", border_style=th.border_now_playing, padding=(0, 0),
+                render_title_banner(padded_inner, theme=th),
+                border_style=th.border_title, padding=(0, 1),
             ))
+            reserved_rows += 3  # title banner
+            art_h = max(8, term_h - reserved_rows)
+            art_w = max(20, flush_inner)
+            art_lines = render_braille_art(
+                self.state.artwork_data, art_w, art_h, theme=th, hq=True,
+            )
+            if art_lines:
+                parts.append(Panel(
+                    Group(*art_lines),
+                    title=" \u2592 ALBUM ART \u2592 ",
+                    title_align="center", border_style=th.border_now_playing, padding=(0, 0),
+                ))
+            else:
+                placeholder = Text("No artwork available", style=Style(color="#555555", italic=True))
+                parts.append(Panel(
+                    placeholder,
+                    title=" \u2592 ALBUM ART \u2592 ",
+                    title_align="center", border_style=th.border_now_playing, padding=(0, 0),
+                ))
         else:
-            # No art rendered — show placeholder
-            placeholder = Text("No artwork available", style=Style(color="#555555", italic=True))
-            parts.append(Panel(
-                placeholder,
-                title=" \u2592 ALBUM ART \u2592 ",
-                title_align="center", border_style=th.border_now_playing, padding=(0, 0),
-            ))
+            # ── Party mode: centered art square with dancers/confetti/fireworks ──
+            bands, peaks, vu_left, vu_right = self._visualizer.get_spectrum()
+            beat_count, beat_intensity = self._visualizer.get_beat()
+            bpm = self._visualizer.get_bpm()
+            scene_h = max(8, term_h - reserved_rows)
+            scene_w = max(20, flush_inner)
+            scene_lines = render_art_scene(
+                self.state.artwork_data, scene_w, scene_h,
+                vu_left, vu_right, beat_count, beat_intensity, bpm,
+                self._art_particles, theme=th,
+            )
+            if scene_lines:
+                parts.append(Panel(
+                    Group(*scene_lines),
+                    border_style=th.border_now_playing, padding=(0, 0),
+                ))
+            else:
+                placeholder = Text("No artwork available", style=Style(color="#555555", italic=True))
+                parts.append(Panel(
+                    placeholder,
+                    border_style=th.border_now_playing, padding=(0, 0),
+                ))
 
         # ── Now playing + progress bar ──
         np_lines = render_now_playing(
@@ -244,12 +447,17 @@ class BoomBoxTUI:
         # ── Key hint at bottom ──
         hint = Text()
         hint.append(" [A]rt mode ", Style(color="#666666"))
+        if self._art_calm:
+            hint.append("[C]alm:ON ", Style(color="#66aa66"))
+        else:
+            hint.append("[C]alm ", Style(color="#444444"))
         hint.append("[P]lay ", Style(color="#444444"))
         hint.append("[N]ext ", Style(color="#444444"))
         hint.append("[B]ack ", Style(color="#444444"))
         hint.append("[S]huf ", Style(color="#444444"))
         hint.append("[R]epeat ", Style(color="#444444"))
         hint.append("[↑↓]Vol ", Style(color="#444444"))
+        hint.append("[/]Settings ", Style(color="#444444"))
         hint.append("[Q]uit", Style(color="#444444"))
         parts.append(hint)
 
@@ -443,6 +651,28 @@ class BoomBoxTUI:
     def _handle_key(self, key: str) -> None:
         """Handle a single keypress (including special keys like 'arrow_up')."""
         k = key.lower()
+
+        # ── Settings menu controls ──
+        if self._settings_open:
+            if k == "/" or k == "escape":
+                self._settings_open = False
+            elif k == "arrow_up":
+                self._settings_cursor = (self._settings_cursor - 1) % len(self._settings_items)
+            elif k == "arrow_down":
+                self._settings_cursor = (self._settings_cursor + 1) % len(self._settings_items)
+            elif k in (" ", "\r", "\n", "enter"):
+                self._settings_toggle_current()
+            elif k == "arrow_left":
+                self._settings_adjust(-1)
+            elif k == "arrow_right":
+                self._settings_adjust(1)
+            return
+
+        if k == "/":
+            self._settings_open = True
+            self._settings_cursor = 0
+            return
+
         if k == "p":
             self._fire_command("play_pause")
         elif k == "n":
@@ -455,10 +685,42 @@ class BoomBoxTUI:
             self._fire_command("repeat")
         elif k == "a":
             self._art_mode = not self._art_mode
+            self._art_particles.clear()
+            self._save_ui_state()
+        elif k == "c" and self._art_mode:
+            self._art_calm = not self._art_calm
+            self._art_particles.clear()
+            self._save_ui_state()
         elif k == "arrow_up":
             self._fire_command("volume_up")
         elif k == "arrow_down":
             self._fire_command("volume_down")
+
+    def _settings_toggle_current(self) -> None:
+        """Toggle the currently selected settings item."""
+        cfg = self._config or Config()
+        item = self._settings_items[self._settings_cursor]
+        if item == "auto_play":
+            cfg.auto_play = not cfg.auto_play
+        elif item == "auto_volume":
+            # Toggle between -1 (off) and 50 (default)
+            cfg.auto_volume = -1 if cfg.auto_volume >= 0 else 50
+        if self._config:
+            self._config = cfg
+            cfg.save()
+
+    def _settings_adjust(self, direction: int) -> None:
+        """Adjust a numeric setting left/right."""
+        cfg = self._config or Config()
+        item = self._settings_items[self._settings_cursor]
+        if item == "auto_volume":
+            if cfg.auto_volume < 0:
+                cfg.auto_volume = 50  # enable at 50%
+            else:
+                cfg.auto_volume = max(0, min(100, cfg.auto_volume + direction * 5))
+            if self._config:
+                self._config = cfg
+                cfg.save()
 
     def _handle_mouse_click(self, col: int, row: int) -> None:
         """Handle a mouse click at terminal coordinates (1-based)."""
@@ -500,6 +762,12 @@ class BoomBoxTUI:
             elif data[i:i + 3] == b"\x1b[B":
                 self._handle_key("arrow_down")
                 i += 3
+            elif data[i:i + 3] == b"\x1b[C":
+                self._handle_key("arrow_right")
+                i += 3
+            elif data[i:i + 3] == b"\x1b[D":
+                self._handle_key("arrow_left")
+                i += 3
             elif data[i:i + 1] == b"\x1b":
                 # Skip other escape sequences
                 i += 1
@@ -513,7 +781,7 @@ class BoomBoxTUI:
                 i += 1
             else:
                 ch = data[i:i + 1]
-                if ch == b"q" or ch == b"Q":
+                if (ch == b"q" or ch == b"Q") and not self._settings_open:
                     self.stop()
                     os.kill(os.getpid(), signal.SIGINT)
                 else:

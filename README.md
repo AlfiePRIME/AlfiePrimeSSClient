@@ -93,9 +93,10 @@ alfieprime-musiciser-app
 | `B` | Previous track |
 | `S` | Toggle shuffle |
 | `R` | Cycle repeat (off / all / one) |
+| `A` | Toggle full-screen album art mode |
 | `↑` | Volume up |
 | `↓` | Volume down |
-| `Q` | Quit |
+| `Q` | Quit (pauses playback on Music Assistant first) |
 
 ## Configuration
 

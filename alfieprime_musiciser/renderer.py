@@ -178,7 +178,8 @@ def render_transport_controls(
     text.append("[P]lay ", _STYLE_HINT)
     text.append("[N]ext ", _STYLE_HINT)
     text.append("[R]epeat ", _STYLE_HINT)
-    text.append("[↑↓]Vol", _STYLE_HINT)
+    text.append("[↑↓]Vol ", _STYLE_HINT)
+    text.append("[A]rt", _STYLE_HINT)
 
     return text, buttons
 

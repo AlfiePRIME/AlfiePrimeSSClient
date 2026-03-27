@@ -44,6 +44,7 @@ from alfieprime_musiciser.renderer import (
     render_codec_info,
     render_stats_info,
     render_braille_art,
+    _process as _psutil_process,
 )
 
 
@@ -126,6 +127,8 @@ class BoomBoxTUI:
         self._standby_active: bool = False
         self._standby_phrase_idx: int = 0
         self._standby_phrase_time: float = 0.0
+        # Full-screen album art mode
+        self._art_mode: bool = False
         # Cached Rich Console instances (reused across frames)
         self._render_console: Console | None = None
         self._render_console_size: tuple[int, int] = (0, 0)
@@ -165,6 +168,94 @@ class BoomBoxTUI:
         sys.stdout.write(f"\x1b]0;{title}\x07")
 
     def _build_layout(self) -> Group:
+        if self._art_mode and self.state.artwork_data:
+            return self._build_art_layout()
+        return self._build_main_layout()
+
+    def _build_art_layout(self) -> Group:
+        """Full-screen album art mode: large braille art, progress, volume, controls."""
+        self._term_width, self._term_height = self._get_terminal_size()
+        term_w = self._term_width
+        term_h = self._term_height
+        padded_inner = max(term_w - 4, 20)
+        flush_inner = max(term_w - 2, 20)
+        th = self.state.theme
+
+        parts: list = []
+
+        # ── Title banner ──
+        parts.append(Panel(
+            render_title_banner(padded_inner, theme=th),
+            border_style=th.border_title, padding=(0, 1),
+        ))
+
+        # ── Large braille album art (fills most of the screen) ──
+        # Reserve rows: title(3) + now_playing(~5) + volume(4) + controls(3) + borders
+        reserved_rows = 3 + 5 + 4 + 3 + 4
+        art_h = max(8, term_h - reserved_rows)
+        art_w = max(20, flush_inner)
+        art_lines = render_braille_art(self.state.artwork_data, art_w, art_h, theme=th)
+        if art_lines:
+            parts.append(Panel(
+                Group(*art_lines),
+                title=" \u2592 ALBUM ART \u2592 ",
+                title_align="center", border_style=th.border_now_playing, padding=(0, 0),
+            ))
+        else:
+            # No art rendered — show placeholder
+            placeholder = Text("No artwork available", style=Style(color="#555555", italic=True))
+            parts.append(Panel(
+                placeholder,
+                title=" \u2592 ALBUM ART \u2592 ",
+                title_align="center", border_style=th.border_now_playing, padding=(0, 0),
+            ))
+
+        # ── Now playing + progress bar ──
+        np_lines = render_now_playing(
+            self.state.title or "Waiting for music...",
+            self.state.artist, self.state.album,
+            self.state.get_interpolated_progress(), self.state.duration_ms, padded_inner,
+            theme=th,
+        )
+        controls_text, buttons = render_transport_controls(
+            self.state.is_playing, self.state.shuffle, self.state.repeat_mode,
+            self.state.supported_commands, theme=th,
+        )
+        content_col_offset = 3
+        self._button_regions = {
+            name: (c0 + content_col_offset, c1 + content_col_offset)
+            for name, (c0, c1) in buttons.items()
+        }
+        parts.append(Panel(
+            Group(*np_lines, Text(""), controls_text),
+            border_style=th.border_now_playing, padding=(0, 1),
+        ))
+
+        # ── Volume gauge ──
+        vol_lines = render_volume_gauge(
+            self.state.volume, self.state.muted, padded_inner, height=2, theme=th,
+        )
+        parts.append(Panel(
+            Group(*vol_lines),
+            title=" \u266b VOLUME \u266b ",
+            title_align="center", border_style=th.warm, padding=(0, 0),
+        ))
+
+        # ── Key hint at bottom ──
+        hint = Text()
+        hint.append(" [A]rt mode ", Style(color="#666666"))
+        hint.append("[P]lay ", Style(color="#444444"))
+        hint.append("[N]ext ", Style(color="#444444"))
+        hint.append("[B]ack ", Style(color="#444444"))
+        hint.append("[S]huf ", Style(color="#444444"))
+        hint.append("[R]epeat ", Style(color="#444444"))
+        hint.append("[↑↓]Vol ", Style(color="#444444"))
+        hint.append("[Q]uit", Style(color="#444444"))
+        parts.append(hint)
+
+        return Group(*parts)
+
+    def _build_main_layout(self) -> Group:
         # Query real terminal size each frame
         self._term_width, self._term_height = self._get_terminal_size()
         term_w = self._term_width
@@ -239,10 +330,12 @@ class BoomBoxTUI:
         # ── Calculate available rows for variable-height sections ──
         # Fixed-height rows used by other panels:
         #   frame_top(1) + title(3) + now_playing(np_panel_content_lines+2)
-        #   + VU(4) + party_lights(4) + status(3) + frame_bot(1)
+        #   + VU(4) + party_lights(4) + status(2 or 3) + frame_bot(1)
         #   + spectrum borders(2) + dance_floor borders(2)
         np_rows = np_panel_content_lines + 2
-        fixed_rows = 1 + 3 + np_rows + 4 + 4 + 4 + 1 + 2 + 2
+        has_stats_row = _psutil_process is not None or bool(self.state.session_stats)
+        status_rows = 3 if has_stats_row else 2
+        fixed_rows = 1 + 3 + np_rows + 4 + 4 + status_rows + 1 + 2 + 2
         available = max(self._term_height - fixed_rows, 8)
         # Dance floor gets a fixed size; spectrum expands to fill all remaining space
         dance_height = max(11, min(available // 2, 14))
@@ -309,7 +402,7 @@ class BoomBoxTUI:
             title_align="center", border_style=th.border_dance, padding=(0, 0),
         ))
 
-        # Status bar — connection info + codec on row 1, system stats on row 2
+        # Status bar — connection info + codec, optional system stats + session stats
         status_table = Table.grid(padding=0, expand=True)
         status_table.add_column(ratio=1)
         status_table.add_column(ratio=1)
@@ -317,12 +410,14 @@ class BoomBoxTUI:
             render_server_info(self.state.server_name, self.state.group_name, self.state.connected, theme=th),
             render_codec_info(self.state.codec, self.state.sample_rate, self.state.bit_depth, theme=th),
         )
-        stats_row = render_stats_info(theme=th)
-        session_text = Text()
-        if self.state.session_stats:
-            session_text.append(" \U0001f3a7 ", Style(color="#666666"))
-            session_text.append(self.state.session_stats, Style(color=th.secondary))
-        status_table.add_row(stats_row, session_text)
+        # Only show system stats row if psutil is available, or session stats exist
+        if _psutil_process is not None or self.state.session_stats:
+            stats_row = render_stats_info(theme=th) if _psutil_process is not None else Text()
+            session_text = Text()
+            if self.state.session_stats:
+                session_text.append(" \U0001f3a7 ", Style(color="#666666"))
+                session_text.append(self.state.session_stats, Style(color=th.secondary))
+            status_table.add_row(stats_row, session_text)
         parts.append(Panel(status_table, border_style="#444444", padding=(0, 0)))
 
         # Boom box frame accents
@@ -358,6 +453,8 @@ class BoomBoxTUI:
             self._fire_command("shuffle")
         elif k == "r":
             self._fire_command("repeat")
+        elif k == "a":
+            self._art_mode = not self._art_mode
         elif k == "arrow_up":
             self._fire_command("volume_up")
         elif k == "arrow_down":

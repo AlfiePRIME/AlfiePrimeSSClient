@@ -766,6 +766,25 @@ class SendSpinReceiver:
             await asyncio.sleep(chunk_size / sample_rate * 0.5)
 
     def stop(self) -> None:
+        # Pause playback on Music Assistant before shutting down
+        if (
+            self._state.is_playing
+            and self._client is not None
+            and self._client.connected
+            and self._loop is not None
+        ):
+            from aiosendspin.models.types import MediaCommand
+            cmds = set(self._state.supported_commands)
+            if "pause" in cmds:
+                logger.info("Pausing playback before shutdown")
+                try:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._client.send_group_command(MediaCommand.PAUSE),
+                        self._loop,
+                    )
+                    future.result(timeout=2.0)  # wait up to 2s for pause to send
+                except Exception:
+                    logger.debug("Failed to pause on shutdown", exc_info=True)
         self._stats.save()
         if self._mpris is not None and self._loop is not None:
             asyncio.run_coroutine_threadsafe(self._mpris.stop(), self._loop)

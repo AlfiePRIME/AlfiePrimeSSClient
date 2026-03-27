@@ -306,6 +306,23 @@ class AudioVisualizer:
         """Return (beat_count, beat_intensity). Count increments on each beat."""
         return self._beat_count, self._beat_intensity
 
+    def get_raw_bytes(self, count: int = 512) -> bytes:
+        """Return recent audio samples as raw bytes for visual display."""
+        with self._lock:
+            if not self._has_data:
+                return b""
+            pos = self._write_pos
+            buf = self._ring_buffer
+            # Read the most recent `count` float32 samples, convert to bytes
+            n = min(count, RING_BUFFER_SIZE)
+            if pos >= n:
+                chunk = buf[pos - n : pos]
+            else:
+                chunk = np.concatenate([buf[-(n - pos):], buf[:pos]])
+            # Quantize float32 samples (-1..1) to int16 and return raw bytes
+            clamped = np.clip(chunk, -1.0, 1.0)
+            return (clamped * 32767).astype(np.int16).tobytes()
+
     def get_bpm(self) -> float:
         """Return estimated BPM from recent beat detection. 0 if unknown."""
         # If no beats in last 3 seconds, BPM is stale

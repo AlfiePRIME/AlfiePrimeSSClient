@@ -592,6 +592,65 @@ def render_stereo_lights(width: int, vu_left: float, vu_right: float) -> Text:
     return text
 
 
+def render_binary_background(
+    audio_bytes: bytes, width: int, height: int,
+    theme: ColorTheme | None = None,
+) -> list[Text]:
+    """Render a binary (0/1) background derived from live audio data.
+
+    Each character is a '0' or '1' from the raw audio byte stream,
+    tinted with the theme colour at low brightness so it reads like
+    a subtle data watermark behind album art.
+    """
+    th = theme or _default_theme
+    t = time.time()
+    lines: list[Text] = []
+
+    # Convert audio bytes to a bit stream
+    if not audio_bytes:
+        audio_bytes = bytes(width * height // 8 + 1)
+
+    total_bits = width * height
+    # Extend audio_bytes if needed by repeating
+    needed_bytes = (total_bits + 7) // 8
+    if len(audio_bytes) < needed_bytes:
+        reps = needed_bytes // max(1, len(audio_bytes)) + 1
+        audio_bytes = (audio_bytes * reps)[:needed_bytes]
+
+    bit_idx = 0
+    pr, pg, pb = _hex_to_rgb(th.primary)
+    ar, ag, ab = _hex_to_rgb(th.accent)
+
+    for row in range(height):
+        line = Text()
+        for col in range(width):
+            byte_pos = bit_idx // 8
+            bit_pos = bit_idx % 8
+            if byte_pos < len(audio_bytes):
+                bit = (audio_bytes[byte_pos] >> (7 - bit_pos)) & 1
+            else:
+                bit = 0
+            bit_idx += 1
+
+            ch = "1" if bit else "0"
+            # Vary brightness subtly across the grid
+            wave = 0.5 + 0.5 * math.sin(t * 0.8 + col * 0.15 + row * 0.2)
+            brightness = 0.08 + 0.07 * wave
+            if bit:
+                r = int(min(255, ar * brightness))
+                g = int(min(255, ag * brightness))
+                b = int(min(255, ab * brightness))
+            else:
+                r = int(min(255, pr * brightness * 0.5))
+                g = int(min(255, pg * brightness * 0.5))
+                b = int(min(255, pb * brightness * 0.5))
+            color = _fast_rgb_hex_int(r, g, b)
+            line.append(ch, _cached_style(color))
+        lines.append(line)
+
+    return lines
+
+
 def render_braille_art(
     image_data: bytes, width: int, height: int,
     theme: ColorTheme | None = None, hq: bool = False,

@@ -23,6 +23,7 @@ _AIRPLAY_DEPS = {
     "srptools": "srptools (pip install srptools)",
     "hkdf": "hkdf (pip install hkdf)",
     "cryptography": "cryptography (pip install cryptography / pacman -S python-cryptography)",
+    "zeroconf": "zeroconf (pip install zeroconf)",
 }
 
 for _mod, _desc in _AIRPLAY_DEPS.items():

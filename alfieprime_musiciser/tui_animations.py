@@ -529,8 +529,14 @@ class AnimationsMixin:
             f"{(spin_ch + ' Connecting' + dots):^33}",
         ]
 
-        # After 2 minutes, show a hint asking if the server is running
+        # Debug mode hint (show after 3 seconds)
         elapsed = time.monotonic() - self._connect_wait_start if self._connect_wait_start else 0
+        if elapsed >= 3 and not getattr(self, '_airplay_debug', False):
+            art.append(f"                                 ")
+            debug_hint = "Press D for debug"
+            art.append(f"  {debug_hint:^29}    ")
+
+        # After 2 minutes, show a hint asking if the server is running
         if elapsed >= 120:
             art.append(f"                                 ")
             hint1 = "Is your server running?"
@@ -546,12 +552,57 @@ class AnimationsMixin:
         # Ensure all lines are exactly AW chars
         art = [(line + " " * AW)[:AW] for line in art]
 
+        # ── Debug mode: build log panel lines ──
+        debug_lines: list[str] = []
+        debug_panel_start = term_h  # no panel by default
+        if getattr(self, '_airplay_debug', False):
+            buf = getattr(self, '_debug_log_buffer', [])
+            scroll = getattr(self, '_debug_scroll_offset', 0)
+            # Reserve the bottom portion for logs
+            max_log_rows = max(4, term_h // 2)
+            header = " ── AirPlay Debug [D=close, ↑↓=scroll] ──"
+            debug_lines.append(header)
+            if buf:
+                entries = list(buf)
+                # Show from end minus scroll
+                end_idx = len(entries) - scroll
+                start_idx = max(0, end_idx - (max_log_rows - 2))  # -2 for header+footer
+                visible = entries[start_idx:end_idx]
+                for entry in visible:
+                    # Truncate to terminal width
+                    debug_lines.append((" " + entry)[:term_w])
+            else:
+                debug_lines.append(" (no log entries yet)")
+            footer = f" ── {len(buf)} entries │ scroll: {scroll} ──"
+            debug_lines.append(footer)
+            # Where the debug panel starts
+            debug_panel_start = term_h - len(debug_lines)
+
         art_h = len(art)
-        mid_row = term_h // 2
+        # If debug is shown, compress the art into the top half
+        available_h = debug_panel_start
+        mid_row = available_h // 2
         start_row = mid_row - art_h // 2
 
         # ── Compose: overlay art on static ──
         for row in range(term_h):
+            # ── Debug panel replaces bottom rows ──
+            if row >= debug_panel_start:
+                dline_idx = row - debug_panel_start
+                if dline_idx < len(debug_lines):
+                    dline = debug_lines[dline_idx]
+                    padded = (dline + " " * term_w)[:term_w]
+                    # Header/footer in cyan, log lines in green on dark bg
+                    if dline_idx == 0 or dline_idx == len(debug_lines) - 1:
+                        segs.append((padded, "#00cccc", "#0a0a0a", True))
+                    else:
+                        segs.append((padded, "#33dd33", "#0a0a0a", False))
+                else:
+                    segs.append((" " * term_w, "#0a0a0a", "#0a0a0a", False))
+                if row < term_h - 1:
+                    segs.append(("\n", None, None, False))
+                continue
+
             art_row_idx = row - start_row
             if 0 <= art_row_idx < art_h:
                 art_line = art[art_row_idx]

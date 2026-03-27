@@ -1189,14 +1189,14 @@ class AP2Handler(http.server.BaseHTTPRequestHandler):
         self.logger.debug("----- ENCRYPTED CHANNEL -----")
 
 
-def register_mdns(mac, receiver_name, addresses):
+def register_mdns(mac, receiver_name, addresses, port=7000):
     global MDNS_OBJ
 
     info = ServiceInfo(
         "_airplay._tcp.local.",
         f"{receiver_name}._airplay._tcp.local.",
         addresses=addresses,
-        port=7000,
+        port=port,
         properties=mdns_props,
         server=f"{mac.replace(':', '')}@{receiver_name}._airplay.local.",
     )

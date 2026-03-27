@@ -9,6 +9,7 @@ import asyncio
 import logging
 import multiprocessing
 import os
+import random
 import socket
 import struct
 import sys
@@ -23,6 +24,52 @@ if TYPE_CHECKING:
     from alfieprime_musiciser.tui import BoomBoxTUI
 
 logger = logging.getLogger(__name__)
+
+# File log path for persistent AirPlay debug output
+if sys.platform == "win32":
+    _LOG_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "alfieprime")
+else:
+    _LOG_DIR = os.path.join(os.path.expanduser("~"), ".cache", "alfieprime")
+_LOG_FILE = os.path.join(_LOG_DIR, "airplay_debug.log")
+
+
+_file_logging_active = False
+
+
+def setup_file_logging() -> str:
+    """Enable file logging for AirPlay debug output. Returns the log path.
+
+    Safe to call multiple times — only attaches once.
+    """
+    global _file_logging_active
+    if _file_logging_active:
+        return _LOG_FILE
+    try:
+        os.makedirs(_LOG_DIR, exist_ok=True)
+        handler = logging.FileHandler(_LOG_FILE, mode="a", encoding="utf-8")
+        handler.setLevel(logging.DEBUG)
+        # Use ASCII-safe separator to avoid encoding issues on Windows
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s | %(levelname)-5s | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        # Attach to all relevant loggers
+        for name in (
+            "alfieprime_musiciser.airplay",
+            "alfieprime_musiciser.airplay.receiver",
+            "zeroconf",
+            "ap2_receiver",
+            "AirPlay",
+        ):
+            lg = logging.getLogger(name)
+            lg.addHandler(handler)
+            lg.setLevel(logging.DEBUG)
+        _file_logging_active = True
+        logger.info("AirPlay file log: %s", _LOG_FILE)
+    except Exception as exc:
+        logger.warning("Failed to set up file logging at %s: %s", _LOG_FILE, exc)
+    return _LOG_FILE
+
 
 # ---------------------------------------------------------------------------
 # Patch the vendored ap2 package so imports resolve correctly.
@@ -261,6 +308,7 @@ class AirPlayReceiver:
         self._server: object | None = None
         self._server_thread: threading.Thread | None = None
         self._zeroconf: object | None = None
+        self._mdns_services: list = []
 
     @property
     def _state(self) -> PlayerState:
@@ -288,39 +336,126 @@ class AirPlayReceiver:
 
     def _run_server(self) -> None:
         """Blocking server start – runs in a thread."""
+        # Enable file logging first so everything is captured
+        setup_file_logging()
+
         _patch_vendor_imports()
 
+        # Stub hexdump before importing ap2_receiver (only used in DEBUG)
+        import importlib
+        if importlib.util.find_spec("hexdump") is None:
+            import types
+            _hd_mod = types.ModuleType("hexdump")
+            _hd_mod.hexdump = lambda *a, **kw: None  # type: ignore[attr-defined]
+            sys.modules["hexdump"] = _hd_mod
+
+        logger.info("AirPlay: importing dependencies...")
         try:
             import netifaces as ni
-            from ap2_receiver import AP2Server, setup_global_structs, register_mdns  # type: ignore[import-untyped]
+            logger.debug("AirPlay: netifaces loaded")
+            from ap2_receiver import (  # type: ignore[import-untyped]
+                AP2Server, setup_global_structs, register_mdns,
+                get_screen_logger,
+            )
+            logger.debug("AirPlay: ap2_receiver loaded")
             import ap2_receiver as ap2mod  # type: ignore[import-untyped]
         except ImportError as exc:
             logger.error("AirPlay dependencies not available: %s", exc)
             return
 
-        # Find a network interface
-        iface = None
+        # ── Find a network interface with an IPv4 address and MAC ──
+        logger.info("AirPlay: scanning network interfaces...")
+        iface_name = None
+        ipv4_addr = None
+        mac_addr = None
+        ipv6_addr = None
         for name in ni.interfaces():
             addrs = ni.ifaddresses(name)
+            logger.debug("  iface %s: families=%s", name, list(addrs.keys()))
             if ni.AF_INET in addrs:
                 for addr in addrs[ni.AF_INET]:
                     ip = addr.get("addr", "")
+                    logger.debug("    IPv4: %s", ip)
                     if ip and not ip.startswith("127."):
-                        iface = name
+                        iface_name = name
+                        ipv4_addr = ip
                         break
-            if iface:
+            if iface_name:
                 break
 
-        if not iface:
+        if not iface_name or not ipv4_addr:
             logger.error("No suitable network interface found for AirPlay")
             return
 
-        # Configure the global state that ap2-receiver expects
+        logger.info("AirPlay: using interface %s (IPv4: %s)", iface_name, ipv4_addr)
+
+        # Get MAC address
+        ifen = ni.ifaddresses(iface_name)
+        link_key = getattr(ni, "AF_LINK", getattr(ni, "AF_PACKET", 17))
+        if ifen.get(link_key):
+            mac_addr = ifen[link_key][0].get("addr", "")
+        if not mac_addr:
+            # Generate a fake MAC if we can't find one
+            mac_addr = "AA:BB:CC:%02X:%02X:%02X" % (
+                random.randint(0, 255), random.randint(0, 255), random.randint(0, 255),
+            )
+            logger.warning("Could not detect MAC address, using generated: %s", mac_addr)
+
+        # Get IPv6 if available
+        if ifen.get(ni.AF_INET6):
+            ipv6_addr = ifen[ni.AF_INET6][0].get("addr", "").split("%")[0]
+
+        # Pack addresses to binary for mDNS registration
+        ip4_bin = socket.inet_pton(socket.AF_INET, ipv4_addr)
+        ip6_bin = socket.inet_pton(socket.AF_INET6, ipv6_addr) if ipv6_addr else None
+
+        # ── Set all globals that ap2-receiver expects ──
+        ap2mod.DEVICE_ID = mac_addr
+        ap2mod.DEVICE_ID_BIN = int(mac_addr.replace(":", ""), base=16).to_bytes(6, "big")
+        ap2mod.IPV4 = ipv4_addr
+        ap2mod.IP4ADDR_BIN = ip4_bin
+        ap2mod.IPV6 = ipv6_addr
+        if ip6_bin:
+            ap2mod.IP6ADDR_BIN = ip6_bin
+        ap2mod.DEV_NAME = self._device_name
+        ap2mod.DISABLE_VM = True   # We handle volume ourselves
+        ap2mod.DISABLE_PTP_MASTER = False
+        ap2mod.DEBUG = False
+
+        # Set up the screen logger the vendored code expects
+        ap2mod.SCR_LOG = get_screen_logger("AirPlay", level="INFO")
+
+        # Create a mock argparse Namespace for setup_global_structs
+        import argparse
+        mock_args = argparse.Namespace(
+            mdns=self._device_name,
+            netiface=iface_name,
+            no_volume_management=True,
+            no_ptp_master=False,
+            features=None,
+            debug=False,
+            fakemac=False,
+        )
+        # The vendored update_status_flags() references module-level `args`
+        ap2mod.args = mock_args
+
+        # Configure global data structures (device_info, mdns_props, etc.)
+        logger.info("AirPlay: initialising global structs...")
         try:
-            setup_global_structs(iface, self._device_name)
+            from ap2.pairing.hap import DeviceProperties  # type: ignore[import-untyped]
+            ap2mod.DEV_PROPS = DeviceProperties(ap2mod.PI, False)
+            logger.debug("AirPlay: DeviceProperties created with PI=%s", ap2mod.PI)
+            setup_global_structs(mock_args, isDebug=False)
+            logger.info("AirPlay: global structs ready")
         except Exception:
             logger.exception("Failed to setup AirPlay global structs")
             return
+
+        # Log the mDNS properties that will be advertised
+        mdns_props = getattr(ap2mod, 'mdns_props', {})
+        logger.info("AirPlay: device_name=%s mac=%s ipv4=%s ipv6=%s",
+                     self._device_name, mac_addr, ipv4_addr, ipv6_addr)
+        logger.debug("AirPlay: mDNS TXT props: %s", {k: v for k, v in mdns_props.items() if k != 'pk'})
 
         # Create hooks
         audio_hook = _AudioHook(self._visualizer)
@@ -342,22 +477,71 @@ class AirPlayReceiver:
 
         Audio.init_audio_sink = _patched_init_sink
 
-        # Register mDNS
+        # ── Register mDNS: both _airplay._tcp AND _raop._tcp ──
+        # iPhones need BOTH services to show the device in the AirPlay list.
+        logger.info("AirPlay: registering mDNS services on port %d...", self._port)
+        addresses = [ip4_bin]
+        if ip6_bin:
+            addresses.append(ip6_bin)
+        logger.debug("AirPlay: mDNS addresses (binary): %s", [a.hex() for a in addresses])
+
         try:
-            register_mdns(ap2mod.MDNS_OBJ)
-            logger.info("AirPlay mDNS registered as '%s'", self._device_name)
+            from zeroconf import IPVersion, ServiceInfo, Zeroconf  # type: ignore[import-untyped]
+
+            mdns_props = getattr(ap2mod, 'mdns_props', {})
+
+            # 1) _airplay._tcp service (AirPlay 2)
+            airplay_info = ServiceInfo(
+                "_airplay._tcp.local.",
+                f"{self._device_name}._airplay._tcp.local.",
+                addresses=addresses,
+                port=self._port,
+                properties=mdns_props,
+                server=f"{mac_addr.replace(':', '')}@{self._device_name}._airplay.local.",
+            )
+
+            # 2) _raop._tcp service (RAOP — required for iPhone discovery)
+            # RAOP name format: <MAC_NO_COLONS>@<DeviceName>._raop._tcp.local.
+            mac_clean = mac_addr.replace(":", "")
+            raop_name = f"{mac_clean}@{self._device_name}"
+            raop_info = ServiceInfo(
+                "_raop._tcp.local.",
+                f"{raop_name}._raop._tcp.local.",
+                addresses=addresses,
+                port=self._port,
+                properties=mdns_props,
+                server=f"{mac_clean}@{self._device_name}._raop.local.",
+            )
+
+            zc = Zeroconf(ip_version=IPVersion.V4Only)
+            self._zeroconf = zc
+
+            zc.register_service(airplay_info)
+            logger.info("AirPlay: mDNS registered _airplay._tcp ─ name=%s server=%s port=%d",
+                        airplay_info.name, airplay_info.server, airplay_info.port)
+
+            zc.register_service(raop_info)
+            logger.info("AirPlay: mDNS registered _raop._tcp ─ name=%s server=%s port=%d",
+                        raop_info.name, raop_info.server, raop_info.port)
+
+            # Store for cleanup
+            self._mdns_services = [airplay_info, raop_info]
+            # Also set the module global so vendored code can update it
+            ap2mod.MDNS_OBJ = (zc, airplay_info)
+
         except Exception:
-            logger.warning("mDNS registration failed, AirPlay discovery may not work", exc_info=True)
+            logger.warning("mDNS registration FAILED — AirPlay discovery will not work", exc_info=True)
 
-        # Update state
-        self._state.connected = True
+        # Update state — mark as waiting for AirPlay client (not fully "connected" yet)
         self._state.server_name = f"AirPlay: {self._device_name}"
+        logger.info("AirPlay: waiting for client connections on %s:%d", ipv4_addr, self._port)
 
-        # Start server
+        # Start RTSP server
         try:
-            ip = ap2mod.IPV4 or "0.0.0.0"
-            self._server = AP2Server((ip, self._port), HandlerClass)
-            logger.info("AirPlay server listening on %s:%d", ip, self._port)
+            self._server = AP2Server((ipv4_addr, self._port), HandlerClass)
+            # Mark as connected so the TUI exits the waiting screen
+            self._state.connected = True
+            logger.info("AirPlay: RTSP server started on %s:%d — ready for connections", ipv4_addr, self._port)
             self._server.serve_forever()
         except Exception:
             logger.exception("AirPlay server error")
@@ -366,8 +550,16 @@ class AirPlayReceiver:
             self._state.connected = False
 
     def stop(self) -> None:
-        """Shut down the AirPlay server."""
+        """Shut down the AirPlay server and unregister mDNS."""
         self._running = False
+        # Unregister mDNS so the device disappears from AirPlay lists
+        if self._zeroconf is not None:
+            try:
+                self._zeroconf.unregister_all_services()
+                self._zeroconf.close()
+            except Exception:
+                pass
+            self._zeroconf = None
         if self._server is not None:
             try:
                 self._server.shutdown()

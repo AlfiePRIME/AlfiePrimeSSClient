@@ -22,6 +22,7 @@ airplay = [
     "srptools>=1.0.1",
     "hkdf>=0.0.3",
     "cryptography>=41.0.0",
+    "zeroconf>=0.80.0",
 ]
 
 [project.scripts]

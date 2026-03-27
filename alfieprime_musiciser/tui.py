@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io as _io
+import logging
 import math
 import os
 import random
@@ -12,6 +13,7 @@ import signal
 import sys
 import time
 
+from collections import deque
 from collections.abc import Callable
 
 IS_WINDOWS = sys.platform == "win32"
@@ -48,6 +50,7 @@ from alfieprime_musiciser.renderer import (
     render_codec_info,
     render_stats_info,
     render_braille_art,
+    render_binary_background,
     render_art_scene,
     _process as _psutil_process,
 )
@@ -82,6 +85,64 @@ def _rich_256_color(n: int) -> str:
     # Greyscale ramp (indices 232-255)
     v = 8 + (n - 232) * 10
     return f"#{v:02x}{v:02x}{v:02x}"
+
+
+def _overlay_text(
+    lines: list[Text], row: int, col: int, max_w: int, text: str, style: Style,
+) -> None:
+    """Overlay plain text onto a Rich Text line at (row, col)."""
+    if row < 0 or row >= len(lines):
+        return
+    line = lines[row]
+    end = min(col + len(text), max_w)
+    if col >= end:
+        return
+    chars = text[: end - col]
+    # Build new line: keep left part, insert overlay, keep right part
+    new = Text()
+    if col > 0:
+        new.append_text(line[:col])
+    new.append(chars, style)
+    after = col + len(chars)
+    if after < len(line):
+        new.append_text(line[after:])
+    lines[row] = new
+
+
+def _overlay_styled(
+    lines: list[Text], row: int, col: int, max_w: int, styled: Text, max_chars: int,
+) -> None:
+    """Overlay a styled Rich Text object onto a line at (row, col), truncated to max_chars."""
+    if row < 0 or row >= len(lines):
+        return
+    line = lines[row]
+    truncated = styled[:max_chars]
+    end = min(col + len(truncated), max_w)
+    if col >= end:
+        return
+    new = Text()
+    if col > 0:
+        new.append_text(line[:col])
+    new.append_text(truncated[: end - col])
+    after = end
+    if after < len(line):
+        new.append_text(line[after:])
+    lines[row] = new
+
+
+class _DebugLogHandler(logging.Handler):
+    """Captures log records into a bounded deque for on-screen display."""
+
+    def __init__(self, buffer: deque[str], maxlen: int = 200) -> None:
+        super().__init__()
+        self._buffer = buffer
+        self.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d │ %(name)s │ %(message)s", datefmt="%H:%M:%S"))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._buffer.append(self.format(record))
+        except Exception:
+            pass
 
 
 class BoomBoxTUI(SettingsMixin, AnimationsMixin):
@@ -167,6 +228,11 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         self._crt_console_size: tuple[int, int] = (0, 0)
         # Connecting timeout hint
         self._connect_wait_start: float = 0.0
+        # AirPlay debug overlay
+        self._airplay_debug: bool = False
+        self._debug_log_buffer: deque[str] = deque(maxlen=200)
+        self._debug_log_handler: _DebugLogHandler | None = None
+        self._debug_scroll_offset: int = 0
 
     def _restore_cached_state(self, config: Config | None) -> None:
         """Restore theme and artwork from last session for the intro animation."""
@@ -300,6 +366,58 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             return Style(color=_safe_hex(r, g, b), bold=frac < 0.3)
         return Style(color="#444444")
 
+    def _enable_debug_logging(self) -> None:
+        """Attach a log handler to capture AirPlay/mDNS/zeroconf logs."""
+        if self._debug_log_handler is not None:
+            return
+        self._debug_log_buffer.append("── Debug mode enabled ──")
+        try:
+            from alfieprime_musiciser.airplay.receiver import _LOG_FILE
+            self._debug_log_buffer.append(f"── Log file: {_LOG_FILE} ──")
+        except ImportError:
+            pass
+        handler = _DebugLogHandler(self._debug_log_buffer)
+        handler.setLevel(logging.DEBUG)
+        self._debug_log_handler = handler
+        # Attach to relevant loggers
+        for name in (
+            "alfieprime_musiciser.airplay",
+            "alfieprime_musiciser.airplay.receiver",
+            "zeroconf",
+            "ap2_receiver",
+            "AirPlay",
+        ):
+            lg = logging.getLogger(name)
+            lg.addHandler(handler)
+            lg.setLevel(logging.DEBUG)
+        # Also capture root logger at WARNING+ for unexpected errors
+        root = logging.getLogger()
+        root.addHandler(handler)
+
+    def _disable_debug_logging(self) -> None:
+        """Remove the debug log handler."""
+        if self._debug_log_handler is None:
+            return
+        handler = self._debug_log_handler
+        for name in (
+            "alfieprime_musiciser.airplay",
+            "alfieprime_musiciser.airplay.receiver",
+            "zeroconf",
+            "ap2_receiver",
+            "AirPlay",
+        ):
+            logging.getLogger(name).removeHandler(handler)
+        logging.getLogger().removeHandler(handler)
+        self._debug_log_handler = None
+
+    def _toggle_debug(self) -> None:
+        """Toggle AirPlay debug overlay."""
+        self._airplay_debug = not self._airplay_debug
+        if self._airplay_debug:
+            self._enable_debug_logging()
+        else:
+            self._disable_debug_logging()
+
     def _flash_hint(self, key: str) -> None:
         """Trigger a flash animation on a hint label."""
         self._hint_flash[key] = time.time()
@@ -319,14 +437,29 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
         reserved_rows = 5 + 3 + 1 + 6
 
         if self._art_calm:
-            # ── Calm mode: full-screen HQ braille art (no effects) ──
+            # ── Calm mode: braille art over live binary audio background ──
             parts.append(Panel(
                 render_title_banner(padded_inner, theme=th),
                 border_style=th.border_title, padding=(0, 1),
             ))
             reserved_rows += 3  # title banner
-            max_h = max(8, term_h - reserved_rows)
-            max_w = max(20, flush_inner)
+            scene_h = max(8, term_h - reserved_rows)
+            scene_w = max(20, flush_inner)
+
+            # Get live audio bytes for binary background
+            audio_bytes = self._visualizer.get_raw_bytes(scene_w * scene_h // 4)
+
+            # Render binary background for the full scene area
+            bg_lines = render_binary_background(
+                audio_bytes, scene_w, scene_h, theme=th,
+            )
+
+            # Render braille art (visually square)
+            art_h = min(scene_h - 2, scene_w // 2)
+            art_w = art_h * 2
+            art_lines = render_braille_art(
+                self.state.artwork_data, art_w, art_h, theme=th, hq=True,
+            )
 
             # Build info panel content from available metadata
             info_lines: list[Text] = []
@@ -366,54 +499,73 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
             if not info_lines:
                 info_lines.append(Text("No info available", style=dim_style))
 
-            # Decide layout: side-by-side if terminal wide enough for art + info panel
-            info_panel_w = 30  # width of the info box (including border)
-            has_info = bool(info_lines)
-            side_by_side = has_info and max_w >= 60 + info_panel_w
-
-            if side_by_side:
-                # Art takes remaining space left of info panel
-                avail_art_w = max_w - info_panel_w - 2
-                art_h = min(max_h, avail_art_w // 2)
-                art_w = art_h * 2
-            else:
-                art_h = min(max_h, max_w // 2)
-                art_w = art_h * 2
-
-            art_lines = render_braille_art(
-                self.state.artwork_data, art_w, art_h, theme=th, hq=True,
-            )
-
-            art_content: Panel | Text
+            # Composite: overlay art (centred) onto binary background
             if art_lines:
-                art_content = Panel(
-                    Group(*art_lines),
-                    title=" \u2592 ALBUM ART \u2592 ",
-                    title_align="center", border_style=th.border_now_playing, padding=(0, 0),
-                )
-            else:
-                art_content = Panel(
-                    Text("No artwork available", style=Style(color="#555555", italic=True)),
-                    title=" \u2592 ALBUM ART \u2592 ",
-                    title_align="center", border_style=th.border_now_playing, padding=(0, 0),
-                )
+                art_x = max(0, (scene_w - art_w) // 2)
+                art_y = max(0, (scene_h - art_h) // 2)
 
-            if side_by_side:
-                info_content = Panel(
-                    Group(*info_lines),
-                    title=" \u266b INFO \u266b ",
-                    title_align="center",
-                    border_style=th.border_now_playing,
-                    padding=(1, 2),
-                    width=info_panel_w,
-                )
-                layout_table = Table.grid(padding=(0, 1))
-                layout_table.add_column(ratio=1)
-                layout_table.add_column(width=info_panel_w)
-                layout_table.add_row(art_content, info_content)
-                parts.append(layout_table)
-            else:
-                parts.append(art_content)
+                # Check if we have room for info panel on the right
+                info_panel_w = 30
+                right_margin = scene_w - (art_x + art_w)
+                show_info = right_margin >= info_panel_w + 2 and bool(info_lines)
+
+                # If info panel fits, shift art left to make room
+                if show_info:
+                    art_x = max(0, (scene_w - art_w - info_panel_w - 2) // 2)
+
+                for row_idx in range(len(bg_lines)):
+                    if art_y <= row_idx < art_y + art_h:
+                        art_row = row_idx - art_y
+                        if art_row < len(art_lines):
+                            bg = bg_lines[row_idx]
+                            # Build composite line: bg left + art + bg right
+                            composite = Text()
+                            if art_x > 0:
+                                composite.append_text(bg[:art_x])
+                            composite.append_text(art_lines[art_row][:art_w])
+                            after_art = art_x + art_w
+                            if after_art < scene_w:
+                                composite.append_text(bg[after_art:scene_w])
+                            bg_lines[row_idx] = composite
+
+                # Overlay info panel text on the right side of the background
+                if show_info:
+                    info_x = art_x + art_w + 2
+                    info_y = art_y
+                    # Render info with border
+                    border_w = info_panel_w
+                    border_style = Style(color=th.border_now_playing)
+                    title_str = " \u266b INFO \u266b "
+                    # Top border
+                    if info_y > 0 and info_y - 1 < len(bg_lines):
+                        _overlay_text(bg_lines, info_y - 1, info_x, scene_w,
+                                      "╭" + "─" * (border_w - 2) + "╮", border_style)
+                    # Info content rows
+                    content_row = 0
+                    for iy in range(info_y, min(info_y + art_h - 1, len(bg_lines))):
+                        if content_row < len(info_lines):
+                            line_text = info_lines[content_row].plain[:border_w - 4]
+                            pad = " " * (border_w - 4 - len(line_text))
+                            _overlay_text(bg_lines, iy, info_x, scene_w,
+                                          "│ ", border_style)
+                            _overlay_styled(bg_lines, iy, info_x + 2, scene_w,
+                                            info_lines[content_row], border_w - 4)
+                            _overlay_text(bg_lines, iy, info_x + border_w - 2, scene_w,
+                                          " │", border_style)
+                        else:
+                            _overlay_text(bg_lines, iy, info_x, scene_w,
+                                          "│" + " " * (border_w - 2) + "│", border_style)
+                        content_row += 1
+                    # Bottom border
+                    bot_y = min(info_y + art_h - 1, len(bg_lines) - 1)
+                    if bot_y < len(bg_lines):
+                        _overlay_text(bg_lines, bot_y, info_x, scene_w,
+                                      "╰" + "─" * (border_w - 2) + "╯", border_style)
+
+            parts.append(Panel(
+                Group(*bg_lines),
+                border_style=th.border_now_playing, padding=(0, 0),
+            ))
         else:
             # ── Party mode: centered art square with dancers/confetti/fireworks ──
             bands, peaks, vu_left, vu_right = self._visualizer.get_spectrum()
@@ -740,11 +892,22 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin):
                 self._start_transition(from_mode, to_mode)
             self._flash_hint("c")
         elif k == "arrow_up":
-            self._fire_command("volume_up")
-            self._flash_hint("vol")
+            if self._airplay_debug and not self.state.connected:
+                self._debug_scroll_offset = min(
+                    self._debug_scroll_offset + 3,
+                    max(0, len(self._debug_log_buffer) - 5),
+                )
+            else:
+                self._fire_command("volume_up")
+                self._flash_hint("vol")
         elif k == "arrow_down":
-            self._fire_command("volume_down")
-            self._flash_hint("vol")
+            if self._airplay_debug and not self.state.connected:
+                self._debug_scroll_offset = max(0, self._debug_scroll_offset - 3)
+            else:
+                self._fire_command("volume_down")
+                self._flash_hint("vol")
+        elif k == "d":
+            self._toggle_debug()
 
     def _handle_mouse_click(self, col: int, row: int) -> None:
         """Handle a mouse click at terminal coordinates (1-based)."""

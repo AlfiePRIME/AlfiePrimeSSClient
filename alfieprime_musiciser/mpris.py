@@ -30,8 +30,6 @@ except ImportError:
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from alfieprime_musiciser.state import PlayerState
-
 logger = logging.getLogger(__name__)
 
 _BUS_NAME = "org.mpris.MediaPlayer2.alfieprime_musiciser"
@@ -59,31 +57,29 @@ def clear_art_cache() -> None:
         pass
 
 
-# ── Helper: build xesam metadata dict ─────────────────────────────────────
-
-def _build_metadata(state: PlayerState) -> dict[str, Variant]:
-    """Build the MPRIS Metadata dict from current player state."""
-    meta: dict[str, Variant] = {
-        "mpris:trackid": Variant("o", "/org/mpris/MediaPlayer2/CurrentTrack"),
-    }
-    if state.title:
-        meta["xesam:title"] = Variant("s", state.title)
-    if state.artist:
-        meta["xesam:artist"] = Variant("as", [state.artist])
-    if state.album:
-        meta["xesam:album"] = Variant("s", state.album)
-    if state.duration_ms > 0:
-        meta["mpris:length"] = Variant("x", state.duration_ms * 1000)  # microseconds
-    if state.artwork_data:
-        art_path = _get_art_cache_path()
-        if art_path.exists():
-            meta["mpris:artUrl"] = Variant("s", art_path.as_uri())
-    return meta
-
-
-# ── Root interface: org.mpris.MediaPlayer2 ────────────────────────────────
+# ── D-Bus interfaces (only defined when dbus-next is available) ───────────
 
 if _HAS_DBUS:
+    from alfieprime_musiciser.state import PlayerState
+
+    def _build_metadata(state: PlayerState) -> dict[str, Variant]:
+        """Build the MPRIS Metadata dict from current player state."""
+        meta: dict[str, Variant] = {
+            "mpris:trackid": Variant("o", "/org/mpris/MediaPlayer2/CurrentTrack"),
+        }
+        if state.title:
+            meta["xesam:title"] = Variant("s", state.title)
+        if state.artist:
+            meta["xesam:artist"] = Variant("as", [state.artist])
+        if state.album:
+            meta["xesam:album"] = Variant("s", state.album)
+        if state.duration_ms > 0:
+            meta["mpris:length"] = Variant("x", state.duration_ms * 1000)  # microseconds
+        if state.artwork_data:
+            art_path = _get_art_cache_path()
+            if art_path.exists():
+                meta["mpris:artUrl"] = Variant("s", art_path.as_uri())
+        return meta
 
     class _RootInterface(ServiceInterface):
         """org.mpris.MediaPlayer2 — application identity and basic control."""
@@ -328,13 +324,13 @@ class MPRIS2Server:
 
     def __init__(
         self,
-        state: PlayerState,
-        command_cb: Callable[[str], None],
+        state: "PlayerState",
+        command_cb: "Callable[[str], None]",
     ) -> None:
         self._state = state
         self._command_cb = command_cb
-        self._bus: MessageBus | None = None  # type: ignore[assignment]
-        self._player_iface: _PlayerInterface | None = None  # type: ignore[assignment]
+        self._bus = None
+        self._player_iface = None
         self._poll_task: asyncio.Task | None = None
 
     async def start(self) -> None:

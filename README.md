@@ -23,7 +23,7 @@ A party-themed TUI/GUI music player and [SendSpin](https://github.com/music-assi
 - **Two connection modes**:
   - **Listen (mDNS)** — advertises via `_sendspin._tcp.local.` so Music Assistant discovers and connects automatically (recommended)
   - **Connect** — connects to a specific SendSpin server URL
-- **Settings menu** — in-app settings overlay (`/` key) with animated CRT background, configurable auto-play, auto-volume, FPS limit (5-120), artwork toggle, album art colour toggle, static colour picker (16 presets + custom hex), and an advanced section (`A` key) for editing client name and UUID
+- **Settings menu** — in-app settings overlay (`/` key) with animated CRT background, configurable auto-play, auto-volume, FPS limit (5-120), artwork toggle, album art colour toggle, static colour picker (16 presets + custom hex), and an advanced section (`A` key) for editing client name, UUID, and factory-resetting the config
 - **Persistent UI state** — remembers art mode, calm mode, and settings across restarts
 - **Persistent device identity** — remembers its client ID across restarts so Music Assistant recognises it as the same speaker
 - **Standalone GUI mode** — runs in its own tkinter window (separate process) so audio never stutters from rendering load
@@ -100,7 +100,7 @@ alfieprime-musiciser-app
 | `↑` | Volume up |
 | `↓` | Volume down |
 | `/` | Open settings menu (auto play, auto volume, FPS, artwork, colours, advanced) |
-| `Q` | Quit (pauses playback on Music Assistant first) |
+| `Q` | Quit (pauses playback on Music Assistant first) / Close settings menu |
 
 ## Configuration
 
@@ -120,7 +120,9 @@ state.py           PlayerState dataclass
 config.py          Config, setup wizard, connection test
 visualizer.py      AudioVisualizer (FFT, beat/BPM detection, delay queue)
 renderer.py        All render_* functions (spectrum, VU, party scene, braille art, stats)
-tui.py             BoomBoxTUI (layout, CRT animations, standby screensaver, input, run loops)
+tui.py             BoomBoxTUI (layout, input handling, run loops) — uses mixins below
+tui_settings.py    SettingsMixin (settings menu, colour picker, advanced, reset config)
+tui_animations.py  AnimationsMixin (CRT startup/shutdown, standby screensaver, transitions)
 receiver.py        SendSpinReceiver (WebSocket, audio, metadata, artwork, notifications)
 stats.py           ListeningStats (persistent per-artist/track play time tracking)
 mpris.py           MPRIS2 D-Bus integration (Linux media keys, lock screen, KDE Connect)
@@ -173,6 +175,7 @@ The 30fps render loop is heavily optimised to minimise per-frame allocations and
 - **FFT band bin boundaries** — frequency-to-bin mappings are pre-computed once per sample rate change, not every frame
 - **Console reuse** — Rich Console objects are cached and reused across frames, only recreated on terminal resize
 - **Character batching** — the party scene groups consecutive same-category characters into single `Text.append()` calls instead of per-character appends
+- **Braille art memoization** — `render_braille_art()` caches the decoded/rendered result keyed on image data hash + dimensions, skipping JPEG decode and PIL resize on unchanged artwork
 
 ### SendSpin Protocol
 

@@ -576,12 +576,10 @@ class DJMixin:
         master_theme = blend_themes(theme_a, theme_b, dj.crossfader)
 
         # Get visualizer data — per-channel when available
+        # Master viz is fed by the DJ mixer which already applies per-channel
+        # volume and crossfade — no global volume scaling needed here.
         bands, peaks, vu_left, vu_right = self._visualizer.get_spectrum()  # type: ignore[attr-defined]
         beat_count, beat_intensity = self._visualizer.get_beat()  # type: ignore[attr-defined]
-
-        # Scale master viz by global volume (same as boombox)
-        bands, peaks, vu_left, vu_right = self._scale_viz(  # type: ignore[attr-defined]
-            bands, peaks, vu_left, vu_right, state.volume, state.muted)
 
         # Per-channel VU/beat from dedicated visualizers
         vol_a_frac = dj.channel_a.volume / 100.0

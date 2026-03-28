@@ -193,14 +193,21 @@ async def _run_with_config(
                 airplay_receiver._dj_mixer = None
             if receiver_b is not None:
                 receiver_b._dj_mixer = None
-            # Restore native audio based on active source
-            source = tui.state.active_source or "sendspin"
+            # Restore native audio — unmute SendSpin at its saved volume.
+            # If no per-source volume was saved, use 100% unmuted as default.
             if receiver._audio_handler is not None:
-                ss_vol, ss_muted = tui.state.get_source_volume("sendspin")
+                sv = tui.state._source_volumes.get("sendspin")
+                if sv is not None:
+                    ss_vol = sv["volume"]
+                    ss_muted = sv["muted"]
+                else:
+                    ss_vol = tui.state.volume if tui.state.volume > 0 else 100
+                    ss_muted = False
+                logger.info("DJ exit: restoring SendSpin audio vol=%d muted=%s", ss_vol, ss_muted)
                 receiver._audio_handler.set_volume(ss_vol, muted=ss_muted)
             # Ensure the master visualizer is unpaused for the boombox screen
             tui._visualizer.set_paused(False)
-            logger.info("DJ mode: native audio restored (source=%s)", source)
+            logger.info("DJ mode: native audio restored")
 
     tui._dj_activate_callback = _on_dj_activate
     tui._sendspin_command_callback = receiver._on_transport_command

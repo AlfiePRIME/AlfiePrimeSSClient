@@ -885,7 +885,13 @@ class SendSpinReceiver:
         async def _send() -> None:
             assert self._client is not None
             try:
-                if command == "play_pause":
+                if command == "dj_pause" and "pause" in cmds:
+                    logger.info("Sending command: PAUSE (DJ)")
+                    await self._client.send_group_command(MediaCommand.PAUSE)
+                elif command == "dj_play" and "play" in cmds:
+                    logger.info("Sending command: PLAY (DJ)")
+                    await self._client.send_group_command(MediaCommand.PLAY)
+                elif command == "play_pause":
                     if state.is_playing and "pause" in cmds:
                         logger.info("Sending command: PAUSE")
                         await self._client.send_group_command(MediaCommand.PAUSE)

@@ -576,15 +576,22 @@ class DJMixin:
         master_theme = blend_themes(theme_a, theme_b, dj.crossfader)
 
         # Get visualizer data — per-channel when available
-        # Note: the DJMixer already applies per-channel volume and crossfade
-        # before feeding the visualizers, so no additional scaling is needed.
         bands, peaks, vu_left, vu_right = self._visualizer.get_spectrum()  # type: ignore[attr-defined]
         beat_count, beat_intensity = self._visualizer.get_beat()  # type: ignore[attr-defined]
 
+        # Scale master viz by global volume (same as boombox)
+        bands, peaks, vu_left, vu_right = self._scale_viz(  # type: ignore[attr-defined]
+            bands, peaks, vu_left, vu_right, state.volume, state.muted)
+
         # Per-channel VU/beat from dedicated visualizers
+        vol_a_frac = dj.channel_a.volume / 100.0
+        vol_b_frac = dj.channel_b.volume / 100.0
         if self._dj_viz_a is not None:
             _, _, vu_a_l, vu_a_r = self._dj_viz_a.get_spectrum()
             _, beat_a = self._dj_viz_a.get_beat()
+            # Scale per-channel VU by channel volume
+            vu_a_l *= vol_a_frac
+            vu_a_r *= vol_a_frac
         else:
             vu_a_l = vu_a_r = vu_left * (1 - dj.crossfader)
             beat_a = beat_intensity if state.active_source == "sendspin" else 0.0
@@ -592,15 +599,9 @@ class DJMixin:
         if self._dj_viz_b is not None:
             _bands_b, _peaks_b, vu_b_l, vu_b_r = self._dj_viz_b.get_spectrum()
             _, beat_b = self._dj_viz_b.get_beat()
-            # Check if viz_b is the same object the mixer is feeding
-            _viz_b_same = (self._dj_mixer is not None
-                           and self._dj_mixer._viz_b is self._dj_viz_b)
-            _viz_b_has_data = getattr(self._dj_viz_b, '_has_data', '?')
-            logger.debug(
-                "VIZ_B: vu_l=%.4f vu_r=%.4f beat=%.2f has_data=%s same_obj=%s bands_max=%.4f",
-                vu_b_l, vu_b_r, beat_b, _viz_b_has_data, _viz_b_same,
-                max(_bands_b) if _bands_b else 0.0,
-            )
+            # Scale per-channel VU by channel volume
+            vu_b_l *= vol_b_frac
+            vu_b_r *= vol_b_frac
         else:
             vu_b_l = vu_b_r = vu_left * dj.crossfader
             beat_b = beat_intensity if state.active_source == "airplay" else 0.0
@@ -926,12 +927,14 @@ class DJMixin:
 
         if k == "p":
             # In DJ mode, ensure SendSpin gets the pause/play command
-            # regardless of which source is active. The normal command
-            # routing skips SendSpin when active_source is "airplay".
+            # regardless of which source is active. Capture desired action
+            # NOW before any handler flips state.is_playing (race condition
+            # with async scheduling).
             state = getattr(self, "state", None)
             ss_cb = getattr(self, "_sendspin_command_callback", None)
+            want_pause = state.is_playing if state else True
             if ss_cb and state and state.active_source == "airplay":
-                ss_cb("play_pause")
+                ss_cb("dj_pause" if want_pause else "dj_play")
             self._fire_command("play_pause")  # type: ignore[attr-defined]
             _flash("p")
             return

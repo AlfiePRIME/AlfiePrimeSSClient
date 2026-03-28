@@ -399,6 +399,8 @@ class SendSpinReceiver:
                 self._state.sendspin_connected = False
                 self._state.connected = self._state.airplay_connected
                 self._state.sendspin_server_name = f"Listening on :{self._listen_port}"
+                src_label = "Source 1" if self._dj_feed_channel == "a" else "Source 2"
+                self._state.show_toast("SendSpin disconnected", src_label)
                 if self._state.active_source == "sendspin":
                     self._state.save_snapshot("sendspin")
                     new_src = "airplay" if self._state.airplay_connected else ""
@@ -409,7 +411,8 @@ class SendSpinReceiver:
                         self._state.is_playing = False
                 self._state.server_name = self._state.sendspin_server_name
                 await self._audio_handler.handle_disconnect()
-                self._visualizer.reset()
+                if self._dj_mixer is None:
+                    self._visualizer.reset()
                 reset_vu_peaks()
 
     # ── Client-initiated mode (explicit URL) ──
@@ -464,6 +467,8 @@ class SendSpinReceiver:
 
                 self._state.sendspin_connected = False
                 self._state.connected = self._state.airplay_connected
+                src_label = "Source 1" if self._dj_feed_channel == "a" else "Source 2"
+                self._state.show_toast("SendSpin disconnected", src_label)
                 if self._state.active_source == "sendspin":
                     self._state.is_playing = False
                     self._state.active_source = "airplay" if self._state.airplay_connected else ""
@@ -614,7 +619,7 @@ class SendSpinReceiver:
             group_name = payload.group_name
         if payload.playback_state:
             is_playing = payload.playback_state == PlaybackStateType.PLAYING
-            if self._sendspin_is_active():
+            if self._sendspin_is_active() and self._dj_mixer is None:
                 self._visualizer.set_paused(not is_playing)
             self._stats.on_playing(is_playing)
 
@@ -643,7 +648,8 @@ class SendSpinReceiver:
     ) -> None:
         """Handle audio format changes."""
         logger.info("Audio format: %s %dHz %dbit %dch", codec or "PCM", sample_rate, bit_depth, channels)
-        self._visualizer.set_format(sample_rate, bit_depth, channels)
+        if self._dj_mixer is None:
+            self._visualizer.set_format(sample_rate, bit_depth, channels)
         if self._sendspin_is_active():
             self._state.codec = codec or "PCM"
             self._state.sample_rate = sample_rate
@@ -656,7 +662,7 @@ class SendSpinReceiver:
     def _on_stream_event(self, event: str) -> None:
         """Handle stream start/stop events."""
         playing = event == "start"
-        if self._sendspin_is_active():
+        if self._sendspin_is_active() and self._dj_mixer is None:
             self._visualizer.set_paused(not playing)
         if self._sendspin_is_active():
             self._state.is_playing = playing
@@ -665,7 +671,8 @@ class SendSpinReceiver:
         if event == "stop":
             # Only reset the audio pipeline — keep the visual state (bands,
             # peaks, VU) so the spectrum and meters decay gracefully on pause.
-            self._visualizer.reset_pipeline()
+            if self._dj_mixer is None:
+                self._visualizer.reset_pipeline()
             self._flac_decoder = None
             self._flac_fmt = None
         elif event == "start":

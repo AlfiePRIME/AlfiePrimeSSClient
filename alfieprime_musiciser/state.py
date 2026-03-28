@@ -81,7 +81,7 @@ class PlayerState:
     # Per-source state snapshots: {"sendspin": {...}, "airplay": {...}}
     _source_snapshots: dict[str, dict] = field(default_factory=dict, repr=False)
 
-    def show_toast(self, message: str, detail: str = "", duration: float = 1.0) -> None:
+    def show_toast(self, message: str, detail: str = "", duration: float = 3.0) -> None:
         """Show a toast notification that auto-dismisses after *duration* seconds."""
         self.toast_message = message
         self.toast_detail = detail

@@ -1241,7 +1241,7 @@ def render_party_scene(
     # ── BPM meter row at the top ──
     bpm_line = Text()
     if bpm > 0:
-        bpm_str = f"BPM:{bpm:5.1f}"
+        bpm_str = f"BPM:{bpm:4.0f}"
     else:
         bpm_str = "BPM: ---"
     for ci, ch in enumerate(bpm_str):

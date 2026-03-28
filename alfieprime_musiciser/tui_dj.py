@@ -361,6 +361,8 @@ class DJMixin:
         )
         self._dj_mixer.start()
         self._dj_mode = True
+        # Ensure master viz is unpaused — mixer owns it now
+        self._visualizer.set_paused(False)  # type: ignore[attr-defined]
         # Notify receivers to mute native audio and start feeding mixer
         if self._dj_activate_callback:  # type: ignore[attr-defined]
             self._dj_activate_callback(True, self._dj_mixer)  # type: ignore[attr-defined]

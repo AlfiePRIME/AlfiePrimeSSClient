@@ -340,6 +340,11 @@ class _MetadataHook:
     def on_disconnect(self) -> None:
         self._state.airplay_connected = False
         self._state.connected = self._state.sendspin_connected
+        src_label = getattr(self, "source_label", "")
+        self._state.show_toast(
+            "AirPlay disconnected",
+            src_label if src_label else "",
+        )
         if self._state.active_source == "airplay":
             # Save AirPlay state, switch to SendSpin, restore its snapshot
             self._state.save_snapshot("airplay")

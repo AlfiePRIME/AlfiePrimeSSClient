@@ -148,9 +148,11 @@ async def _run_with_config(
 
     # Source switch callback — mute/unmute audio handlers when user switches
     def _on_source_switch(new_source: str) -> None:
+        logger.warning("Source switch → %s, handler=%s", new_source, receiver._audio_handler is not None)
         if receiver._audio_handler is not None:
             if new_source == "sendspin":
                 ss_vol, ss_muted = tui.state.get_source_volume("sendspin")
+                logger.warning("Source switch: restoring SS vol=%d muted=%s", ss_vol, ss_muted)
                 receiver._audio_handler.set_volume(ss_vol, muted=ss_muted)
             else:
                 receiver._audio_handler.set_volume(0, muted=True)
@@ -165,6 +167,8 @@ async def _run_with_config(
             # Save sendspin volume before muting so we can restore it on DJ exit
             ss_vol, ss_muted = tui.state.get_source_volume("sendspin")
             tui.state._source_volumes["sendspin"] = {"volume": ss_vol, "muted": ss_muted}
+            logger.warning("DJ enter: saved SS vol=%d muted=%s, handler=%s",
+                           ss_vol, ss_muted, receiver._audio_handler is not None)
             # Mute native audio outputs — mixer does its own playback
             if receiver._audio_handler is not None:
                 receiver._audio_handler.set_volume(0, muted=True)
@@ -198,6 +202,9 @@ async def _run_with_config(
                 receiver_b._dj_mixer = None
             # Restore native audio — unmute SendSpin at its saved volume.
             # If no per-source volume was saved, use 100% unmuted as default.
+            logger.warning("DJ exit: handler=%s, source_vols=%s, active_source=%s",
+                           receiver._audio_handler is not None,
+                           tui.state._source_volumes, tui.state.active_source)
             if receiver._audio_handler is not None:
                 sv = tui.state._source_volumes.get("sendspin")
                 if sv is not None:
@@ -206,11 +213,13 @@ async def _run_with_config(
                 else:
                     ss_vol = tui.state.volume if tui.state.volume > 0 else 100
                     ss_muted = False
-                logger.info("DJ exit: restoring SendSpin audio vol=%d muted=%s", ss_vol, ss_muted)
+                logger.warning("DJ exit: restoring SendSpin audio vol=%d muted=%s", ss_vol, ss_muted)
                 receiver._audio_handler.set_volume(ss_vol, muted=ss_muted)
                 # Also update state so TUI reflects correct volume
                 tui.state.volume = ss_vol
                 tui.state.muted = ss_muted
+            else:
+                logger.warning("DJ exit: NO audio handler — cannot restore volume!")
             # Ensure the master visualizer is unpaused for the boombox screen
             tui._visualizer.set_paused(False)
             logger.info("DJ mode: native audio restored")

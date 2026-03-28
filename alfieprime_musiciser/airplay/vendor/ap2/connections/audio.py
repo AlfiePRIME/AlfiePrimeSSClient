@@ -893,20 +893,20 @@ class AudioRealtime(Audio):
                             audio = self.process(rtp)
 
                             if(audio):
-                                # Skip native playback when DJ mixer owns output
+                                pre_write = time.monotonic_ns()
+                                # Write silence when DJ mixer owns output — keeps
+                                # the audio device clock for precise pacing without
+                                # producing audible output.
                                 _muted = self._sink_muted
                                 if _muted is not None and _muted.value:
-                                    # Sleep for frame duration to keep real-time pacing
-                                    # (sink.write normally provides this backpressure)
-                                    time.sleep(self.spf / self.sample_rate)
+                                    self.sink.write(b'\x00' * len(audio))
                                 else:
-                                    pre_write = time.monotonic_ns()
                                     self.sink.write(audio)
-                                    lastPlayedSeqNo = rtp.sequence_no
-                                    post_write = time.monotonic_ns()
-                                    p_write = (post_write - pre_write) * 1e-6
-                                    p_write_avg.append(p_write)
-                                    p_write_a = sum(p_write_avg) / len(p_write_avg)
+                                lastPlayedSeqNo = rtp.sequence_no
+                                post_write = time.monotonic_ns()
+                                p_write = (post_write - pre_write) * 1e-6
+                                p_write_avg.append(p_write)
+                                p_write_a = sum(p_write_avg) / len(p_write_avg)
 
                                 playing = True
 
@@ -1052,10 +1052,9 @@ class AudioBuffered(Audio):
                     audio = self.process(rtp)
 
                     if audio:
-                        # Skip native playback when DJ mixer owns output
                         _muted = self._sink_muted
                         if _muted is not None and _muted.value:
-                            time.sleep(self.spf / self.sample_rate)
+                            self.sink.write(b'\x00' * len(audio))
                         else:
                             self.sink.write(audio)
                         post_proc = time.monotonic_ns()

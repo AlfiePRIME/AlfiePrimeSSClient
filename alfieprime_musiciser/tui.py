@@ -158,6 +158,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         self._command_callback: Callable[[str], None] | None = None
         self._source_switch_callback: Callable[[str], None] | None = None
         self._dj_activate_callback: Callable | None = None
+        self._dj_receiver_b = None  # Second receiver for dual DJ modes (set by main.py)
         # Track button positions for mouse clicks: {name: (col_start, col_end)}
         self._button_regions: dict[str, tuple[int, int]] = {}
         # Row (0-based from top of screen) where transport controls are rendered
@@ -235,6 +236,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         self._debug_log_buffer: deque[str] = deque(maxlen=200)
         self._debug_log_handler: _DebugLogHandler | None = None
         self._debug_scroll_offset: int = 0
+        # Track active source for smooth transitions on background connect
+        self._last_active_source: str = ""
         # DJ mixing console
         self._init_dj()
 
@@ -285,6 +288,25 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         if self._command_callback:
             self._command_callback(command)
 
+    @staticmethod
+    def _scale_viz(
+        bands: list[float], peaks: list[float],
+        vu_left: float, vu_right: float,
+        volume: int, muted: bool,
+    ) -> tuple[list[float], list[float], float, float]:
+        """Scale visualizer output by volume/mute state."""
+        if muted or volume <= 0:
+            return [0.0] * len(bands), [0.0] * len(peaks), 0.0, 0.0
+        if volume >= 100:
+            return bands, peaks, vu_left, vu_right
+        s = volume / 100.0
+        return (
+            [b * s for b in bands],
+            [p * s for p in peaks],
+            vu_left * s,
+            vu_right * s,
+        )
+
     def _get_terminal_size(self) -> tuple[int, int]:
         """Query live terminal/window dimensions."""
         if self._gui_window is not None:
@@ -327,6 +349,17 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
             return self._build_swap_prompt_layout()
         if self._settings_open:
             return self._build_settings_layout()
+        # Detect background source changes (e.g. AirPlay connect/disconnect)
+        # and trigger a smooth transition instead of a jarring layout swap.
+        cur_src = self.state.active_source
+        if (cur_src != self._last_active_source
+                and self._last_active_source != ""
+                and not self._transition_active
+                and not self._dj_mode):
+            from_mode = self._get_current_mode_name()
+            self._last_active_source = cur_src
+            self._start_transition(from_mode, self._get_current_mode_name())
+        self._last_active_source = cur_src
         if self._transition_active:
             return self._build_transition_layout()
         if self._dj_mode:
@@ -489,6 +522,29 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         """Trigger a flash animation on a hint label."""
         self._hint_flash[key] = time.time()
 
+    def _build_airplay_hints(self, term_w: int) -> Text:
+        """Build a hint-only line for AirPlay mode (no transport buttons)."""
+        hint_parts = [
+            ("[↑↓]Vol ", "vol", False),
+            ("[M]ute ", "m", self.state.muted),
+        ]
+        _dual = self.state.sendspin_connected and self.state.airplay_connected
+        if _dual:
+            _src = "AP" if self.state.active_source == "airplay" else "SS"
+            hint_parts.append((f"[T]oggle({_src}) ", "t", False))
+        hint_parts.append(("[A]rt ", "a", self._art_mode))
+        if self._art_mode:
+            hint_parts.append(("[C]alm ", "c", self._art_calm))
+        hint_parts += [
+            ("[D]J ", "d", False),
+            ("[/]Settings ", "/", False),
+            ("[Q]uit", "q", False),
+        ]
+        hint = Text()
+        for label, key, active in hint_parts:
+            hint.append(label, self._hint_style(key, active=active))
+        return hint
+
     def _build_art_layout(self) -> Group:
         """Full-screen album art mode with party scene or calm view."""
         self._term_width, self._term_height = self._get_terminal_size()
@@ -500,8 +556,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
 
         parts: list = []
 
-        # Reserve rows: now_playing(~5) + volume(3) + hint(1) + panel borders(~6)
-        reserved_rows = 5 + 3 + 1 + 6
+        # Reserve rows: now_playing(~5) + volume(3) + panel borders(~6)
+        reserved_rows = 5 + 3 + 6
 
         if self._art_calm:
             # ── Calm mode: braille art over live binary audio background ──
@@ -598,34 +654,31 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 # Overlay info panel text on the right side of the background
                 if show_info:
                     info_x = art_x + art_w + 2
-                    info_y = art_y
-                    # Render info with border
+                    # Size the info box to fit content only (not full art height)
+                    info_content_h = len(info_lines)
+                    info_box_h = info_content_h + 2  # +2 for top/bottom borders
+                    # Vertically center the info box relative to art
+                    info_y = art_y + max(0, (art_h - info_box_h) // 2)
                     border_w = info_panel_w
                     border_style = Style(color=th.border_now_playing)
-                    title_str = " \u266b INFO \u266b "
                     # Top border
-                    if info_y > 0 and info_y - 1 < len(bg_lines):
-                        _overlay_text(bg_lines, info_y - 1, info_x, scene_w,
+                    top_y = info_y
+                    if 0 <= top_y < len(bg_lines):
+                        _overlay_text(bg_lines, top_y, info_x, scene_w,
                                       "╭" + "─" * (border_w - 2) + "╮", border_style)
                     # Info content rows
-                    content_row = 0
-                    for iy in range(info_y, min(info_y + art_h - 1, len(bg_lines))):
-                        if content_row < len(info_lines):
-                            line_text = info_lines[content_row].plain[:border_w - 4]
-                            pad = " " * (border_w - 4 - len(line_text))
+                    for ci, info_line in enumerate(info_lines):
+                        iy = top_y + 1 + ci
+                        if 0 <= iy < len(bg_lines):
                             _overlay_text(bg_lines, iy, info_x, scene_w,
                                           "│ ", border_style)
                             _overlay_styled(bg_lines, iy, info_x + 2, scene_w,
-                                            info_lines[content_row], border_w - 4)
+                                            info_line, border_w - 4)
                             _overlay_text(bg_lines, iy, info_x + border_w - 2, scene_w,
                                           " │", border_style)
-                        else:
-                            _overlay_text(bg_lines, iy, info_x, scene_w,
-                                          "│" + " " * (border_w - 2) + "│", border_style)
-                        content_row += 1
                     # Bottom border
-                    bot_y = min(info_y + art_h - 1, len(bg_lines) - 1)
-                    if bot_y < len(bg_lines):
+                    bot_y = top_y + info_content_h + 1
+                    if 0 <= bot_y < len(bg_lines):
                         _overlay_text(bg_lines, bot_y, info_x, scene_w,
                                       "╰" + "─" * (border_w - 2) + "╯", border_style)
 
@@ -636,6 +689,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         else:
             # ── Party mode: centered art square with dancers/confetti/fireworks ──
             bands, peaks, vu_left, vu_right = self._visualizer.get_spectrum()
+            bands, peaks, vu_left, vu_right = self._scale_viz(
+                bands, peaks, vu_left, vu_right, self.state.volume, self.state.muted)
             beat_count, beat_intensity = self._visualizer.get_beat()
             bpm = self._visualizer.get_bpm()
             scene_h = max(8, term_h - reserved_rows)
@@ -666,12 +721,16 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         )
         _is_airplay = self.state.active_source == "airplay"
         if _is_airplay:
-            controls_text = Text()
+            controls_text = self._build_airplay_hints(term_w)
             self._button_regions = {}
         else:
             controls_text, buttons = render_transport_controls(
                 self.state.is_playing, self.state.shuffle, self.state.repeat_mode,
                 self.state.supported_commands, theme=th,
+                hint_style_fn=self._hint_style, art_mode=self._art_mode,
+                art_calm=self._art_calm, muted=self.state.muted,
+                active_source=self.state.active_source,
+                dual_connected=self.state.sendspin_connected and self.state.airplay_connected,
             )
             content_col_offset = 3
             self._button_regions = {
@@ -696,35 +755,6 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
             title_align="center", border_style=th.warm, padding=(0, 0),
         ))
 
-        # ── Key hint at bottom (centered) ──
-        _is_airplay_art = self.state.active_source == "airplay"
-        hint_parts = [
-            ("[A]rt ", "a", self._art_mode),
-            ("[C]alm ", "c", self._art_calm),
-        ]
-        if not _is_airplay_art:
-            hint_parts += [
-                ("[P]lay ", "p", False),
-                ("[N]ext ", "n", False),
-                ("[B]ack ", "b", False),
-                ("[S]huf ", "s", self.state.shuffle),
-                ("[R]epeat ", "r", self.state.repeat_mode != "off"),
-            ]
-        hint_parts += [
-            ("[↑↓]Vol ", "vol", False),
-            ("[M]ute ", "vol", self.state.muted),
-            ("D[J] ", "j", False),
-            ("[/]Settings ", "/", False),
-            ("[Q]uit", "q", False),
-        ]
-        hint_text_len = sum(len(label) for label, _, _ in hint_parts)
-        pad_l = max(0, (term_w - hint_text_len) // 2)
-        hint = Text()
-        hint.append(" " * pad_l)
-        for label, key, active in hint_parts:
-            hint.append(label, self._hint_style(key, active=active))
-        parts.append(hint)
-
         return Group(*parts)
 
     def _build_main_layout(self) -> Group:
@@ -735,6 +765,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         padded_inner = max(term_w - 4, 20)    # padding=(0,1) → 2 border + 2 padding
         flush_inner = max(term_w - 2, 20)     # padding=(0,0) → 2 border only
         bands, peaks, vu_left, vu_right = self._visualizer.get_spectrum()
+        bands, peaks, vu_left, vu_right = self._scale_viz(
+            bands, peaks, vu_left, vu_right, self.state.volume, self.state.muted)
         th = self._get_effective_theme()
 
         parts: list = []
@@ -761,12 +793,16 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
 
         _is_airplay_main = self.state.active_source == "airplay"
         if _is_airplay_main:
-            controls_text = Text()
+            controls_text = self._build_airplay_hints(term_w)
             self._button_regions = {}
         else:
             controls_text, buttons = render_transport_controls(
                 self.state.is_playing, self.state.shuffle, self.state.repeat_mode,
                 self.state.supported_commands, theme=th,
+                hint_style_fn=self._hint_style, art_mode=self._art_mode,
+                art_calm=self._art_calm, muted=self.state.muted,
+                active_source=self.state.active_source,
+                dual_connected=self.state.sendspin_connected and self.state.airplay_connected,
             )
             # Panel border(1) + padding(0,1) means content starts at col 3 (border+space+padding)
             content_col_offset = 3
@@ -902,6 +938,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 theme=th,
                 sendspin_server_name=self.state.sendspin_server_name,
                 airplay_server_name=self.state.airplay_server_name,
+                dj_source_mode=self._config.dj_source_mode if self._config else "mixed",
             ),
             border_style="#444444", padding=(0, 0),
         ))
@@ -1006,13 +1043,13 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
             if from_mode != to_mode:
                 self._start_transition(from_mode, to_mode)
             self._flash_hint("c")
-        elif k == "j":
+        elif k in ("j", "d"):
             from_mode = self._get_current_mode_name()
             self._start_dj_mode()
             self._start_transition(from_mode, "dj")
         elif k == "m":
             self._fire_command("mute")
-            self._flash_hint("vol")
+            self._flash_hint("m")
         elif k == "arrow_up":
             if self._airplay_debug and not self.state.connected:
                 self._debug_scroll_offset = min(
@@ -1032,6 +1069,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
             # Toggle active source between connected protocols
             s = self.state
             if s.sendspin_connected and s.airplay_connected:
+                from_mode = self._get_current_mode_name()
                 old_source = s.active_source
                 new_source = "airplay" if old_source == "sendspin" else "sendspin"
                 # Pause the outgoing source before switching
@@ -1040,11 +1078,15 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 # Save current display state under old source
                 s.save_snapshot(old_source)
                 s.active_source = new_source
+                self._last_active_source = new_source
                 # Restore the new source's cached state (theme, metadata, artwork)
                 s.restore_snapshot(new_source)
                 if self._source_switch_callback:
                     self._source_switch_callback(new_source)
-        elif k == "d":
+                self._flash_hint("t")
+                to_mode = self._get_current_mode_name()
+                self._start_transition(from_mode, to_mode)
+        elif k == "l":
             self._toggle_debug()
 
     def _handle_mouse_click(self, col: int, row: int) -> None:
@@ -1211,7 +1253,9 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         if n > term_h:
             lines = lines[:term_h]
         elif n < term_h:
-            lines.extend([""] * (term_h - n))
+            # Pad with full-width blank lines so previous frame content is cleared
+            blank = " " * term_w
+            lines.extend([blank] * (term_h - n))
 
         return "\n".join(lines)
 

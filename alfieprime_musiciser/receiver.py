@@ -104,6 +104,7 @@ class SendSpinReceiver:
         self._flac_decoder = None
         self._flac_fmt = None
         self._dj_mixer = None  # Set by main.py when DJ mode activates
+        self._dj_feed_channel = "a"  # Which mixer channel this receiver feeds ("a" or "b")
         self._running = False
         self._loop: asyncio.AbstractEventLoop | None = None
         # Pre-cached themes per artwork channel (channel 0 = current, 1+ = upcoming)
@@ -494,11 +495,15 @@ class SendSpinReceiver:
         if raw_pcm is None:
             return
 
-        # Feed DJ mixer channel A (SendSpin) when active
+        # Feed DJ mixer when active — channel determined by _dj_feed_channel
         mixer = self._dj_mixer
         if mixer is not None:
-            mixer.set_format_a(pcm.sample_rate, pcm.bit_depth, pcm.channels)
-            mixer.feed_a(raw_pcm)
+            if self._dj_feed_channel == "b":
+                mixer.set_format_b(pcm.sample_rate, pcm.bit_depth, pcm.channels)
+                mixer.feed_b(raw_pcm)
+            else:
+                mixer.set_format_a(pcm.sample_rate, pcm.bit_depth, pcm.channels)
+                mixer.feed_a(raw_pcm)
 
         # Feed visualizer only when SendSpin is the active source
         if not self._state.active_source or self._state.active_source == "sendspin":
@@ -663,10 +668,11 @@ class SendSpinReceiver:
         if ctrl is None:
             return
         cmds = [cmd.value for cmd in ctrl.supported_commands]
-        # Volume/mute are device-level — always apply
-        self._state.volume = ctrl.volume
-        self._state.muted = ctrl.muted
+        # Only apply server volume when SendSpin is the active source —
+        # otherwise the server's state overwrites locally-saved volume
+        # (e.g. muted=True from idle server clobbers the user's setting).
         if self._sendspin_is_active():
+            self._state.set_source_volume("sendspin", ctrl.volume, ctrl.muted)
             self._state.supported_commands = cmds
         else:
             self._state.write_to_snapshot("sendspin", supported_commands=cmds)
@@ -679,15 +685,17 @@ class SendSpinReceiver:
             return
         cmd = payload.player
         if cmd.command == PlayerCommand.VOLUME and cmd.volume is not None:
-            self._state.volume = cmd.volume
+            self._state.set_source_volume("sendspin", cmd.volume)
             logger.info("Volume set to %d%%", cmd.volume)
             if self._audio_handler is not None:
-                self._audio_handler.set_volume(cmd.volume, muted=self._state.muted)
+                _, ss_muted = self._state.get_source_volume("sendspin")
+                self._audio_handler.set_volume(cmd.volume, muted=ss_muted)
         elif cmd.command == PlayerCommand.MUTE and cmd.mute is not None:
-            self._state.muted = cmd.mute
+            self._state.set_source_muted("sendspin", cmd.mute)
             logger.info("Mute %s", "on" if cmd.mute else "off")
             if self._audio_handler is not None:
-                self._audio_handler.set_volume(self._state.volume, muted=cmd.mute)
+                ss_vol, _ = self._state.get_source_volume("sendspin")
+                self._audio_handler.set_volume(ss_vol, muted=cmd.mute)
 
     def _patch_artwork_handler(self, client) -> None:
         """Monkey-patch the client's binary message handler to capture artwork."""
@@ -791,10 +799,11 @@ class SendSpinReceiver:
         # Auto volume: set local volume immediately on connect
         if cfg.auto_volume >= 0:
             vol = max(0, min(100, cfg.auto_volume))
-            self._state.volume = vol
+            self._state.set_source_volume("sendspin", vol)
             logger.info("Auto-volume: setting to %d%%", vol)
             if self._audio_handler is not None:
-                self._audio_handler.set_volume(vol, muted=self._state.muted)
+                _, ss_muted = self._state.get_source_volume("sendspin")
+                self._audio_handler.set_volume(vol, muted=ss_muted)
 
         # Auto play: send play command on connect
         if cfg.auto_play and self._client is not None and self._client.connected:
@@ -809,34 +818,39 @@ class SendSpinReceiver:
         """Handle a transport command from the TUI (called from input thread)."""
         state = self._state
 
-        # Volume changes are local — apply immediately even without server
+        # Volume changes are per-source — apply to active source
         if command == "volume_up":
-            new_vol = min(100, state.volume + 5)
-            state.volume = new_vol
-            if state.muted:
-                state.muted = False
+            src = state.active_source or "sendspin"
+            cur_vol, cur_muted = state.get_source_volume(src)
+            new_vol = min(100, cur_vol + 5)
+            state.set_source_volume(src, new_vol, False if cur_muted else None)
+            if cur_muted:
                 logger.info("Unmuted via volume up")
-            logger.info("Volume up: %d%%", new_vol)
+            logger.info("Volume up (%s): %d%%", src, new_vol)
             if self._audio_handler is not None:
-                muted = state.muted if state.active_source in ("sendspin", "") else True
-                self._audio_handler.set_volume(new_vol, muted=muted)
+                muted = state.muted if src in ("sendspin", "") else True
+                self._audio_handler.set_volume(new_vol if src in ("sendspin", "") else state.get_source_volume("sendspin")[0], muted=muted)
             return
         elif command == "volume_down":
-            new_vol = max(0, state.volume - 5)
-            state.volume = new_vol
-            if state.muted:
-                state.muted = False
+            src = state.active_source or "sendspin"
+            cur_vol, cur_muted = state.get_source_volume(src)
+            new_vol = max(0, cur_vol - 5)
+            state.set_source_volume(src, new_vol, False if cur_muted else None)
+            if cur_muted:
                 logger.info("Unmuted via volume down")
-            logger.info("Volume down: %d%%", new_vol)
+            logger.info("Volume down (%s): %d%%", src, new_vol)
             if self._audio_handler is not None:
-                muted = state.muted if state.active_source in ("sendspin", "") else True
-                self._audio_handler.set_volume(new_vol, muted=muted)
+                muted = state.muted if src in ("sendspin", "") else True
+                self._audio_handler.set_volume(new_vol if src in ("sendspin", "") else state.get_source_volume("sendspin")[0], muted=muted)
             return
         elif command == "mute":
-            state.muted = not state.muted
-            logger.info("Mute %s", "on" if state.muted else "off")
+            src = state.active_source or "sendspin"
+            cur_vol, cur_muted = state.get_source_volume(src)
+            state.set_source_muted(src, not cur_muted)
+            logger.info("Mute %s (%s)", "on" if not cur_muted else "off", src)
             if self._audio_handler is not None:
-                self._audio_handler.set_volume(state.volume, muted=state.muted)
+                ss_vol, ss_muted = state.get_source_volume("sendspin")
+                self._audio_handler.set_volume(ss_vol, muted=ss_muted)
             return
 
         if self._client is None or not self._client.connected:

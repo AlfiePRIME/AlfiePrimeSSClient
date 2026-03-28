@@ -86,24 +86,72 @@ async def _run_with_config(
     )
 
     # Optional AirPlay receiver — auto-start if deps available and config enables it
+    _hostname = __import__("socket").gethostname()
     airplay_receiver = None
+    dj_mode = config.dj_source_mode
     if config.airplay_enabled and _HAS_AIRPLAY:
         from alfieprime_musiciser.airplay.receiver import AirPlayReceiver
+        # In dual AirPlay mode, name the primary as "MusiciserSource1@Hostname"
+        if dj_mode == "dual_airplay":
+            _ap_name = airplay_name or f"MusiciserSource1@{_hostname}"
+        else:
+            _ap_name = airplay_name or ""
         airplay_receiver = AirPlayReceiver(
             tui, visualizer,
-            device_name=airplay_name or "",
+            device_name=_ap_name,
             port=airplay_port,
             config=config,
         )
         logger.info("AirPlay receiver enabled on port %d", airplay_port)
 
+    # In dual SendSpin mode, rename primary receiver to "Hostname Source 1"
+    if dj_mode == "dual_sendspin":
+        receiver._client_name = f"{_hostname} Source 1"
+
+    # Second receiver for dual DJ source modes
+    receiver_b = None
+    # Generate/load a stable UUID for the second receiver
+    if not config.client_id_b:
+        import uuid as _uuid_mod
+        config.client_id_b = f"alfieprime-musiciser-{_uuid_mod.uuid4().hex[:8]}"
+        config.save()
+    if dj_mode == "dual_sendspin" and config.sendspin_enabled:
+        viz_b = AudioVisualizer()
+        receiver_b = SendSpinReceiver(
+            None, viz_b,
+            server_url=None,
+            listen_port=config.listen_port + 1,
+            client_name=f"{_hostname} Source 2",
+            config=config,
+        )
+        # Use the dedicated second UUID so queues are preserved separately
+        receiver_b._client_id = config.client_id_b
+        receiver_b._dj_feed_channel = "b"
+        logger.info("Dual SendSpin DJ: second receiver on port %d", config.listen_port + 1)
+    elif dj_mode == "dual_airplay" and _HAS_AIRPLAY:
+        from alfieprime_musiciser.airplay.receiver import AirPlayReceiver as _AP2
+        viz_b = AudioVisualizer()
+        ap_name_b = airplay_name or f"MusiciserSource2@{_hostname}"
+        if airplay_name:
+            ap_name_b = f"{airplay_name} Source 2"
+        receiver_b = _AP2(
+            None, viz_b,
+            device_name=ap_name_b,
+            port=airplay_port + 1,
+            config=config,
+        )
+        receiver_b._dj_feed_channel = "b"
+        logger.info("Dual AirPlay DJ: second receiver '%s' on port %d", ap_name_b, airplay_port + 1)
+
+    # Store second receiver's state on TUI so DJ screen can read track info
+    tui._dj_receiver_b = receiver_b
+
     # Source switch callback — mute/unmute audio handlers when user switches
     def _on_source_switch(new_source: str) -> None:
         if receiver._audio_handler is not None:
             if new_source == "sendspin":
-                receiver._audio_handler.set_volume(
-                    tui.state.volume, muted=tui.state.muted,
-                )
+                ss_vol, ss_muted = tui.state.get_source_volume("sendspin")
+                receiver._audio_handler.set_volume(ss_vol, muted=ss_muted)
             else:
                 receiver._audio_handler.set_volume(0, muted=True)
         # Sync visualizer pause state with the new source's play state
@@ -117,23 +165,40 @@ async def _run_with_config(
             # Mute native audio outputs — mixer does its own playback
             if receiver._audio_handler is not None:
                 receiver._audio_handler.set_volume(0, muted=True)
-            # Store mixer reference on receivers for PCM tapping
-            receiver._dj_mixer = mixer
-            if airplay_receiver is not None:
-                airplay_receiver._dj_mixer = mixer
-            logger.info("DJ mode: native audio muted, mixer connected")
+            # Wire mixer to the correct receivers based on DJ source mode
+            _dj = config.dj_source_mode
+            if _dj == "dual_sendspin":
+                # A = primary SendSpin, B = second SendSpin
+                receiver._dj_mixer = mixer
+                if receiver_b is not None:
+                    receiver_b._dj_mixer = mixer
+            elif _dj == "dual_airplay":
+                # A = primary AirPlay, B = second AirPlay
+                if airplay_receiver is not None:
+                    airplay_receiver._dj_feed_channel = "a"
+                    airplay_receiver._dj_mixer = mixer
+                if receiver_b is not None:
+                    receiver_b._dj_mixer = mixer
+            else:
+                # Mixed: A = SendSpin, B = AirPlay (default)
+                receiver._dj_mixer = mixer
+                if airplay_receiver is not None:
+                    airplay_receiver._dj_mixer = mixer
+            logger.info("DJ mode: native audio muted, mixer connected (%s)", _dj)
         else:
-            # Restore native audio
+            # Restore native audio — clear mixer on all receivers
             receiver._dj_mixer = None
             if airplay_receiver is not None:
+                airplay_receiver._dj_feed_channel = "b"  # restore default
                 airplay_receiver._dj_mixer = None
+            if receiver_b is not None:
+                receiver_b._dj_mixer = None
             # Unmute the active source's audio handler
             source = tui.state.active_source or "sendspin"
             if receiver._audio_handler is not None:
                 if source == "sendspin":
-                    receiver._audio_handler.set_volume(
-                        tui.state.volume, muted=tui.state.muted,
-                    )
+                    ss_vol, ss_muted = tui.state.get_source_volume("sendspin")
+                    receiver._audio_handler.set_volume(ss_vol, muted=ss_muted)
                 else:
                     receiver._audio_handler.set_volume(0, muted=True)
             logger.info("DJ mode: native audio restored")
@@ -146,6 +211,8 @@ async def _run_with_config(
         receiver.stop()
         if airplay_receiver:
             airplay_receiver.stop()
+        if receiver_b is not None:
+            receiver_b.stop()
         tui.stop()
 
     if IS_WINDOWS:
@@ -165,6 +232,8 @@ async def _run_with_config(
             logger.info("SendSpin receiver disabled by config")
     if airplay_receiver:
         tasks.append(airplay_receiver.start())
+    if receiver_b is not None:
+        tasks.append(receiver_b.start())
     await asyncio.gather(*tasks)
 
 

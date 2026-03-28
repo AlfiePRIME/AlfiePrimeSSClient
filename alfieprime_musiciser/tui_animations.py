@@ -71,9 +71,18 @@ class AnimationsMixin:
         term_h = self._term_height
         mid_row = term_h // 2
         t = time.monotonic()
-        th = self._get_effective_theme()
+        # Use the album-derived theme so the static effect picks up artwork colours
+        th = self.state.theme
 
         lines: list[Text] = []
+
+        # Album colour palette for noise tinting
+        _palette = [
+            _hex_to_rgb(th.primary),
+            _hex_to_rgb(th.secondary),
+            _hex_to_rgb(th.accent),
+            _hex_to_rgb(th.warm),
+        ]
 
         if progress < 0.4:
             # Phase 1: collapse to scanline
@@ -86,27 +95,32 @@ class AnimationsMixin:
                     edge_fade = 1.0 - (dist / max(visible_half, 1)) * 0.5
                     brightness = max(0.1, (1.0 - p) * edge_fade)
                     noise_chance = p * 0.4
-                    chars = []
-                    for _ in range(term_w):
-                        if random.random() < noise_chance:
-                            chars.append(random.choice("░▒▓"))
-                        elif random.random() < 0.3:
-                            chars.append(random.choice("·.─"))
-                        else:
-                            chars.append(" ")
-                    br = 180 * brightness
-                    pr, pg, pb = _hex_to_rgb(th.primary)
-                    c = _safe_hex(
-                        (br * 0.5 + pr * 0.5) * brightness,
-                        (br * 0.5 + pg * 0.5) * brightness,
-                        (br * 0.5 + pb * 0.5) * brightness,
-                    )
                     if dist == 0:
+                        ar, ag, ab = _hex_to_rgb(th.accent)
                         scan_br = 100 + 155 * p
-                        sc = _safe_hex(scan_br, scan_br + 20, scan_br)
+                        sc = _safe_hex(
+                            scan_br * 0.4 + ar * 0.6,
+                            scan_br * 0.4 + ag * 0.6,
+                            scan_br * 0.4 + ab * 0.6,
+                        )
                         line.append("━" * term_w, Style(color=sc, bold=True))
                     else:
-                        line.append("".join(chars), Style(color=c))
+                        # Render each character with a random palette colour
+                        for col in range(term_w):
+                            if random.random() < noise_chance:
+                                ch = random.choice("░▒▓")
+                            elif random.random() < 0.3:
+                                ch = random.choice("·.─")
+                            else:
+                                ch = " "
+                            pr, pg, pb = _palette[(row + col) % 4]
+                            br = 180 * brightness
+                            c = _safe_hex(
+                                (br * 0.35 + pr * 0.65) * brightness,
+                                (br * 0.35 + pg * 0.65) * brightness,
+                                (br * 0.35 + pb * 0.65) * brightness,
+                            )
+                            line.append(ch, Style(color=c))
                 else:
                     line.append(" " * term_w)
                 lines.append(line)
@@ -120,13 +134,14 @@ class AnimationsMixin:
                 dist = abs(row - mid_row)
                 if dist == 0:
                     br = 255 * flicker
-                    pr, pg, pb = _hex_to_rgb(th.accent)
-                    c = _safe_hex(br * 0.4 + pr * 0.6, br * 0.4 + pg * 0.6, br * 0.4 + pb * 0.6)
+                    ar, ag, ab = _hex_to_rgb(th.accent)
+                    c = _safe_hex(br * 0.4 + ar * 0.6, br * 0.4 + ag * 0.6, br * 0.4 + ab * 0.6)
                     line.append("━" * term_w, Style(color=c, bold=True))
                 elif dist <= 2:
                     glow = max(0, 0.4 - dist * 0.15) * flicker
+                    pr, pg, pb = _hex_to_rgb(th.primary)
                     br = 80 * glow
-                    c = _safe_hex(br, br + 10, br)
+                    c = _safe_hex(br * 0.5 + pr * 0.3, br * 0.5 + pg * 0.3, br * 0.5 + pb * 0.3)
                     noise = "".join(random.choice("░·  ") for _ in range(term_w))
                     line.append(noise, Style(color=c))
                 else:
@@ -146,16 +161,19 @@ class AnimationsMixin:
                     flicker = 0.9 + 0.1 * math.sin(t * 40 + row * 2)
                     brightness *= flicker
                     noise_chance = max(0, (1.0 - p) * 0.5)
-                    chars = []
-                    for _ in range(term_w):
+                    for col in range(term_w):
                         if random.random() < noise_chance:
-                            chars.append(random.choice("░▒▓█"))
+                            ch = random.choice("░▒▓█")
                         else:
-                            chars.append(random.choice(" ·"))
-                    br = 200 * brightness
-                    pr, pg, pb = _hex_to_rgb(th.secondary)
-                    c = _safe_hex(br * 0.6 + pr * 0.4, br * 0.6 + pg * 0.4, br * 0.6 + pb * 0.4)
-                    line.append("".join(chars), Style(color=c))
+                            ch = random.choice(" ·")
+                        pr, pg, pb = _palette[(row + col + 2) % 4]
+                        br = 200 * brightness
+                        c = _safe_hex(
+                            br * 0.4 + pr * 0.6,
+                            br * 0.4 + pg * 0.6,
+                            br * 0.4 + pb * 0.6,
+                        )
+                        line.append(ch, Style(color=c))
                 else:
                     line.append(" " * term_w)
                 lines.append(line)

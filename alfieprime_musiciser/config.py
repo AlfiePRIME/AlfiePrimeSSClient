@@ -23,6 +23,7 @@ class Config:
     server_url: str = ""  # only used when mode == "connect"
     listen_port: int = 8928  # only used when mode == "listen"
     client_id: str = ""  # stable ID so Music Assistant remembers this device
+    client_id_b: str = ""  # stable ID for second receiver (dual DJ modes)
     # UI state (persisted across restarts)
     art_mode: bool = False
     art_calm: bool = False
@@ -45,6 +46,8 @@ class Config:
     accepted_devices: list[str] = field(default_factory=list)
     # Clear AirPlay pairing data on close so devices must re-pair
     forget_airplay_devices: bool = False
+    # DJ source mode: "mixed" (SS+AP), "dual_sendspin", "dual_airplay"
+    dj_source_mode: str = "mixed"
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)

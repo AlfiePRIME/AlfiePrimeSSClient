@@ -21,7 +21,6 @@ class Fairplay3():
     def decryptAESKey(self, message3: bytes, cipherText: bytes):
         assert len(cipherText) == 72
         assert len(message3) == 164
-        sys.stdout = open(os.devnull, 'w')
         """
         Input: message3. This is the FPLY data block, 164 bytes.
         cipherText: the encrypted fpaes key
@@ -29,41 +28,21 @@ class Fairplay3():
         chunk1 = cipherText[16:]
         chunk2 = cipherText[56:]
 
-        # blockIn = bytearray(16)  # new byte[16]
-        sapKey = bytearray(16)  # new byte[16]
-        keySchedule = []  # new int[11][]
+        sapKey = bytearray(16)
+        keySchedule = []
 
-        print('About to generate_session_key')
         sapKey = self.generate_session_key(default_sap, message3)
-        print("generate_session_key'd")
         keySchedule = self.generate_key_schedule(sapKey)
-        print(f'got keySchedule: {keySchedule}')
 
-        print('About to XOR_with_Z_Key')
         blockIn = XOR_with_Z_Key(chunk2, 1)
-        print(bytearray(blockIn).hex())
-        print('XOR_with_Z_Key\'d')
-
-        print('About to cycle')
         blockIn = self.cycle(blockIn, keySchedule)
-        print('Result of cycle:')
-        print(blockIn.hex())
 
         keyOut = bytearray(16)
-        print('About to blockIn[i] ^ chunk1[i]')
         for i in range(0, 16, 1):
             keyOut[i] = (blockIn[i] ^ chunk1[i])
-        print(keyOut.hex())
 
-        print('About to XOR_with_X_Key')
         keyOut = XOR_with_X_Key(keyOut, 1)
-        print(bytearray(keyOut).hex())
-
-        print('About to XOR_with_Z_Key')
         keyOut = XOR_with_Z_Key(keyOut, 1)
-        print(bytearray(keyOut).hex())
-        print('All done.')
-        sys.stdout = sys.__stdout__
         return bytes(keyOut)
 
     def decryptMessage(self, messageIn: bytes):

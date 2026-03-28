@@ -20,9 +20,8 @@ logging.config.dictConfig({
     },
     'handlers': {
         'console': {
-            'level': 'WARNING',
-            'class': 'logging.StreamHandler',
-            'formatter': 'standard',
+            'level': 'CRITICAL',
+            'class': 'logging.NullHandler',
         },
         'audiofile': {
             'level': 'DEBUG',

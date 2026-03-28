@@ -119,7 +119,7 @@ class RTCP:
             # right shift or *2**-32 to isolate the upper bytes
             data[8:12] = int(timestamp >> 32).to_bytes(length=4, byteorder='big')
             # mask to get lower 32bits. left shift or * 2**32 and then /1000000 to get fraction.
-            data[12:16] = (((int(timestamp & 0xffffffff) * 2**32) * 1e-6)).to_bytes(length=4, byteorder='big')
+            data[12:16] = int((int(timestamp & 0xffffffff) * 2**32) * 1e-6).to_bytes(length=4, byteorder='big')
         # pkt built.
         return data
 

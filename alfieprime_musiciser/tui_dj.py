@@ -317,6 +317,14 @@ class DJMixin:
         self._dj_mixer: DJMixer | None = None
         self._dj_viz_a: AudioVisualizer | None = None
         self._dj_viz_b: AudioVisualizer | None = None
+        # Smart-fade animation state
+        self._dj_fade_active: bool = False
+        self._dj_fade_start: float = 0.0        # crossfader value at start
+        self._dj_fade_target: float = 0.0        # crossfader value at end
+        self._dj_fade_start_time: float = 0.0    # time.time() when fade began
+        self._dj_fade_duration: float = 4.0       # seconds
+        self._dj_fade_bass_duck: str = ""         # channel to duck bass ("a" or "b")
+        self._dj_fade_orig_bass: int = 0          # original bass EQ to restore
 
     def _start_dj_mode(self) -> None:
         """Activate DJ mode: create mixer + per-channel visualizers, mute native audio."""
@@ -350,12 +358,134 @@ class DJMixin:
             self._dj_activate_callback(False, None)  # type: ignore[attr-defined]
         logger.info("DJ mode deactivated")
 
+    def _dj_trigger_smartfade(self) -> None:
+        """Start a smart crossfade to the opposite side."""
+        dj = self._dj_state
+        if self._dj_fade_active:
+            self._cancel_smartfade()
+            return
+
+        # Determine direction: go to the other side
+        if dj.crossfader < 0.5:
+            target = 1.0  # fade A → B
+            duck_ch = "a"  # outgoing channel gets bass ducked
+        else:
+            target = 0.0  # fade B → A
+            duck_ch = "b"
+
+        # Try to use BPM for duration (8 beats), fallback to 4s
+        duration = 4.0
+        try:
+            bpm = self._visualizer.get_bpm()  # type: ignore[attr-defined]
+            if bpm and bpm > 40:
+                beat_sec = 60.0 / bpm
+                duration = beat_sec * 8  # 8 beats
+                duration = max(2.0, min(8.0, duration))  # clamp 2-8s
+        except Exception:
+            pass
+
+        # Store outgoing channel's original bass for restoration
+        outgoing = dj.channel_a if duck_ch == "a" else dj.channel_b
+        self._dj_fade_orig_bass = outgoing.eq_bass
+
+        self._dj_fade_start = dj.crossfader
+        self._dj_fade_target = target
+        self._dj_fade_start_time = time.time()
+        self._dj_fade_duration = duration
+        self._dj_fade_bass_duck = duck_ch
+        self._dj_fade_active = True
+        logger.info("Smart fade: %.2f → %.2f over %.1fs (duck %s bass)",
+                     dj.crossfader, target, duration, duck_ch.upper())
+
+    def _dj_tick_smartfade(self) -> None:
+        """Advance the smart-fade animation (called each render frame)."""
+        if not self._dj_fade_active:
+            return
+
+        dj = self._dj_state
+        elapsed = time.time() - self._dj_fade_start_time
+        progress = min(1.0, elapsed / self._dj_fade_duration)
+
+        # Smooth ease-in-out curve
+        t = progress * progress * (3.0 - 2.0 * progress)
+
+        # Interpolate crossfader
+        dj.crossfader = self._dj_fade_start + (self._dj_fade_target - self._dj_fade_start) * t
+
+        # Bass duck on outgoing channel: ramp down from original to -12
+        outgoing = dj.channel_a if self._dj_fade_bass_duck == "a" else dj.channel_b
+        duck_amount = t  # 0→1 as fade progresses
+        outgoing.eq_bass = int(self._dj_fade_orig_bass * (1.0 - duck_amount) + (-12) * duck_amount)
+
+        if progress >= 1.0:
+            # Fade complete — restore original bass EQ on outgoing channel
+            dj.crossfader = self._dj_fade_target
+            outgoing.eq_bass = self._dj_fade_orig_bass
+            self._dj_fade_active = False
+            logger.info("Smart fade complete")
+
+    def _cancel_smartfade(self) -> None:
+        """Cancel an in-progress smart fade, restoring outgoing channel's bass EQ."""
+        if not self._dj_fade_active:
+            return
+        dj = self._dj_state
+        outgoing = dj.channel_a if self._dj_fade_bass_duck == "a" else dj.channel_b
+        outgoing.eq_bass = self._dj_fade_orig_bass
+        self._dj_fade_active = False
+
     # ── Helpers to read per-source data from snapshots ───────────────────
+
+    def _dj_get_mode(self) -> tuple[str, str, str, str, str]:
+        """Return (mode, source_a, source_b, label_a, label_b) based on config."""
+        cfg = getattr(self, "_config", None)
+        mode = cfg.dj_source_mode if cfg else "mixed"
+        if mode == "dual_sendspin":
+            return mode, "sendspin", "sendspin_b", "A · SENDSPIN", "B · SENDSPIN 2"
+        elif mode == "dual_airplay":
+            return mode, "airplay", "airplay_b", "A · AIRPLAY", "B · AIRPLAY 2"
+        return mode, "sendspin", "airplay", "A · SENDSPIN", "B · AIRPLAY"
 
     def _dj_source_data(self, source: str) -> dict:
         """Get snapshot data for a source, or live state if it's active."""
+        # For "_b" sources, read from the second receiver's standalone state
+        if source.endswith("_b"):
+            rcv_b = getattr(self, "_dj_receiver_b", None)
+            if rcv_b is not None:
+                st = getattr(rcv_b, "_daemon_state", None) or getattr(rcv_b, "_state", None)
+                if st is None:
+                    # AirPlayReceiver doesn't have _daemon_state; check for _state via property
+                    try:
+                        st = rcv_b._state
+                    except Exception:
+                        st = None
+                if st is not None:
+                    return {
+                        "title": st.title,
+                        "artist": st.artist,
+                        "album": st.album,
+                        "artwork_data": st.artwork_data,
+                        "theme": st.theme,
+                        "is_playing": st.is_playing,
+                        "progress_ms": st.get_interpolated_progress() if hasattr(st, "get_interpolated_progress") else st.progress_ms,
+                        "duration_ms": st.duration_ms,
+                        "server_name": getattr(st, "sendspin_server_name", "") or getattr(st, "airplay_server_name", "") or "",
+                        "codec": getattr(st, "codec", "pcm"),
+                        "sample_rate": getattr(st, "sample_rate", 48000),
+                        "bit_depth": getattr(st, "bit_depth", 16),
+                    }
+            return {
+                "title": "", "artist": "", "album": "", "artwork_data": b"",
+                "theme": ColorTheme(), "is_playing": False,
+                "progress_ms": 0, "duration_ms": 0,
+                "server_name": "", "codec": "pcm", "sample_rate": 48000, "bit_depth": 16,
+            }
         state: PlayerState = self.state  # type: ignore[attr-defined]
         if state.active_source == source:
+            _sn = ""
+            if source == "sendspin":
+                _sn = state.sendspin_server_name or ""
+            elif source == "airplay":
+                _sn = state.airplay_server_name or ""
             return {
                 "title": state.title,
                 "artist": state.artist,
@@ -365,6 +495,10 @@ class DJMixin:
                 "is_playing": state.is_playing,
                 "progress_ms": state.get_interpolated_progress(),
                 "duration_ms": state.duration_ms,
+                "server_name": _sn,
+                "codec": state.codec,
+                "sample_rate": state.sample_rate,
+                "bit_depth": state.bit_depth,
             }
         snap = state._source_snapshots.get(source, {})
         return {
@@ -376,12 +510,32 @@ class DJMixin:
             "is_playing": snap.get("is_playing", False),
             "progress_ms": snap.get("progress_ms", 0),
             "duration_ms": snap.get("duration_ms", 0),
+            "server_name": snap.get("server_name", ""),
+            "codec": snap.get("codec", "pcm"),
+            "sample_rate": snap.get("sample_rate", 48000),
+            "bit_depth": snap.get("bit_depth", 16),
         }
+
+    def _dj_connected_b(self) -> bool:
+        """Check if the second receiver (channel B in dual modes) is connected."""
+        rcv_b = getattr(self, "_dj_receiver_b", None)
+        if rcv_b is None:
+            return False
+        st = getattr(rcv_b, "_daemon_state", None)
+        if st is not None:
+            return st.connected
+        try:
+            return rcv_b._state.connected
+        except Exception:
+            return False
 
     # ── Layout ───────────────────────────────────────────────────────────
 
     def _build_dj_layout(self) -> Group:
         """Build the DJ mixing console layout."""
+        # Advance smart-fade animation before rendering
+        self._dj_tick_smartfade()
+
         self._term_width, self._term_height = self._get_terminal_size()  # type: ignore[attr-defined]
         term_w = self._term_width
         term_h = self._term_height
@@ -390,14 +544,17 @@ class DJMixin:
         dj = self._dj_state
         state: PlayerState = self.state  # type: ignore[attr-defined]
 
-        # Get per-source data
-        data_a = self._dj_source_data("sendspin")
-        data_b = self._dj_source_data("airplay")
+        # Get per-source data — dynamic based on DJ source mode
+        _dj_mode, _src_a, _src_b, _label_a, _label_b = self._dj_get_mode()
+        data_a = self._dj_source_data(_src_a)
+        data_b = self._dj_source_data(_src_b)
         theme_a: ColorTheme = data_a.get("theme", ColorTheme())  # type: ignore[assignment]
         theme_b: ColorTheme = data_b.get("theme", ColorTheme())  # type: ignore[assignment]
         master_theme = blend_themes(theme_a, theme_b, dj.crossfader)
 
         # Get visualizer data — per-channel when available
+        # Note: the DJMixer already applies per-channel volume and crossfade
+        # before feeding the visualizers, so no additional scaling is needed.
         bands, peaks, vu_left, vu_right = self._visualizer.get_spectrum()  # type: ignore[attr-defined]
         beat_count, beat_intensity = self._visualizer.get_beat()  # type: ignore[attr-defined]
 
@@ -439,33 +596,47 @@ class DJMixin:
         prog_a = data_a.get("progress_ms", 0) / max(1, data_a.get("duration_ms", 1))
         prog_b = data_b.get("progress_ms", 0) / max(1, data_b.get("duration_ms", 1))
 
-        # Turntable A (SendSpin)
-        a_playing = data_a.get("is_playing", False) and state.sendspin_connected
+        # Determine connection states per mode
+        if _dj_mode == "dual_sendspin":
+            conn_a = state.sendspin_connected
+            conn_b = self._dj_connected_b()
+            fallback_a, fallback_b = "SendSpin", "SendSpin 2"
+        elif _dj_mode == "dual_airplay":
+            conn_a = state.airplay_connected
+            conn_b = self._dj_connected_b()
+            fallback_a, fallback_b = "AirPlay", "AirPlay 2"
+        else:
+            conn_a = state.sendspin_connected
+            conn_b = state.airplay_connected
+            fallback_a, fallback_b = "SendSpin", "AirPlay"
+
+        # Turntable A
+        a_playing = data_a.get("is_playing", False) and conn_a
         tt_a = _render_turntable(
             theme_a,
             data_a.get("title", "") or "No track",
-            data_a.get("artist", "") or "SendSpin",
+            data_a.get("artist", "") or fallback_a,
             a_playing,
             beat_a,
             t, dj.active_channel == "a",
-            "A · SENDSPIN",
+            _label_a,
             turntable_w,
-            connected=state.sendspin_connected,
+            connected=conn_a,
             progress=min(1.0, prog_a),
         )
 
-        # Turntable B (AirPlay)
-        b_playing = data_b.get("is_playing", False) and state.airplay_connected
+        # Turntable B
+        b_playing = data_b.get("is_playing", False) and conn_b
         tt_b = _render_turntable(
             theme_b,
             data_b.get("title", "") or "No track",
-            data_b.get("artist", "") or "AirPlay",
+            data_b.get("artist", "") or fallback_b,
             b_playing,
             beat_b,
             t, dj.active_channel == "b",
-            "B · AIRPLAY",
+            _label_b,
             turntable_w,
-            connected=state.airplay_connected,
+            connected=conn_b,
             progress=min(1.0, prog_b),
         )
 
@@ -525,7 +696,13 @@ class DJMixin:
             master_theme.primary_dim, master_theme.primary,
             min(1.0, beat_intensity * 0.6),
         )
-        mixer_status = "● MIX" if self._dj_mixer is not None else "○ OFF"
+        if self._dj_fade_active:
+            fade_dir = "A→B" if self._dj_fade_target > 0.5 else "B→A"
+            mixer_status = f"● FADE {fade_dir}"
+        elif self._dj_mixer is not None:
+            mixer_status = "● MIX"
+        else:
+            mixer_status = "○ OFF"
         parts.append(Panel(
             console_grid,
             title=f" ◈ DECKS  {mixer_status} ◈ ",
@@ -604,10 +781,55 @@ class DJMixin:
             padding=(0, 1),
         ))
 
+        # ── Dual-protocol status bar ──
+        status = Text()
+        _dim = _cached_style("#666666")
+        _on = _cached_style(master_theme.accent, bold=True)
+        _off = _cached_style("#555555")
+
+        # Channel A
+        _short_a = _label_a.split("·")[-1].strip() if "·" in _label_a else _label_a
+        _short_b = _label_b.split("·")[-1].strip() if "·" in _label_b else _label_b
+        if conn_a:
+            status.append(f" A·{_short_a}", _on if dj.active_channel == "a" else _cached_style("#888888"))
+            # Server name for channel A
+            _sn_a = data_a.get("server_name", "")
+            if _sn_a:
+                status.append(f" ⚡ {_sn_a}", _cached_style(theme_a.secondary))
+            codec_a = data_a.get("codec", "pcm")
+            sr_a = data_a.get("sample_rate", 48000)
+            bd_a = data_a.get("bit_depth", 16)
+            status.append(f"  ♪ {codec_a.upper()} {sr_a // 1000}kHz {bd_a}bit", _cached_style("#888888"))
+            status.append(" ●", _on if dj.active_channel == "a" else _cached_style("#888888"))
+        else:
+            status.append(f" A·{_short_a} ○", _off)
+
+        status.append("  │", _dim)
+
+        # Channel B
+        if conn_b:
+            status.append(f"  B·{_short_b}", _on if dj.active_channel == "b" else _cached_style("#888888"))
+            _sn_b = data_b.get("server_name", "")
+            if _sn_b:
+                status.append(f" ⚡ {_sn_b}", _cached_style(theme_b.secondary))
+            codec_b = data_b.get("codec", "pcm")
+            sr_b = data_b.get("sample_rate", 48000)
+            bd_b = data_b.get("bit_depth", 16)
+            status.append(f"  ♪ {codec_b.upper()} {sr_b // 1000}kHz {bd_b}bit", _cached_style("#888888"))
+            status.append(" ●", _on if dj.active_channel == "b" else _cached_style("#888888"))
+        else:
+            status.append(f"  B·{_short_b} ○", _off)
+
+        parts.append(Panel(
+            status,
+            border_style="#444444", padding=(0, 0),
+        ))
+
         # ── Master spectrum ──
         flush_inner = max(term_w - 2, 20)
         # Calculate remaining height
-        used_rows = 3 + max_tt_h + 4 + 6 + 2 + 3 + 2  # title + decks + eq + spectrum borders + hints
+        status_rows = 3  # status bar: content + 2 borders
+        used_rows = 3 + max_tt_h + 4 + 6 + 2 + status_rows + 3 + 2  # title + decks + eq + spectrum borders + status + hints
         spec_height = max(4, term_h - used_rows)
 
         parts.append(Panel(
@@ -618,23 +840,27 @@ class DJMixin:
             padding=(0, 0),
         ))
 
-        # ── Key hints ──
-        focus_label = "A·SendSpin" if dj.active_channel == "a" else "B·AirPlay"
+        # ── Key hints (with flash effects) ──
+        _hs = self._hint_style  # type: ignore[attr-defined]
+        focus_label = f"A·{_short_a}" if dj.active_channel == "a" else f"B·{_short_b}"
+        fade_label = "[F]ade▸" if self._dj_fade_active else "[F]ade "
         hint = Text()
         hint_parts = [
-            f"[Tab]Switch({focus_label}) ",
-            "[←→]Xfade ",
-            "[↑↓]Vol ",
-            "[1/2/3]EQ± ",
-            "[0]Flat ",
-            "[X]Center ",
-            "[D]Exit DJ ",
+            ("[P]lay ", "p", False),
+            (f"[Tab]Switch({focus_label}) ", "tab", False),
+            ("[←→]Xfade ", "xfade", False),
+            ("[↑↓]Vol ", "vol", False),
+            ("[1/2/3]EQ± ", "eq", False),
+            ("[0]Flat ", "0", False),
+            ("[X]Center ", "x", False),
+            (fade_label, "f", self._dj_fade_active),
+            ("[D]Exit DJ ", "d", False),
         ]
-        total = sum(len(h) for h in hint_parts)
+        total = sum(len(h) for h, _, _ in hint_parts)
         pad_l = max(0, (term_w - total) // 2)
         hint.append(" " * pad_l)
-        for h in hint_parts:
-            hint.append(h, _cached_style("#555555"))
+        for label, key, active in hint_parts:
+            hint.append(label, _hs(key, active=active))
         parts.append(hint)
 
         return Group(*parts)
@@ -645,44 +871,78 @@ class DJMixin:
         """Handle keys when DJ mode is active."""
         dj = self._dj_state
 
+        _flash = self._flash_hint  # type: ignore[attr-defined]
+
         if k == "d":
             # Exit DJ mode
+            if self._dj_fade_active:
+                self._cancel_smartfade()
+            _flash("d")
             from_mode = "dj"
             self._stop_dj_mode()
             to_mode = self._get_current_mode_name()  # type: ignore[attr-defined]
             self._start_transition(from_mode, to_mode)  # type: ignore[attr-defined]
             return
 
+        if k == "p":
+            self._fire_command("play_pause")  # type: ignore[attr-defined]
+            _flash("p")
+            return
+
+        if k == "f":
+            self._dj_trigger_smartfade()
+            _flash("f")
+            return
+
         if k == "\t" or k == "tab":
             dj.active_channel = "b" if dj.active_channel == "a" else "a"
+            _flash("tab")
             return
 
         ch = dj.get_focused()
 
         if k == "arrow_up":
             ch.volume = min(100, ch.volume + 5)
+            _flash("vol")
         elif k == "arrow_down":
             ch.volume = max(0, ch.volume - 5)
+            _flash("vol")
         elif k == "arrow_left":
+            if self._dj_fade_active:
+                self._cancel_smartfade()
             dj.crossfader = max(0.0, dj.crossfader - 0.05)
+            _flash("xfade")
         elif k == "arrow_right":
+            if self._dj_fade_active:
+                self._cancel_smartfade()
             dj.crossfader = min(1.0, dj.crossfader + 0.05)
+            _flash("xfade")
         elif k == "1":
             ch.eq_bass = min(12, ch.eq_bass + 2)
+            _flash("eq")
         elif k == "!":
             ch.eq_bass = max(-12, ch.eq_bass - 2)
+            _flash("eq")
         elif k == "2":
             ch.eq_mid = min(12, ch.eq_mid + 2)
+            _flash("eq")
         elif k == "@":
             ch.eq_mid = max(-12, ch.eq_mid - 2)
+            _flash("eq")
         elif k == "3":
             ch.eq_treble = min(12, ch.eq_treble + 2)
+            _flash("eq")
         elif k == "#":
             ch.eq_treble = max(-12, ch.eq_treble - 2)
+            _flash("eq")
         elif k == "0":
             dj.reset_eq()
+            _flash("0")
         elif k == "x":
+            if self._dj_fade_active:
+                self._cancel_smartfade()
             dj.crossfader = 0.5
+            _flash("x")
         elif k == "q":
             # Allow quit from DJ mode
             self._stop_dj_mode()

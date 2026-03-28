@@ -231,7 +231,7 @@ def parse_dxxp(chunk):
                 # If the tag has some data, may be interesting.
                 if leng > 0:
                     # start 0, end 4
-                    print(UnregisteredError, _in[0:4].decode(), "; length:", leng)
+                    pass  # Unregistered DMAP tag — silently ignore
                 pass
             finally:
                 pass

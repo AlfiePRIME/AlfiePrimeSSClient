@@ -145,6 +145,9 @@ def render_transport_controls(
     is_playing: bool, shuffle: bool = False, repeat_mode: str = "off",
     supported_commands: list[str] | None = None,
     theme: ColorTheme | None = None,
+    hint_style_fn: "Callable[[str, bool], Style] | None" = None,
+    art_mode: bool = False, art_calm: bool = False, muted: bool = False,
+    active_source: str = "", dual_connected: bool = False,
 ) -> tuple[Text, dict[str, tuple[int, int]]]:
     """Render transport controls, returning (text, {button_name: (col_start, col_end)})."""
     th = theme or _default_theme
@@ -189,15 +192,23 @@ def render_transport_controls(
 
     # Key hints
     text.append("   ", _STYLE_EMPTY)
-    text.append("[S]huf ", _STYLE_HINT)
-    text.append("[B]ack ", _STYLE_HINT)
-    text.append("[P]lay ", _STYLE_HINT)
-    text.append("[N]ext ", _STYLE_HINT)
-    text.append("[R]epeat ", _STYLE_HINT)
-    text.append("[↑↓]Vol ", _STYLE_HINT)
-    text.append("[M]ute ", _STYLE_HINT)
-    text.append("[A]rt ", _STYLE_HINT)
-    text.append("D[J]", _STYLE_HINT)
+    _hs = hint_style_fn or (lambda _k, _a: _STYLE_HINT)
+    text.append("[S]huf ", _hs("s", shuffle))
+    text.append("[B]ack ", _hs("b", False))
+    text.append("[P]lay ", _hs("p", False))
+    text.append("[N]ext ", _hs("n", False))
+    text.append("[R]epeat ", _hs("r", repeat_mode != "off"))
+    text.append("[↑↓]Vol ", _hs("vol", False))
+    text.append("[M]ute ", _hs("m", muted))
+    if dual_connected:
+        _src_label = "SS" if active_source == "sendspin" else "AP" if active_source == "airplay" else "SS"
+        text.append(f"[T]oggle({_src_label}) ", _hs("t", False))
+    text.append("[A]rt ", _hs("a", art_mode))
+    if art_mode:
+        text.append("[C]alm ", _hs("c", art_calm))
+    text.append("[D]J ", _hs("d", False))
+    text.append("[/]Settings ", _hs("/", False))
+    text.append("[Q]uit", _hs("q", False))
 
     return text, buttons
 
@@ -606,42 +617,55 @@ def render_binary_background(
 
     Each character is a '0' or '1' from the raw audio byte stream,
     tinted with the theme colour at low brightness so it reads like
-    a subtle data watermark behind album art.
+    a subtle data watermark behind album art.  The pattern refreshes
+    every ~3 seconds with random bit mutations for a living effect.
     """
+    import random as _rng
+
     th = theme or _default_theme
     t = time.time()
     lines: list[Text] = []
 
-    # Convert audio bytes to a bit stream
+    # Convert audio bytes to a mutable bit source
+    needed_bytes = (width * height + 7) // 8
     if not audio_bytes:
-        audio_bytes = bytes(width * height // 8 + 1)
+        audio_bytes = bytes(needed_bytes)
 
-    total_bits = width * height
-    # Extend audio_bytes if needed by repeating
-    needed_bytes = (total_bits + 7) // 8
     if len(audio_bytes) < needed_bytes:
         reps = needed_bytes // max(1, len(audio_bytes)) + 1
         audio_bytes = (audio_bytes * reps)[:needed_bytes]
 
+    # Mutate bits every ~3 seconds using a time-seeded RNG for a living effect
+    epoch = int(t / 3)
+    rng = _rng.Random(epoch)
+    buf = bytearray(audio_bytes[:needed_bytes])
+    # XOR with a random mask to shuffle the pattern each epoch
+    for i in range(len(buf)):
+        buf[i] ^= rng.randint(0, 255)
+
     bit_idx = 0
     pr, pg, pb = _hex_to_rgb(th.primary)
     ar, ag, ab = _hex_to_rgb(th.accent)
+
+    # Smooth transition factor within each 3-second epoch (0→1)
+    epoch_frac = (t / 3) - epoch
 
     for row in range(height):
         line = Text()
         for col in range(width):
             byte_pos = bit_idx // 8
             bit_pos = bit_idx % 8
-            if byte_pos < len(audio_bytes):
-                bit = (audio_bytes[byte_pos] >> (7 - bit_pos)) & 1
+            if byte_pos < len(buf):
+                bit = (buf[byte_pos] >> (7 - bit_pos)) & 1
             else:
                 bit = 0
             bit_idx += 1
 
             ch = "1" if bit else "0"
-            # Vary brightness subtly across the grid
-            wave = 0.5 + 0.5 * math.sin(t * 0.8 + col * 0.15 + row * 0.2)
-            brightness = 0.08 + 0.07 * wave
+            # Vary brightness with a travelling wave + epoch-based pulse
+            wave = 0.5 + 0.5 * math.sin(t * 1.2 + col * 0.15 + row * 0.2)
+            pulse = 0.5 + 0.5 * math.sin(epoch_frac * math.pi)
+            brightness = 0.06 + 0.09 * wave * (0.7 + 0.3 * pulse)
             if bit:
                 r = int(min(255, ar * brightness))
                 g = int(min(255, ag * brightness))
@@ -1541,6 +1565,7 @@ def render_source_info(
     theme: ColorTheme | None = None,
     sendspin_server_name: str = "",
     airplay_server_name: str = "",
+    dj_source_mode: str = "mixed",
 ) -> Text:
     """Render single-line status: active source + server name + codec + source indicators."""
     th = theme or _default_theme
@@ -1591,8 +1616,15 @@ def render_source_info(
         else:
             text.append(f" {name}○", _style_off)
 
-    _dot("S", sendspin_connected, active_source == "sendspin")
-    _dot("A", airplay_connected, active_source == "airplay")
+    if dj_source_mode == "dual_sendspin":
+        _dot("Src1", sendspin_connected, active_source == "sendspin")
+        _dot("Src2", airplay_connected, active_source == "airplay")
+    elif dj_source_mode == "dual_airplay":
+        _dot("Src1", sendspin_connected, active_source == "sendspin")
+        _dot("Src2", airplay_connected, active_source == "airplay")
+    else:
+        _dot("SendSpin", sendspin_connected, active_source == "sendspin")
+        _dot("AirPlay", airplay_connected, active_source == "airplay")
 
     if sendspin_connected and airplay_connected:
         text.append(" [T]", _style_dim)

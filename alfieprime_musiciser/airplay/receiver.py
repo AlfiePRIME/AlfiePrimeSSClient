@@ -154,6 +154,7 @@ class _PCMConsumer:
         self._running = False
         self._thread: threading.Thread | None = None
         self.dj_mixer = None  # Set externally when DJ mode activates
+        self.dj_feed_channel = "b"  # Which mixer channel to feed
 
     def start(self) -> None:
         self._running = True
@@ -183,13 +184,19 @@ class _PCMConsumer:
                     )
                     continue
 
-                # Feed DJ mixer channel B (AirPlay) when active
+                # Feed DJ mixer when active — channel determined by dj_feed_channel
                 mixer = self.dj_mixer
                 if mixer is not None:
-                    mixer.set_format_b(
-                        self.sample_rate, self.sample_size, self.channels,
-                    )
-                    mixer.feed_b(data)
+                    if self.dj_feed_channel == "a":
+                        mixer.set_format_a(
+                            self.sample_rate, self.sample_size, self.channels,
+                        )
+                        mixer.feed_a(data)
+                    else:
+                        mixer.set_format_b(
+                            self.sample_rate, self.sample_size, self.channels,
+                        )
+                        mixer.feed_b(data)
 
                 # Only feed visualizer when AirPlay is the active source
                 if self._state and self._state.active_source != "airplay":
@@ -201,6 +208,11 @@ class _PCMConsumer:
                 # paused before we switched to AirPlay.
                 if self._visualizer._paused:
                     self._visualizer.set_paused(False)
+                # Ensure is_playing stays True while we're receiving audio —
+                # some AirPlay senders don't always send SETRATEANCHORTIME
+                # with rate > 0, leaving is_playing False while music plays.
+                if self._state and not self._state.is_playing:
+                    self._state.is_playing = True
                 self._visualizer.feed_audio(data, immediate=True)
             except Exception:
                 logger.debug("PCM consumer feed error", exc_info=True)
@@ -280,16 +292,20 @@ class _MetadataHook:
         threading.Thread(target=_extract_and_apply, daemon=True).start()
 
     def on_volume(self, volume_db: float) -> None:
-        # AirPlay volume is -144..0 dB (linear-ish). Map to 0-100.
-        # Volume is device-level — always apply regardless of active source.
+        # AirPlay volume is -144..0 dB.  -144 is a sentinel meaning the
+        # iPhone's volume slider is at absolute zero — ignore it rather than
+        # muting our output, because iPhones often send -144 during the
+        # initial handshake before sending the real volume.
+        logger.info("AirPlay volume received: %.2f dB", volume_db)
         if volume_db <= -144:
-            self._state.volume = 0
-            self._state.muted = True
-        else:
-            # -30 dB → 0%, 0 dB → 100%
-            pct = max(0, min(100, int((volume_db + 30) / 30 * 100)))
-            self._state.volume = pct
-            self._state.muted = False
+            # Don't mute — just set volume to 0 and let the next real
+            # volume update from the device correct it.
+            logger.info("AirPlay volume: ignoring sentinel -144 dB")
+            return
+        # Map -30 dB → 0 %, 0 dB → 100 %  (clamped)
+        pct = max(0, min(100, int((volume_db + 30) / 30 * 100)))
+        self._state.set_source_volume("airplay", pct, muted=False)
+        logger.info("AirPlay volume: %d%% (from %.2f dB)", pct, volume_db)
 
     def on_progress(self, start_ts: int, current_ts: int, stop_ts: int, sample_rate: int = 44100) -> None:
         if sample_rate <= 0:
@@ -756,25 +772,29 @@ def _create_patched_handler(meta_hook: _MetadataHook, remote: _RemoteControl, co
             super().do_SETUP()
 
         def do_RECORD(self):
-            """Stream start — mark as playing."""
+            """Stream start — mark as connected but NOT playing yet.
+
+            The actual play state arrives via SETRATEANCHORTIME (rate > 0)
+            or DMAP metadata (caps == 1).  Setting is_playing=True here
+            causes a false "playing" state when the iPhone connects paused.
+            """
             state = self._meta_hook._state
             # Infrastructure state — always set
             state.airplay_connected = True
             state.connected = True
             if not state.active_source:
                 state.active_source = "airplay"
-            # Display state — only set live if airplay is the active source
+            # Display state — mark codec/commands but leave is_playing
+            # as-is until the device tells us the actual play state.
             if state.active_source == "airplay":
-                state.is_playing = True
                 state.codec = "airplay"
                 state.supported_commands = list(_AIRPLAY_SUPPORTED_COMMANDS)
             else:
                 state.write_to_snapshot("airplay",
-                    is_playing=True,
                     codec="airplay",
                     supported_commands=list(_AIRPLAY_SUPPORTED_COMMANDS),
                 )
-            logger.info("AirPlay: stream RECORD — playback starting")
+            logger.info("AirPlay: stream RECORD — connected (waiting for play state)")
             try:
                 super().do_RECORD()
             except Exception:
@@ -869,7 +889,7 @@ class AirPlayReceiver:
         self._tui = tui
         self._visualizer = visualizer
         if not device_name:
-            device_name = f"{socket.gethostname()}@Musiciser"
+            device_name = f"Musiciser@{socket.gethostname()}"
         self._device_name = device_name
         self._port = port
         self._config = config
@@ -882,6 +902,7 @@ class AirPlayReceiver:
         self._remote = _RemoteControl()
         self._original_command_cb: object | None = None
         self.__dj_mixer = None
+        self._dj_feed_channel = "b"  # Which mixer channel this receiver feeds
 
     @property
     def _dj_mixer(self):
@@ -893,6 +914,7 @@ class AirPlayReceiver:
         # Forward to PCM consumer if it exists
         if hasattr(self, "_pcm_consumer") and self._pcm_consumer is not None:
             self._pcm_consumer.dj_mixer = mixer
+            self._pcm_consumer.dj_feed_channel = self._dj_feed_channel
 
     @property
     def pin(self) -> str | None:
@@ -919,26 +941,27 @@ class AirPlayReceiver:
                 self._original_command_cb(command)
             return
 
-        # Volume is always local — we control our own speaker output.
+        # Volume is always local and per-source.
         if command == "volume_up":
-            new_vol = min(100, state.volume + 5)
-            state.volume = new_vol
-            if state.muted:
-                state.muted = False
+            cur_vol, cur_muted = state.get_source_volume("airplay")
+            new_vol = min(100, cur_vol + 5)
+            state.set_source_volume("airplay", new_vol, False if cur_muted else None)
+            if cur_muted:
                 logger.info("AirPlay unmuted via volume up")
             logger.info("AirPlay volume up: %d%%", new_vol)
             return
         elif command == "volume_down":
-            new_vol = max(0, state.volume - 5)
-            state.volume = new_vol
-            if state.muted:
-                state.muted = False
+            cur_vol, cur_muted = state.get_source_volume("airplay")
+            new_vol = max(0, cur_vol - 5)
+            state.set_source_volume("airplay", new_vol, False if cur_muted else None)
+            if cur_muted:
                 logger.info("AirPlay unmuted via volume down")
             logger.info("AirPlay volume down: %d%%", new_vol)
             return
         elif command == "mute":
-            state.muted = not state.muted
-            logger.info("AirPlay mute %s", "on" if state.muted else "off")
+            cur_vol, cur_muted = state.get_source_volume("airplay")
+            state.set_source_muted("airplay", not cur_muted)
+            logger.info("AirPlay mute %s", "on" if not cur_muted else "off")
             return
 
         # Play/pause — local only: mute/unmute our speaker output.
@@ -1196,6 +1219,11 @@ class AirPlayReceiver:
         # thread in the parent feeds it to the visualizer.
         pcm_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=64)
         pcm_consumer = _PCMConsumer(pcm_queue, self._visualizer, state=self._state)
+        self._pcm_consumer = pcm_consumer
+        # Propagate DJ mixer if it was already set before pcm_consumer existed
+        if self.__dj_mixer is not None:
+            pcm_consumer.dj_mixer = self.__dj_mixer
+            pcm_consumer.dj_feed_channel = self._dj_feed_channel
         pcm_consumer.start()
 
         # Monkey-patch EventGeneric.spawn to use a thread instead of a
@@ -1340,7 +1368,6 @@ class AirPlayReceiver:
             # Suppress the server's vendor logger from writing to the console
             self._server.logger.setLevel(logging.WARNING)
             self._server.logger.propagate = False
-            self._pcm_consumer = pcm_consumer
             # Mark server as ready (listening) — actual connected=True happens
             # in do_RECORD when a client starts streaming.
             self._state.airplay_ready = True
@@ -1456,3 +1483,9 @@ class AirPlayReceiver:
                 logger.debug("AirPlay: removed pairing file %s", fname)
         except Exception:
             logger.debug("AirPlay: failed to clear pairing store", exc_info=True)
+        # Also clear the remembered-devices list so swap prompt re-appears
+        if forget_all and self._config is not None:
+            if self._config.accepted_devices:
+                self._config.accepted_devices.clear()
+                self._config.save()
+                logger.debug("AirPlay: cleared accepted_devices list")

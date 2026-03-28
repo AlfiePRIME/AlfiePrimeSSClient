@@ -648,7 +648,7 @@ class AP2Handler(http.server.BaseHTTPRequestHandler):
                     if not DISABLE_VM:
                         params_res[p] = str(get_volume()).encode()
                     else:
-                        self.logger.warning("Volume Management is disabled")
+                        self.logger.debug("Volume Management is disabled")
                 else:
                     self.logger.info(f"Ops GET_PARAMETER: {p}")
         if DISABLE_VM:
@@ -682,7 +682,7 @@ class AP2Handler(http.server.BaseHTTPRequestHandler):
                         if not DISABLE_VM:
                             set_volume(float(pp[1]))
                         else:
-                            self.logger.warning("Volume Management is disabled")
+                            self.logger.debug("Volume Management is disabled")
                     elif pp[0] == b"progress":
                         # startTimeStamp, currentTimeStamp, stopTimeStamp
                         try:

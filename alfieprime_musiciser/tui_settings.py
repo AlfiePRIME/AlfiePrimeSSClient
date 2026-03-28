@@ -844,6 +844,7 @@ class SettingsMixin:
         if not cfg.swap_prompt:
             proto_items.append(("Auto Action", "swap_auto_action", cfg.swap_auto_action))
         proto_items.append(("Forget AirPlay Devices", "forget_airplay_devices", cfg.forget_airplay_devices))
+        proto_items.append(("DJ Source Mode", "dj_source_mode", cfg.dj_source_mode))
 
         panel_lines: list[Text] = []
         title_line = Text()
@@ -877,6 +878,12 @@ class SettingsMixin:
                 val_str = value.upper()
                 val_color = "#44ff44" if value == "accept" else "#ff4444"
                 item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
+                if selected:
+                    item.append("  ◂▸", Style(color="#555555"))
+            elif key == "dj_source_mode":
+                _mode_labels = {"mixed": "MIXED", "dual_sendspin": "DUAL SS", "dual_airplay": "DUAL AP"}
+                val_str = _mode_labels.get(value, value.upper())
+                item.append(f"{val_str:>8}", Style(color=th.accent, bold=selected))
                 if selected:
                     item.append("  ◂▸", Style(color="#555555"))
             elif key in ("airplay_enabled", "sendspin_enabled", "swap_prompt", "forget_airplay_devices"):
@@ -913,6 +920,7 @@ class SettingsMixin:
         if not cfg.swap_prompt:
             proto_keys.append("swap_auto_action")
         proto_keys.append("forget_airplay_devices")
+        proto_keys.append("dj_source_mode")
 
         if k in ("b", "escape"):
             self._start_menu_fade_out(lambda: setattr(self, '_settings_sub', ''))
@@ -935,6 +943,10 @@ class SettingsMixin:
                 cfg.swap_auto_action = "accept" if cfg.swap_auto_action == "deny" else "deny"
             elif key == "forget_airplay_devices":
                 cfg.forget_airplay_devices = not cfg.forget_airplay_devices
+            elif key == "dj_source_mode":
+                _modes = ["mixed", "dual_sendspin", "dual_airplay"]
+                _i = _modes.index(cfg.dj_source_mode) if cfg.dj_source_mode in _modes else 0
+                cfg.dj_source_mode = _modes[(_i + 1) % len(_modes)]
             if self._config:
                 self._config = cfg
                 cfg.save()
@@ -942,6 +954,14 @@ class SettingsMixin:
             key = proto_keys[self._protocol_cursor]
             if key == "swap_auto_action":
                 cfg.swap_auto_action = "accept" if cfg.swap_auto_action == "deny" else "deny"
+                if self._config:
+                    self._config = cfg
+                    cfg.save()
+            elif key == "dj_source_mode":
+                _modes = ["mixed", "dual_sendspin", "dual_airplay"]
+                _i = _modes.index(cfg.dj_source_mode) if cfg.dj_source_mode in _modes else 0
+                _dir = 1 if k == "arrow_right" else -1
+                cfg.dj_source_mode = _modes[(_i + _dir) % len(_modes)]
                 if self._config:
                     self._config = cfg
                     cfg.save()

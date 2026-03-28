@@ -43,6 +43,8 @@ class PlayerState:
     bit_depth: int = 16
     volume: int = 100
     muted: bool = False
+    # Per-source volume/mute: {source: {"volume": int, "muted": bool}}
+    _source_volumes: dict[str, dict[str, object]] = field(default_factory=dict, repr=False)
     # For progress interpolation between server updates
     playback_speed: float = 1.0  # 1.0 = normal, 0.0 = paused
     progress_update_time: float = 0.0  # monotonic time of last progress update
@@ -75,6 +77,31 @@ class PlayerState:
     # Per-source state snapshots: {"sendspin": {...}, "airplay": {...}}
     _source_snapshots: dict[str, dict] = field(default_factory=dict, repr=False)
 
+    def set_source_volume(self, source: str, volume: int, muted: bool | None = None) -> None:
+        """Set volume for a specific source. Updates live state if source is active."""
+        sv = self._source_volumes.setdefault(source, {"volume": 100, "muted": False})
+        sv["volume"] = volume
+        if muted is not None:
+            sv["muted"] = muted
+        if self.active_source in (source, ""):
+            self.volume = volume
+            if muted is not None:
+                self.muted = muted
+
+    def set_source_muted(self, source: str, muted: bool) -> None:
+        """Set muted for a specific source. Updates live state if source is active."""
+        sv = self._source_volumes.setdefault(source, {"volume": 100, "muted": False})
+        sv["muted"] = muted
+        if self.active_source in (source, ""):
+            self.muted = muted
+
+    def get_source_volume(self, source: str) -> tuple[int, bool]:
+        """Return (volume, muted) for a source."""
+        sv = self._source_volumes.get(source)
+        if sv is not None:
+            return sv["volume"], sv["muted"]  # type: ignore[return-value]
+        return self.volume, self.muted
+
     def get_interpolated_progress(self) -> int:
         """Get progress interpolated from last server update."""
         if not self.is_playing or self.progress_update_time <= 0 or self.duration_ms <= 0:
@@ -95,6 +122,8 @@ class PlayerState:
                 val = dataclasses.replace(val)
             snap[f] = val
         self._source_snapshots[source] = snap
+        # Persist current volume/muted into the source's volume store
+        self._source_volumes[source] = {"volume": self.volume, "muted": self.muted}
 
     def restore_snapshot(self, source: str) -> None:
         """Restore display fields from the snapshot for *source*.
@@ -108,13 +137,26 @@ class PlayerState:
             defaults = PlayerState()
             for f in _SNAPSHOT_FIELDS:
                 setattr(self, f, getattr(defaults, f))
-            return
-        for f, val in snap.items():
-            if isinstance(val, list):
-                val = list(val)
-            elif isinstance(val, ColorTheme):
-                val = dataclasses.replace(val)
-            setattr(self, f, val)
+        else:
+            # Reset all snapshot fields to defaults first, then overlay
+            # with whatever the snapshot contains.  This prevents stale
+            # data (e.g. the previous source's theme) from bleeding through
+            # when the snapshot is partial.
+            defaults = PlayerState()
+            for f in _SNAPSHOT_FIELDS:
+                val = snap.get(f)
+                if val is None:
+                    val = getattr(defaults, f)
+                if isinstance(val, list):
+                    val = list(val)
+                elif isinstance(val, ColorTheme):
+                    val = dataclasses.replace(val)
+                setattr(self, f, val)
+        # Restore per-source volume/muted
+        sv = self._source_volumes.get(source)
+        if sv is not None:
+            self.volume = sv["volume"]  # type: ignore[assignment]
+            self.muted = sv["muted"]  # type: ignore[assignment]
 
     def write_to_snapshot(self, source: str, **fields: object) -> None:
         """Buffer field updates into *source*'s snapshot without touching live state."""

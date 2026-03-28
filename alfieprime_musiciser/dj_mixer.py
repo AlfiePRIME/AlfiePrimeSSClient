@@ -516,11 +516,12 @@ class DJMixer:
                 # Mix
                 mixed = pcm_a * gain_a + pcm_b * gain_b
 
-                # Feed per-channel visualizers
+                # Feed per-channel visualizers with pre-crossfade audio
+                # so each deck's meters reflect its own level independently
                 if self._viz_a:
-                    self._viz_a.feed_audio(_float32_to_s16(pcm_a * gain_a), immediate=True)
+                    self._viz_a.feed_audio(_float32_to_s16(pcm_a), immediate=True)
                 if self._viz_b:
-                    self._viz_b.feed_audio(_float32_to_s16(pcm_b * gain_b), immediate=True)
+                    self._viz_b.feed_audio(_float32_to_s16(pcm_b), immediate=True)
 
                 # Feed master visualizer
                 self._master_viz.feed_audio(_float32_to_s16(mixed), immediate=True)

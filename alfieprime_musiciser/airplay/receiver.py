@@ -774,6 +774,8 @@ def _create_patched_handler(meta_hook: _MetadataHook, remote: _RemoteControl, co
                         cfg.accepted_devices.append(device_key)
                         cfg.save()
 
+            client_ip = self.client_address[0]
+            logger.info("AirPlay: SETUP from %s — connection accepted", client_ip)
             super().do_SETUP()
 
         def do_RECORD(self):
@@ -799,7 +801,8 @@ def _create_patched_handler(meta_hook: _MetadataHook, remote: _RemoteControl, co
                     codec="airplay",
                     supported_commands=list(_AIRPLAY_SUPPORTED_COMMANDS),
                 )
-            logger.info("AirPlay: stream RECORD — connected (waiting for play state)")
+            client_ip = self.client_address[0]
+            logger.info("AirPlay: %s connected successfully (waiting for play state)", client_ip)
             try:
                 super().do_RECORD()
             except Exception:
@@ -815,7 +818,8 @@ def _create_patched_handler(meta_hook: _MetadataHook, remote: _RemoteControl, co
             in both cases, so we peek at the body *before* delegating to
             determine which kind this is.
             """
-            logger.info("AirPlay: stream TEARDOWN")
+            client_ip = self.client_address[0]
+            logger.info("AirPlay: %s TEARDOWN", client_ip)
             # Peek at the body to distinguish pause vs disconnect.
             # A stream-level teardown (pause) has {"streams": [...]}.
             # A full disconnect has an empty plist {}.

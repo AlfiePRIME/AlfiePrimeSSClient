@@ -297,6 +297,12 @@ def _render_dj_vu(
     vu_left: float, vu_right: float, height: int, theme: ColorTheme, label: str,
 ) -> list[Text]:
     """Render a compact stereo VU meter column for a channel."""
+    # Apply sqrt scaling (matches boombox VU) so quiet audio still shows movement
+    disp_l = math.sqrt(max(min(vu_left, 1.0), 0.0))
+    disp_r = math.sqrt(max(min(vu_right, 1.0), 0.0))
+    filled_l = int(disp_l * height)
+    filled_r = int(disp_r * height)
+
     lines: list[Text] = []
     header = Text()
     header.append(f" {label} ", _cached_style("#888888"))
@@ -313,13 +319,11 @@ def _render_dj_vu(
             color = theme.primary
 
         line = Text()
-        # Left channel
-        if vu_left * height > row:
+        if row < filled_l:
             line.append("█", _cached_style(color))
         else:
             line.append("░", _cached_style("#222222"))
-        # Right channel
-        if vu_right * height > row:
+        if row < filled_r:
             line.append("█", _cached_style(color))
         else:
             line.append("░", _cached_style("#222222"))

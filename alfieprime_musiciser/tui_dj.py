@@ -582,17 +582,16 @@ class DJMixin:
         beat_count, beat_intensity = self._visualizer.get_beat()  # type: ignore[attr-defined]
 
         # Per-channel VU/beat from dedicated visualizers
-        # Scale by both channel volume and crossfader gain (equal-power curve)
+        # The mixer feeds per-channel vizs with post-volume audio, so VU values
+        # already reflect channel volume. Only scale by crossfader gain here.
         xf = dj.crossfader
         xf_gain_a = math.cos(xf * math.pi / 2)
         xf_gain_b = math.sin(xf * math.pi / 2)
-        vol_a_frac = dj.channel_a.volume / 100.0 * xf_gain_a
-        vol_b_frac = dj.channel_b.volume / 100.0 * xf_gain_b
         if self._dj_viz_a is not None:
             _, _, vu_a_l, vu_a_r = self._dj_viz_a.get_spectrum()
             _, beat_a = self._dj_viz_a.get_beat()
-            vu_a_l *= vol_a_frac
-            vu_a_r *= vol_a_frac
+            vu_a_l *= xf_gain_a
+            vu_a_r *= xf_gain_a
             beat_a *= xf_gain_a
         else:
             vu_a_l = vu_a_r = vu_left * xf_gain_a
@@ -601,8 +600,8 @@ class DJMixin:
         if self._dj_viz_b is not None:
             _bands_b, _peaks_b, vu_b_l, vu_b_r = self._dj_viz_b.get_spectrum()
             _, beat_b = self._dj_viz_b.get_beat()
-            vu_b_l *= vol_b_frac
-            vu_b_r *= vol_b_frac
+            vu_b_l *= xf_gain_b
+            vu_b_r *= xf_gain_b
             beat_b *= xf_gain_b
         else:
             vu_b_l = vu_b_r = vu_left * xf_gain_b
@@ -928,16 +927,18 @@ class DJMixin:
             return
 
         if k == "p":
-            # In DJ mode, ensure SendSpin gets the pause/play command
-            # regardless of which source is active. Capture desired action
-            # NOW before any handler flips state.is_playing (race condition
-            # with async scheduling).
+            # In DJ mode, use explicit dj_pause/dj_play for SendSpin to
+            # avoid race conditions with async play_pause reading stale
+            # is_playing. Also fire play_pause for AirPlay state handling.
             state = getattr(self, "state", None)
             ss_cb = getattr(self, "_sendspin_command_callback", None)
             want_pause = state.is_playing if state else True
-            if ss_cb and state and state.active_source == "airplay":
+            # Always send explicit command to SendSpin
+            if ss_cb:
                 ss_cb("dj_pause" if want_pause else "dj_play")
-            self._fire_command("play_pause")  # type: ignore[attr-defined]
+            # Only fire play_pause for AirPlay (avoid duplicate to SendSpin)
+            if state and state.active_source == "airplay":
+                self._fire_command("play_pause")  # type: ignore[attr-defined]
             _flash("p")
             return
 

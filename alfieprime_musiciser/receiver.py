@@ -876,24 +876,25 @@ class SendSpinReceiver:
             return
 
         if self._client is None or not self._client.connected:
-            logger.debug("Command '%s' dropped — not connected", command)
+            logger.warning("Command '%s' dropped — not connected (client=%s)", command, self._client is not None)
             return
         if self._loop is None:
-            logger.debug("Command '%s' dropped — no event loop", command)
+            logger.warning("Command '%s' dropped — no event loop", command)
             return
 
         from aiosendspin.models.types import MediaCommand
 
         cmds = set(state.supported_commands)
+        logger.warning("Command '%s': is_playing=%s cmds=%s", command, state.is_playing, cmds)
 
         async def _send() -> None:
             assert self._client is not None
             try:
                 if command == "dj_pause" and "pause" in cmds:
-                    logger.info("Sending command: PAUSE (DJ)")
+                    logger.warning("Sending command: PAUSE (DJ)")
                     await self._client.send_group_command(MediaCommand.PAUSE)
                 elif command == "dj_play" and "play" in cmds:
-                    logger.info("Sending command: PLAY (DJ)")
+                    logger.warning("Sending command: PLAY (DJ)")
                     await self._client.send_group_command(MediaCommand.PLAY)
                 elif command == "play_pause":
                     if state.is_playing and "pause" in cmds:

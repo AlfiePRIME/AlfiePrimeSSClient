@@ -705,13 +705,15 @@ class SendSpinReceiver:
         if cmd.command == PlayerCommand.VOLUME and cmd.volume is not None:
             self._state.set_source_volume("sendspin", cmd.volume)
             logger.info("Volume set to %d%%", cmd.volume)
-            if self._audio_handler is not None:
+            # Don't touch audio handler during DJ mode — mixer owns playback
+            if self._audio_handler is not None and self._dj_mixer is None:
                 _, ss_muted = self._state.get_source_volume("sendspin")
                 self._audio_handler.set_volume(cmd.volume, muted=ss_muted)
         elif cmd.command == PlayerCommand.MUTE and cmd.mute is not None:
             self._state.set_source_muted("sendspin", cmd.mute)
             logger.info("Mute %s", "on" if cmd.mute else "off")
-            if self._audio_handler is not None:
+            # Don't touch audio handler during DJ mode — mixer owns playback
+            if self._audio_handler is not None and self._dj_mixer is None:
                 ss_vol, _ = self._state.get_source_volume("sendspin")
                 self._audio_handler.set_volume(ss_vol, muted=cmd.mute)
 
@@ -819,7 +821,7 @@ class SendSpinReceiver:
             vol = max(0, min(100, cfg.auto_volume))
             self._state.set_source_volume("sendspin", vol)
             logger.info("Auto-volume: setting to %d%%", vol)
-            if self._audio_handler is not None:
+            if self._audio_handler is not None and self._dj_mixer is None:
                 _, ss_muted = self._state.get_source_volume("sendspin")
                 self._audio_handler.set_volume(vol, muted=ss_muted)
 

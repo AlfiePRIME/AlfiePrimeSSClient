@@ -162,6 +162,9 @@ async def _run_with_config(
     # DJ mode activation callback — mute native audio, connect mixer to receivers
     def _on_dj_activate(active: bool, mixer) -> None:
         if active and mixer is not None:
+            # Save sendspin volume before muting so we can restore it on DJ exit
+            ss_vol, ss_muted = tui.state.get_source_volume("sendspin")
+            tui.state._source_volumes["sendspin"] = {"volume": ss_vol, "muted": ss_muted}
             # Mute native audio outputs — mixer does its own playback
             if receiver._audio_handler is not None:
                 receiver._audio_handler.set_volume(0, muted=True)
@@ -205,6 +208,9 @@ async def _run_with_config(
                     ss_muted = False
                 logger.info("DJ exit: restoring SendSpin audio vol=%d muted=%s", ss_vol, ss_muted)
                 receiver._audio_handler.set_volume(ss_vol, muted=ss_muted)
+                # Also update state so TUI reflects correct volume
+                tui.state.volume = ss_vol
+                tui.state.muted = ss_muted
             # Ensure the master visualizer is unpaused for the boombox screen
             tui._visualizer.set_paused(False)
             logger.info("DJ mode: native audio restored")

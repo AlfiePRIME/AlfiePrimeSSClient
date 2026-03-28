@@ -52,7 +52,7 @@ SAMPLE_WIDTH = 2  # 16-bit
 FRAME_SIZE = CHANNELS * SAMPLE_WIDTH  # 4 bytes per frame
 CHUNK_FRAMES = 1024  # ~21ms at 48kHz
 CHUNK_BYTES = CHUNK_FRAMES * FRAME_SIZE
-RING_SIZE = SAMPLE_RATE * CHANNELS * 2  # 2 seconds of stereo float32
+RING_SIZE = SAMPLE_RATE * CHANNELS // 2  # 0.5 seconds of stereo float32
 
 
 # ── Biquad filter for EQ ────────────────────────────────────────────────────
@@ -184,13 +184,18 @@ class _BiquadFilter:
 
 
 class _ChannelEQ:
-    """3-band EQ for a single channel."""
+    """3-band EQ for a single channel.
+
+    Optimised to de-interleave once, apply all non-bypass filters in
+    float64, then re-interleave once — avoiding repeated type conversions.
+    """
 
     def __init__(self) -> None:
         self.bass = _BiquadFilter()
         self.mid = _BiquadFilter()
         self.treble = _BiquadFilter()
         self._last_params: tuple[int, int, int] = (0, 0, 0)
+        self._all_bypass = True
 
     def update(self, bass_db: int, mid_db: int, treble_db: int) -> None:
         params = (bass_db, mid_db, treble_db)
@@ -200,12 +205,37 @@ class _ChannelEQ:
         self.bass.set_coeffs(_low_shelf_coeffs(250.0, float(bass_db), SAMPLE_RATE))
         self.mid.set_coeffs(_peaking_eq_coeffs(1000.0, float(mid_db), 0.7, SAMPLE_RATE))
         self.treble.set_coeffs(_high_shelf_coeffs(4000.0, float(treble_db), SAMPLE_RATE))
+        self._all_bypass = self.bass._bypass and self.mid._bypass and self.treble._bypass
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        samples = self.bass.process(samples)
-        samples = self.mid.process(samples)
-        samples = self.treble.process(samples)
-        return samples
+        if self._all_bypass:
+            return samples
+
+        n = len(samples)
+        if n < 2:
+            return samples
+
+        # Single de-interleave
+        left = samples[0::2].astype(np.float64)
+        right = samples[1::2].astype(np.float64)
+
+        # Apply active filters in sequence (staying in float64)
+        for filt in (self.bass, self.mid, self.treble):
+            if filt._bypass:
+                continue
+            if _HAS_SCIPY:
+                left, filt._zi_l = _sosfilt(filt._sos, left, zi=filt._zi_l)
+                right, filt._zi_r = _sosfilt(filt._sos, right, zi=filt._zi_r)
+            else:
+                b0, b1, b2, a1, a2 = filt._coeffs
+                left, filt._zi_l = _BiquadFilter._df2t(left, b0, b1, b2, a1, a2, filt._zi_l)
+                right, filt._zi_r = _BiquadFilter._df2t(right, b0, b1, b2, a1, a2, filt._zi_r)
+
+        # Single re-interleave
+        out = np.empty(n, dtype=np.float32)
+        out[0::2] = left
+        out[1::2] = right
+        return out
 
 
 # ── Ring buffer for PCM input ────────────────────────────────────────────────
@@ -418,15 +448,14 @@ class DJMixer:
         if bit_depth == 16:
             samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
         elif bit_depth == 24:
-            # Unpack 24-bit to 32-bit
-            raw = bytearray(data)
-            n_samples = len(raw) // 3
-            out = np.empty(n_samples, dtype=np.float32)
-            for i in range(n_samples):
-                b = raw[i * 3: i * 3 + 3]
-                val = int.from_bytes(b, "little", signed=True)
-                out[i] = val / 8388608.0
-            samples = out
+            # Vectorized 24-bit decode
+            n_samples = len(data) // 3
+            raw = np.frombuffer(data[:n_samples * 3], dtype=np.uint8).reshape(-1, 3)
+            arr = (raw[:, 0].astype(np.int32)
+                   | (raw[:, 1].astype(np.int32) << 8)
+                   | (raw[:, 2].astype(np.int32) << 16))
+            arr[arr >= 0x800000] -= 0x1000000
+            samples = arr.astype(np.float32) / 8388608.0
         elif bit_depth == 32:
             samples = np.frombuffer(data, dtype=np.int32).astype(np.float32) / 2147483648.0
         else:
@@ -467,9 +496,13 @@ class DJMixer:
             self._viz_b.set_format(SAMPLE_RATE, 16, 2)
 
         chunk_stereo = CHUNK_FRAMES * CHANNELS  # float32 samples per chunk
+        # Pre-allocate silence buffer to avoid np.pad allocations in hot path
+        _silence = np.zeros(chunk_stereo, dtype=np.float32)
         logger.warning("DJ mixer: mix_loop STARTED (pyaudio OK)")
         _diag_interval = 0
-        _last_b_avail = 0
+
+        # Pre-compute half-pi for crossfade
+        _half_pi = math.pi / 2
 
         while self._running:
             try:
@@ -493,11 +526,23 @@ class DJMixer:
                 if _diag_interval >= 240:  # ~5s at 48 iter/sec
                     _diag_interval = 0
 
-                # Pad to chunk size if needed
-                if len(pcm_a) < chunk_stereo:
-                    pcm_a = np.pad(pcm_a, (0, chunk_stereo - len(pcm_a)))
-                if len(pcm_b) < chunk_stereo:
-                    pcm_b = np.pad(pcm_b, (0, chunk_stereo - len(pcm_b)))
+                # Pad to chunk size if needed (use pre-allocated silence)
+                len_a = len(pcm_a)
+                len_b = len(pcm_b)
+                if len_a < chunk_stereo:
+                    if len_a == 0:
+                        pcm_a = _silence
+                    else:
+                        tmp = _silence.copy()
+                        tmp[:len_a] = pcm_a
+                        pcm_a = tmp
+                if len_b < chunk_stereo:
+                    if len_b == 0:
+                        pcm_b = _silence
+                    else:
+                        tmp = _silence.copy()
+                        tmp[:len_b] = pcm_b
+                        pcm_b = tmp
 
                 # Apply EQ
                 pcm_a = self._eq_a.process(pcm_a)
@@ -511,16 +556,16 @@ class DJMixer:
 
                 # Equal-power crossfade
                 xf = dj.crossfader
-                gain_a = math.cos(xf * math.pi / 2)
-                gain_b = math.sin(xf * math.pi / 2)
+                gain_a = math.cos(xf * _half_pi)
+                gain_b = math.sin(xf * _half_pi)
 
                 # Mix
                 mixed = pcm_a * gain_a + pcm_b * gain_b
 
                 # Periodic diagnostic every ~5 seconds
                 if _diag_interval == 0:
-                    _peak_a = float(np.max(np.abs(pcm_a))) if len(pcm_a) > 0 else 0.0
-                    _peak_b = float(np.max(np.abs(pcm_b))) if len(pcm_b) > 0 else 0.0
+                    _peak_a = float(np.max(np.abs(pcm_a))) if len_a > 0 else 0.0
+                    _peak_b = float(np.max(np.abs(pcm_b))) if len_b > 0 else 0.0
                     _peak_mix = float(np.max(np.abs(mixed)))
                     logger.warning(
                         "DJ DIAG: feed_a=%d feed_b=%d rb_reads=%d "
@@ -535,18 +580,16 @@ class DJMixer:
                         self._master_viz._paused,
                     )
 
-                # Feed per-channel visualizers with pre-crossfade audio
-                # so each deck's meters reflect its own level independently
+                # Feed visualizers directly with float32 (no s16 conversion)
                 if self._viz_a:
-                    self._viz_a.feed_audio(_float32_to_s16(pcm_a), immediate=True)
+                    self._viz_a.feed_audio_float32(pcm_a)
                 if self._viz_b:
-                    self._viz_b.feed_audio(_float32_to_s16(pcm_b), immediate=True)
+                    self._viz_b.feed_audio_float32(pcm_b)
+                self._master_viz.feed_audio_float32(mixed)
 
-                # Feed master visualizer
-                self._master_viz.feed_audio(_float32_to_s16(mixed), immediate=True)
-
-                # Output
-                self._stream.write(_float32_to_s16(mixed))
+                # Convert to s16 ONCE for audio output
+                out_bytes = _float32_to_s16(mixed)
+                self._stream.write(out_bytes)
 
             except Exception:
                 logger.debug("DJ mixer: mix loop error", exc_info=True)

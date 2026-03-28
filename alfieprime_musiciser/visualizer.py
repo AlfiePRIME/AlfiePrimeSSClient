@@ -87,6 +87,30 @@ class AudioVisualizer:
                 self._total_samples_queued += len(samples)
                 self._delay_queue.append((samples, self._vu_pending_left, self._vu_pending_right, self._total_samples_queued))
 
+    def feed_audio_float32(self, stereo_f32: np.ndarray) -> None:
+        """Fast path: feed interleaved stereo float32 samples directly.
+
+        Skips PCM decoding — used by the DJ mixer which already works in float32.
+        """
+        if len(stereo_f32) < 2:
+            return
+        ch = self._channels
+        if ch >= 2:
+            reshaped = stereo_f32.reshape(-1, 2)
+            left = reshaped[:, 0]
+            right = reshaped[:, 1]
+            vu_l = float(np.sqrt(np.mean(left ** 2)))
+            vu_r = float(np.sqrt(np.mean(right ** 2)))
+            mono = (left + right) * 0.5
+        else:
+            vu_l = vu_r = float(np.sqrt(np.mean(stereo_f32 ** 2)))
+            mono = stereo_f32
+        with self._lock:
+            self._write_to_ring_buffer(mono)
+            self._vu_left = vu_l
+            self._vu_right = vu_r
+            self._has_data = True
+
     def _write_to_ring_buffer(self, samples: np.ndarray) -> None:
         """Write mono samples to the ring buffer."""
         n = len(samples)

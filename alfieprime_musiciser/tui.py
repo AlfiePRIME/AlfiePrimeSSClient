@@ -1257,7 +1257,95 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
             blank = " " * term_w
             lines.extend([blank] * (term_h - n))
 
+        # Overlay toast notification if active
+        st = self.state
+        if st.toast_message and time.monotonic() < st.toast_expire:
+            lines = self._overlay_toast(lines, term_w, term_h)
+        elif st.toast_message:
+            st.toast_message = ""
+            st.toast_detail = ""
+
         return "\n".join(lines)
+
+    def _overlay_toast(
+        self, lines: list[str], term_w: int, term_h: int,
+    ) -> list[str]:
+        """Overlay a small centered toast notification onto rendered ANSI lines."""
+        msg = self.state.toast_message
+        detail = self.state.toast_detail
+        th = self.state.theme
+
+        # Build toast content width
+        content_w = max(len(msg), len(detail)) + 4  # padding
+        content_w = min(content_w, term_w - 4)
+        box_w = content_w + 2  # +2 for left/right border
+
+        # Render each toast row as a full-width ANSI line via Rich
+        def _render_line(txt: Text) -> str:
+            buf = _io.StringIO()
+            c = Console(
+                file=buf, width=term_w, height=1,
+                force_terminal=True, color_system="truecolor",
+            )
+            c.print(txt, end="")
+            return buf.getvalue()
+
+        border_style = Style(color=th.primary, bold=True)
+        msg_style = Style(color=th.accent, bold=True)
+        detail_style = Style(color="#aaaaaa")
+        bg_style = Style(bgcolor="#111111")
+        pad_left = max(0, (term_w - box_w) // 2)
+        pad_right_w = term_w - pad_left - box_w
+
+        def _full_line(center: Text) -> str:
+            t = Text()
+            t.append(" " * pad_left)
+            t.append_text(center)
+            if pad_right_w > 0:
+                t.append(" " * pad_right_w)
+            return _render_line(t)
+
+        def _box_line(inner: str, inner_style: Style) -> str:
+            padded = inner.center(content_w)
+            center = Text()
+            center.append("│", border_style)
+            center.append(padded, inner_style)
+            center.append("│", border_style)
+            return _full_line(center)
+
+        toast_rows: list[str] = []
+
+        # Top border
+        top = Text()
+        top.append("┌" + "─" * content_w + "┐", border_style)
+        toast_rows.append(_full_line(top))
+
+        # Blank
+        toast_rows.append(_box_line("", bg_style))
+
+        # Message
+        toast_rows.append(_box_line(msg, msg_style))
+
+        # Detail
+        if detail:
+            toast_rows.append(_box_line(detail, detail_style))
+
+        # Blank
+        toast_rows.append(_box_line("", bg_style))
+
+        # Bottom border
+        bot = Text()
+        bot.append("└" + "─" * content_w + "┘", border_style)
+        toast_rows.append(_full_line(bot))
+
+        # Splice toast into center of frame
+        toast_h = len(toast_rows)
+        start_y = max(0, (term_h - toast_h) // 2)
+        for i, tl in enumerate(toast_rows):
+            row = start_y + i
+            if row < len(lines):
+                lines[row] = tl
+        return lines
 
     def _render_frame_gui(self) -> list[tuple[str, str | None, str | None, bool]]:
         """Render the UI directly to (text, fg, bg, bold) segments for the GUI.

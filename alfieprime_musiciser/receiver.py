@@ -363,6 +363,11 @@ class SendSpinReceiver:
         if self._state.active_source == "sendspin":
             self._state.server_name = server_name
         logger.info("Connected to server: %s (%s)", server_name, remote)
+        src_label = "Source 1" if self._dj_feed_channel == "a" else "Source 2"
+        self._state.show_toast(
+            f"SendSpin connected",
+            f"{server_name} → {src_label}",
+        )
 
         # If another source is already active, mute SendSpin audio and pause
         # playback on the MA server so it doesn't stream in the background.
@@ -431,6 +436,11 @@ class SendSpinReceiver:
                 self._state.sendspin_server_name = url
                 if self._state.active_source == "sendspin":
                     self._state.server_name = url
+                src_label = "Source 1" if self._dj_feed_channel == "a" else "Source 2"
+                self._state.show_toast(
+                    f"SendSpin connected",
+                    f"{url} → {src_label}",
+                )
                 backoff = 1.0
 
                 if self._state.active_source != "sendspin":
@@ -506,7 +516,8 @@ class SendSpinReceiver:
                 mixer.feed_a(raw_pcm)
 
         # Feed visualizer only when SendSpin is the active source
-        if not self._state.active_source or self._state.active_source == "sendspin":
+        # and DJ mixer is NOT running (mixer owns the master viz in DJ mode)
+        if mixer is None and (not self._state.active_source or self._state.active_source == "sendspin"):
             self._visualizer.set_format(pcm.sample_rate, pcm.bit_depth, pcm.channels)
             self._visualizer.feed_audio(raw_pcm)
 

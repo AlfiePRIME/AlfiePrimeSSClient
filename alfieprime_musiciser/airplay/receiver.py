@@ -203,6 +203,12 @@ class _PCMConsumer:
                         mixer.feed_b(data)
 
                 # Only feed visualizer when AirPlay is the active source
+                # and DJ mixer is NOT running (mixer owns the master viz in DJ mode)
+                if mixer is not None:
+                    # Ensure is_playing stays True while receiving audio
+                    if self._state and not self._state.is_playing:
+                        self._state.is_playing = True
+                    continue
                 if self._state and self._state.active_source != "airplay":
                     continue
                 # PCM from AirPlay child is always s16 (resampled), use 16-bit
@@ -235,6 +241,7 @@ class _MetadataHook:
         self._state = state
         self._visualizer = visualizer
         self._last_title = ""
+        self.source_label = ""  # e.g. "Source 2" — set by AirPlayReceiver
 
     def _is_active(self) -> bool:
         return self._state.active_source in ("airplay", "")
@@ -802,7 +809,12 @@ def _create_patched_handler(meta_hook: _MetadataHook, remote: _RemoteControl, co
                     supported_commands=list(_AIRPLAY_SUPPORTED_COMMANDS),
                 )
             client_ip = self.client_address[0]
+            src_label = getattr(self._meta_hook, "source_label", "")
             logger.info("AirPlay: %s connected successfully (waiting for play state)", client_ip)
+            state.show_toast(
+                f"AirPlay connected",
+                f"{client_ip} → {src_label}" if src_label else client_ip,
+            )
             try:
                 super().do_RECORD()
             except Exception:
@@ -1220,6 +1232,9 @@ class AirPlayReceiver:
 
         # Create metadata hook
         meta_hook = _MetadataHook(self._state, visualizer=self._visualizer)
+        # Label for toast notifications (e.g. "Source 2")
+        ch = self._dj_feed_channel
+        meta_hook.source_label = "Source 1" if ch == "a" else "Source 2"
 
         # Create patched handler
         HandlerClass = _create_patched_handler(meta_hook, self._remote, config=self._config)

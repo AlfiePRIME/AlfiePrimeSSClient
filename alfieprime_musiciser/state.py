@@ -74,8 +74,18 @@ class PlayerState:
     swap_pending_source: str = ""  # "sendspin" or "airplay"
     swap_pending_name: str = ""  # display name of the new device
     swap_response: str = ""  # "accept", "deny", or "" (pending)
+    # Toast notification (auto-dismiss overlay)
+    toast_message: str = ""  # message to display
+    toast_detail: str = ""  # secondary detail line
+    toast_expire: float = 0.0  # time.monotonic() when to dismiss
     # Per-source state snapshots: {"sendspin": {...}, "airplay": {...}}
     _source_snapshots: dict[str, dict] = field(default_factory=dict, repr=False)
+
+    def show_toast(self, message: str, detail: str = "", duration: float = 1.0) -> None:
+        """Show a toast notification that auto-dismisses after *duration* seconds."""
+        self.toast_message = message
+        self.toast_detail = detail
+        self.toast_expire = time.monotonic() + duration
 
     def set_source_volume(self, source: str, volume: int, muted: bool | None = None) -> None:
         """Set volume for a specific source. Updates live state if source is active."""

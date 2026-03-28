@@ -41,12 +41,19 @@ def setup_file_logging() -> str:
     """Enable file logging for AirPlay debug output. Returns the log path.
 
     Safe to call multiple times — only attaches once.
+    On first call, rotates the existing log to .old (deleting any prior .old).
     """
     global _file_logging_active, _file_handler
     if _file_logging_active:
         return _LOG_FILE
     try:
         os.makedirs(_LOG_DIR, exist_ok=True)
+        # Rotate: delete .old, rename current → .old
+        _old = _LOG_FILE + ".old"
+        if os.path.exists(_old):
+            os.remove(_old)
+        if os.path.exists(_LOG_FILE):
+            os.rename(_LOG_FILE, _old)
         handler = logging.FileHandler(_LOG_FILE, mode="a", encoding="utf-8")
         handler.setLevel(logging.DEBUG)
         # Use ASCII-safe separator to avoid encoding issues on Windows

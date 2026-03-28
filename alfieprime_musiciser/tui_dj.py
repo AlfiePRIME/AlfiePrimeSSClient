@@ -23,6 +23,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Attach file handler so DJ diagnostics appear in airplay_debug.log
+def _setup_tui_dj_log() -> None:
+    import os
+    log_file = os.path.join(os.path.expanduser("~"), ".cache", "alfieprime", "airplay_debug.log")
+    if os.path.isdir(os.path.dirname(log_file)):
+        for h in logger.handlers:
+            if isinstance(h, logging.FileHandler):
+                return
+        try:
+            fh = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+            fh.setFormatter(logging.Formatter(
+                "%(asctime)s | %(levelname)-5s | %(name)s | %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            ))
+            fh.setLevel(logging.DEBUG)
+            logger.addHandler(fh)
+            logger.setLevel(logging.DEBUG)
+        except Exception:
+            pass
+_setup_tui_dj_log()
+
 
 # ── Turntable ASCII frames (7 lines × 13 cols) ──────────────────────────────
 
@@ -567,8 +588,17 @@ class DJMixin:
             beat_a = beat_intensity if state.active_source == "sendspin" else 0.0
 
         if self._dj_viz_b is not None:
-            _, _, vu_b_l, vu_b_r = self._dj_viz_b.get_spectrum()
+            _bands_b, _peaks_b, vu_b_l, vu_b_r = self._dj_viz_b.get_spectrum()
             _, beat_b = self._dj_viz_b.get_beat()
+            # Check if viz_b is the same object the mixer is feeding
+            _viz_b_same = (self._dj_mixer is not None
+                           and self._dj_mixer._viz_b is self._dj_viz_b)
+            _viz_b_has_data = getattr(self._dj_viz_b, '_has_data', '?')
+            logger.debug(
+                "VIZ_B: vu_l=%.4f vu_r=%.4f beat=%.2f has_data=%s same_obj=%s bands_max=%.4f",
+                vu_b_l, vu_b_r, beat_b, _viz_b_has_data, _viz_b_same,
+                max(_bands_b) if _bands_b else 0.0,
+            )
         else:
             vu_b_l = vu_b_r = vu_left * dj.crossfader
             beat_b = beat_intensity if state.active_source == "airplay" else 0.0

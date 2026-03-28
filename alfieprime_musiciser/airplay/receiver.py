@@ -187,22 +187,20 @@ class _PCMConsumer:
                 # Feed DJ mixer when active — channel determined by dj_feed_channel
                 mixer = self.dj_mixer
                 if mixer is not None:
+                    # AirPlay child always resamples to s16, so use 16-bit
                     if self.dj_feed_channel == "a":
-                        mixer.set_format_a(
-                            self.sample_rate, self.sample_size, self.channels,
-                        )
+                        mixer.set_format_a(self.sample_rate, 16, self.channels)
                         mixer.feed_a(data)
                     else:
-                        mixer.set_format_b(
-                            self.sample_rate, self.sample_size, self.channels,
-                        )
+                        mixer.set_format_b(self.sample_rate, 16, self.channels)
                         mixer.feed_b(data)
 
                 # Only feed visualizer when AirPlay is the active source
                 if self._state and self._state.active_source != "airplay":
                     continue
+                # PCM from AirPlay child is always s16 (resampled), use 16-bit
                 self._visualizer.set_format(
-                    self.sample_rate, self.sample_size, self.channels,
+                    self.sample_rate, 16, self.channels,
                 )
                 # Ensure visualizer is unpaused — SendSpin may have left it
                 # paused before we switched to AirPlay.
@@ -215,7 +213,7 @@ class _PCMConsumer:
                     self._state.is_playing = True
                 self._visualizer.feed_audio(data, immediate=True)
             except Exception:
-                logger.debug("PCM consumer feed error", exc_info=True)
+                logger.warning("PCM consumer feed error", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -915,6 +913,10 @@ class AirPlayReceiver:
         if hasattr(self, "_pcm_consumer") and self._pcm_consumer is not None:
             self._pcm_consumer.dj_mixer = mixer
             self._pcm_consumer.dj_feed_channel = self._dj_feed_channel
+            logger.info("AirPlay: DJ mixer propagated to PCM consumer (ch=%s, mixer=%s)",
+                        self._dj_feed_channel, "ON" if mixer else "OFF")
+        else:
+            logger.warning("AirPlay: DJ mixer set but _pcm_consumer not available yet")
 
     @property
     def pin(self) -> str | None:

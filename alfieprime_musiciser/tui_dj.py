@@ -820,6 +820,14 @@ class DJMixin:
         else:
             status.append(f"  B·{_short_b} ○", _off)
 
+        # Diagnostic counters for debugging data flow
+        if self._dj_mixer is not None:
+            _fa = self._dj_mixer._feed_a_count
+            _fb = self._dj_mixer._feed_b_count
+            _mc = self._dj_mixer._mix_count
+            _rb = self._dj_mixer._ring_b_reads
+            status.append(f"  │ A:{_fa} B:{_fb} mix:{_mc} rb:{_rb}", _cached_style("#666666"))
+
         parts.append(Panel(
             status,
             border_style="#444444", padding=(0, 0),

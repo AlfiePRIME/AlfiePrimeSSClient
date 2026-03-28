@@ -312,6 +312,11 @@ class DJMixer:
         self._channels_b = 2
         self._bit_depth_a = 16
         self._bit_depth_b = 16
+        # Diagnostic counters — exposed on DJ screen for debugging
+        self._feed_a_count = 0
+        self._feed_b_count = 0
+        self._mix_count = 0
+        self._ring_b_reads = 0  # non-zero reads from ring_b
 
     def start(self) -> None:
         """Start the mixer output thread."""
@@ -360,6 +365,7 @@ class DJMixer:
                 pcm_bytes, self._rate_a, self._bit_depth_a, self._channels_a,
             )
             self._ring_a.write(samples)
+            self._feed_a_count += 1
         except Exception:
             logger.debug("DJ mixer: feed_a error", exc_info=True)
 
@@ -370,6 +376,7 @@ class DJMixer:
                 pcm_bytes, self._rate_b, self._bit_depth_b, self._channels_b,
             )
             self._ring_b.write(samples)
+            self._feed_b_count += 1
         except Exception:
             logger.debug("DJ mixer: feed_b error", exc_info=True)
 
@@ -443,6 +450,9 @@ class DJMixer:
                 # Read from ring buffers
                 pcm_a = self._ring_a.read(chunk_stereo)
                 pcm_b = self._ring_b.read(chunk_stereo)
+                self._mix_count += 1
+                if len(pcm_b) > 0:
+                    self._ring_b_reads += 1
 
                 # Pad to chunk size if needed
                 if len(pcm_a) < chunk_stereo:

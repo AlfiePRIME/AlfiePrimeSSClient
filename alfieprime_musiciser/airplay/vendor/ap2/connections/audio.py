@@ -557,11 +557,13 @@ class Audio:
         self.sample_delay = pyAudioDelay + audioDevicelatency + codecLatencySec + ptpDelay
         self.audio_screen_logger.info(f"Total sample_delay (sec): {self.sample_delay:0.5f}")
 
-        # Notify parent of actual audio format via the PCM queue
+        # Notify parent of actual audio format via the PCM queue.
+        # The resampler always outputs s16 packed, so report 16-bit
+        # regardless of the negotiated codec bit depth.
         if self._pcm_queue is not None:
             try:
                 self._pcm_queue.put_nowait(
-                    ("_fmt", self.sample_rate, self.sample_size, self.channel_count)
+                    ("_fmt", self.sample_rate, 16, self.channel_count)
                 )
             except Exception:
                 pass

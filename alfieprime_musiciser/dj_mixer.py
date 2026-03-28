@@ -21,6 +21,29 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+def _setup_dj_file_log() -> None:
+    """Ensure DJ mixer diagnostics also go to the airplay debug log."""
+    import os
+    log_dir = os.path.join(os.path.expanduser("~"), ".cache", "alfieprime")
+    log_file = os.path.join(log_dir, "airplay_debug.log")
+    if os.path.isdir(log_dir):
+        for h in logger.handlers:
+            if isinstance(h, logging.FileHandler) and h.baseFilename == log_file:
+                return  # already attached
+        try:
+            fh = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+            fh.setFormatter(logging.Formatter(
+                "%(asctime)s | %(levelname)-5s | %(name)s | %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            ))
+            fh.setLevel(logging.DEBUG)
+            logger.addHandler(fh)
+            logger.setLevel(logging.DEBUG)
+        except Exception:
+            pass
+
+_setup_dj_file_log()
+
 # ── Constants ────────────────────────────────────────────────────────────────
 
 SAMPLE_RATE = 48000
@@ -436,6 +459,9 @@ class DJMixer:
             self._viz_b.set_format(SAMPLE_RATE, 16, 2)
 
         chunk_stereo = CHUNK_FRAMES * CHANNELS  # float32 samples per chunk
+        logger.warning("DJ mixer: mix_loop STARTED (pyaudio OK)")
+        _diag_interval = 0
+        _last_b_avail = 0
 
         while self._running:
             try:
@@ -453,6 +479,18 @@ class DJMixer:
                 self._mix_count += 1
                 if len(pcm_b) > 0:
                     self._ring_b_reads += 1
+
+                # Periodic diagnostic every ~5 seconds
+                _diag_interval += 1
+                if _diag_interval >= 240:  # ~5s at 48 iter/sec
+                    logger.warning(
+                        "DJ DIAG: feed_a=%d feed_b=%d mix=%d rb_reads=%d "
+                        "ring_b_avail=%d pcm_b_len=%d",
+                        self._feed_a_count, self._feed_b_count,
+                        self._mix_count, self._ring_b_reads,
+                        self._ring_b.available(), len(pcm_b),
+                    )
+                    _diag_interval = 0
 
                 # Pad to chunk size if needed
                 if len(pcm_a) < chunk_stereo:

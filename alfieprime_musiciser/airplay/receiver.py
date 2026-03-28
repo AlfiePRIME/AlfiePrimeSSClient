@@ -801,8 +801,12 @@ def _create_patched_handler(meta_hook: _MetadataHook, remote: _RemoteControl, co
             # Infrastructure state — always set
             state.airplay_connected = True
             state.connected = True
-            if not state.active_source:
+            # Auto-switch to AirPlay if it's the only connected source
+            if not state.active_source or not state.sendspin_connected:
+                if state.active_source and state.active_source != "airplay":
+                    state.save_snapshot(state.active_source)
                 state.active_source = "airplay"
+                state.restore_snapshot("airplay")
             # Display state — mark codec/commands but leave is_playing
             # as-is until the device tells us the actual play state.
             if state.active_source == "airplay":

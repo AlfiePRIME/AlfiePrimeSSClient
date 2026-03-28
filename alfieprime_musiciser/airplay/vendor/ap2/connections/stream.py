@@ -12,7 +12,7 @@ class Stream:
     REALTIME = 96
     BUFFERED = 103
 
-    def __init__(self, stream, addr, port=0, buff_size=0, stream_id=None, shared_key=None, isDebug=False, aud_params=None, pcm_queue=None):
+    def __init__(self, stream, addr, port=0, buff_size=0, stream_id=None, shared_key=None, isDebug=False, aud_params=None, pcm_queue=None, sink_muted=None):
         # self.audioMode = stream["audioMode"] # default|moviePlayback
         self.isDebug = isDebug
         self.addr = addr
@@ -111,6 +111,7 @@ class Stream:
                 isDebug=self.isDebug,
                 aud_params=None,
                 pcm_queue=pcm_queue,
+                sink_muted=sink_muted,
             )
             self.descriptor = {
                 'type': self.streamtype,
@@ -135,6 +136,7 @@ class Stream:
                 isDebug=self.isDebug,
                 aud_params=None,
                 pcm_queue=pcm_queue,
+                sink_muted=sink_muted,
             )
             self.descriptor = {
                 'type': self.streamtype,

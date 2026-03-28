@@ -947,6 +947,10 @@ class AirPlayReceiver:
         global _dj_mixer_active
         self.__dj_mixer = mixer
         _dj_mixer_active = mixer is not None
+        # Mute/unmute the audio child's native sink so it doesn't double-play
+        if hasattr(self, "_sink_muted") and self._sink_muted is not None:
+            self._sink_muted.value = mixer is not None
+            logger.info("AirPlay: audio child sink %s", "MUTED" if mixer else "UNMUTED")
         # Forward to PCM consumer if it exists
         if hasattr(self, "_pcm_consumer") and self._pcm_consumer is not None:
             self._pcm_consumer.dj_mixer = mixer
@@ -1264,6 +1268,9 @@ class AirPlayReceiver:
         # The vendored audio.py writes decoded PCM to this queue; a consumer
         # thread in the parent feeds it to the visualizer.
         pcm_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=64)
+        # Shared flag to mute the audio child's native sink when DJ mixer owns output
+        sink_muted: multiprocessing.Value = multiprocessing.Value("b", False)
+        self._sink_muted = sink_muted
         pcm_consumer = _PCMConsumer(pcm_queue, self._visualizer, state=self._state)
         self._pcm_consumer = pcm_consumer
         # Propagate DJ mixer if it was already set before pcm_consumer existed
@@ -1317,7 +1324,8 @@ class AirPlayReceiver:
 
         def _patched_stream_init(self_stream, *args, **kwargs):
             kwargs.setdefault("pcm_queue", pcm_queue)
-            logger.debug("Stream.__init__ patched: pcm_queue=%r injected", pcm_queue)
+            kwargs.setdefault("sink_muted", sink_muted)
+            logger.debug("Stream.__init__ patched: pcm_queue=%r sink_muted=%r injected", pcm_queue, sink_muted)
             _original_stream_init(self_stream, *args, **kwargs)
 
         Stream.__init__ = _patched_stream_init

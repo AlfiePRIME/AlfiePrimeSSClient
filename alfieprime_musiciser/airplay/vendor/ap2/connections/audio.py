@@ -445,6 +445,7 @@ class Audio:
         self.key_and_iv = True if ((sk_len % 8 == True) and not session_iv is None) else False
         self.set_audio_params(self, audio_format)
         self._pcm_queue = None  # optional multiprocessing.Queue for PCM tap
+        self._sink_muted = None  # optional multiprocessing.Value('b') — skip sink.write when True
 
         """ variables we get via RTCP from Control class """
         self.senderRtpTimestamp, self.playAtRtpTimestamp = None, None
@@ -721,6 +722,7 @@ class Audio:
             isDebug=False,
             aud_params: AudioSetup = None,
             pcm_queue=None,
+            sink_muted=None,
     ):
         audio = cls(
             addr,
@@ -733,6 +735,7 @@ class Audio:
             aud_params,
         )
         audio._pcm_queue = pcm_queue
+        audio._sink_muted = sink_muted
         # This pipe is reachable from receiver
         rcvr_cmd_pipe, audio.command_chan = multiprocessing.Pipe()
         audio_proc = multiprocessing.Process(target=audio.run, args=(rcvr_cmd_pipe, control_conns))
@@ -890,13 +893,16 @@ class AudioRealtime(Audio):
                             audio = self.process(rtp)
 
                             if(audio):
-                                pre_write = time.monotonic_ns()
-                                self.sink.write(audio)
-                                lastPlayedSeqNo = rtp.sequence_no
-                                post_write = time.monotonic_ns()
-                                p_write = (post_write - pre_write) * 1e-6
-                                p_write_avg.append(p_write)
-                                p_write_a = sum(p_write_avg) / len(p_write_avg)
+                                # Skip native playback when DJ mixer owns output
+                                _muted = self._sink_muted
+                                if _muted is None or not _muted.value:
+                                    pre_write = time.monotonic_ns()
+                                    self.sink.write(audio)
+                                    lastPlayedSeqNo = rtp.sequence_no
+                                    post_write = time.monotonic_ns()
+                                    p_write = (post_write - pre_write) * 1e-6
+                                    p_write_avg.append(p_write)
+                                    p_write_a = sum(p_write_avg) / len(p_write_avg)
 
                                 playing = True
 
@@ -1042,7 +1048,10 @@ class AudioBuffered(Audio):
                     audio = self.process(rtp)
 
                     if audio:
-                        self.sink.write(audio)
+                        # Skip native playback when DJ mixer owns output
+                        _muted = self._sink_muted
+                        if _muted is None or not _muted.value:
+                            self.sink.write(audio)
                         post_proc = time.monotonic_ns()
                         p_write = post_proc - pre_proc
                         p_write_avg.append(p_write * 1e-6)

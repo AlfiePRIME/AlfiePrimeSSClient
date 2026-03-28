@@ -582,27 +582,31 @@ class DJMixin:
         beat_count, beat_intensity = self._visualizer.get_beat()  # type: ignore[attr-defined]
 
         # Per-channel VU/beat from dedicated visualizers
-        vol_a_frac = dj.channel_a.volume / 100.0
-        vol_b_frac = dj.channel_b.volume / 100.0
+        # Scale by both channel volume and crossfader gain (equal-power curve)
+        xf = dj.crossfader
+        xf_gain_a = math.cos(xf * math.pi / 2)
+        xf_gain_b = math.sin(xf * math.pi / 2)
+        vol_a_frac = dj.channel_a.volume / 100.0 * xf_gain_a
+        vol_b_frac = dj.channel_b.volume / 100.0 * xf_gain_b
         if self._dj_viz_a is not None:
             _, _, vu_a_l, vu_a_r = self._dj_viz_a.get_spectrum()
             _, beat_a = self._dj_viz_a.get_beat()
-            # Scale per-channel VU by channel volume
             vu_a_l *= vol_a_frac
             vu_a_r *= vol_a_frac
+            beat_a *= xf_gain_a
         else:
-            vu_a_l = vu_a_r = vu_left * (1 - dj.crossfader)
-            beat_a = beat_intensity if state.active_source == "sendspin" else 0.0
+            vu_a_l = vu_a_r = vu_left * xf_gain_a
+            beat_a = beat_intensity * xf_gain_a if state.active_source == "sendspin" else 0.0
 
         if self._dj_viz_b is not None:
             _bands_b, _peaks_b, vu_b_l, vu_b_r = self._dj_viz_b.get_spectrum()
             _, beat_b = self._dj_viz_b.get_beat()
-            # Scale per-channel VU by channel volume
             vu_b_l *= vol_b_frac
             vu_b_r *= vol_b_frac
+            beat_b *= xf_gain_b
         else:
-            vu_b_l = vu_b_r = vu_left * dj.crossfader
-            beat_b = beat_intensity if state.active_source == "airplay" else 0.0
+            vu_b_l = vu_b_r = vu_left * xf_gain_b
+            beat_b = beat_intensity * xf_gain_b if state.active_source == "airplay" else 0.0
 
         padded_inner = max(term_w - 4, 20)
         parts: list = []

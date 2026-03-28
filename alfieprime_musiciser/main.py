@@ -193,17 +193,17 @@ async def _run_with_config(
                 airplay_receiver._dj_mixer = None
             if receiver_b is not None:
                 receiver_b._dj_mixer = None
-            # Unmute the active source's audio handler
+            # Restore native audio based on active source
             source = tui.state.active_source or "sendspin"
             if receiver._audio_handler is not None:
-                if source == "sendspin":
-                    ss_vol, ss_muted = tui.state.get_source_volume("sendspin")
-                    receiver._audio_handler.set_volume(ss_vol, muted=ss_muted)
-                else:
-                    receiver._audio_handler.set_volume(0, muted=True)
-            logger.info("DJ mode: native audio restored")
+                ss_vol, ss_muted = tui.state.get_source_volume("sendspin")
+                receiver._audio_handler.set_volume(ss_vol, muted=ss_muted)
+            # Ensure the master visualizer is unpaused for the boombox screen
+            tui._visualizer.set_paused(False)
+            logger.info("DJ mode: native audio restored (source=%s)", source)
 
     tui._dj_activate_callback = _on_dj_activate
+    tui._sendspin_command_callback = receiver._on_transport_command
 
     loop = asyncio.get_running_loop()
 

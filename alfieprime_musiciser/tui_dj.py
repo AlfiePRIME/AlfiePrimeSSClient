@@ -925,6 +925,13 @@ class DJMixin:
             return
 
         if k == "p":
+            # In DJ mode, ensure SendSpin gets the pause/play command
+            # regardless of which source is active. The normal command
+            # routing skips SendSpin when active_source is "airplay".
+            state = getattr(self, "state", None)
+            ss_cb = getattr(self, "_sendspin_command_callback", None)
+            if ss_cb and state and state.active_source == "airplay":
+                ss_cb("play_pause")
             self._fire_command("play_pause")  # type: ignore[attr-defined]
             _flash("p")
             return

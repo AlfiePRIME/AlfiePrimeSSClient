@@ -156,6 +156,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         self._restore_cached_state(config)
         self._gui_window = None  # TerminalEmulator instance when in GUI mode
         self._command_callback: Callable[[str], None] | None = None
+        self._sendspin_command_callback: Callable[[str], None] | None = None
         self._source_switch_callback: Callable[[str], None] | None = None
         self._dj_activate_callback: Callable | None = None
         self._dj_receiver_b = None  # Second receiver for dual DJ modes (set by main.py)

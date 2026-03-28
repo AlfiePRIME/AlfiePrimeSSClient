@@ -400,8 +400,16 @@ class DJMixer:
             )
             self._ring_b.write(samples)
             self._feed_b_count += 1
+            if self._feed_b_count <= 3:
+                peak = float(np.max(np.abs(samples))) if len(samples) > 0 else 0.0
+                logger.warning(
+                    "DJ feed_b[%d]: %d bytes → %d samples, peak=%.4f, "
+                    "fmt=%dHz/%dbit/%dch",
+                    self._feed_b_count, len(pcm_bytes), len(samples), peak,
+                    self._rate_b, self._bit_depth_b, self._channels_b,
+                )
         except Exception:
-            logger.debug("DJ mixer: feed_b error", exc_info=True)
+            logger.warning("DJ mixer: feed_b error", exc_info=True)
 
     def _decode_and_resample(
         self, data: bytes | bytearray, rate: int, bit_depth: int, channels: int,
@@ -483,13 +491,6 @@ class DJMixer:
                 # Periodic diagnostic every ~5 seconds
                 _diag_interval += 1
                 if _diag_interval >= 240:  # ~5s at 48 iter/sec
-                    logger.warning(
-                        "DJ DIAG: feed_a=%d feed_b=%d mix=%d rb_reads=%d "
-                        "ring_b_avail=%d pcm_b_len=%d",
-                        self._feed_a_count, self._feed_b_count,
-                        self._mix_count, self._ring_b_reads,
-                        self._ring_b.available(), len(pcm_b),
-                    )
                     _diag_interval = 0
 
                 # Pad to chunk size if needed
@@ -515,6 +516,24 @@ class DJMixer:
 
                 # Mix
                 mixed = pcm_a * gain_a + pcm_b * gain_b
+
+                # Periodic diagnostic every ~5 seconds
+                if _diag_interval == 0:
+                    _peak_a = float(np.max(np.abs(pcm_a))) if len(pcm_a) > 0 else 0.0
+                    _peak_b = float(np.max(np.abs(pcm_b))) if len(pcm_b) > 0 else 0.0
+                    _peak_mix = float(np.max(np.abs(mixed)))
+                    logger.warning(
+                        "DJ DIAG: feed_a=%d feed_b=%d rb_reads=%d "
+                        "peak_a=%.4f peak_b=%.4f peak_mix=%.4f "
+                        "xf=%.2f gA=%.3f gB=%.3f volB=%d "
+                        "fmtB=%dHz/%dbit/%dch viz_paused=%s",
+                        self._feed_a_count, self._feed_b_count,
+                        self._ring_b_reads,
+                        _peak_a, _peak_b, _peak_mix,
+                        dj.crossfader, gain_a, gain_b, ch_b.volume,
+                        self._rate_b, self._bit_depth_b, self._channels_b,
+                        self._master_viz._paused,
+                    )
 
                 # Feed per-channel visualizers with pre-crossfade audio
                 # so each deck's meters reflect its own level independently

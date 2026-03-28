@@ -25,6 +25,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Module-level flag: True when DJ mixer owns the master visualizer.
+# Used by _MetadataHook to avoid pausing the viz when DJ mode is active.
+_dj_mixer_active = False
+
 # File log path for persistent AirPlay debug output
 if sys.platform == "win32":
     _LOG_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "alfieprime")
@@ -256,7 +260,7 @@ class _MetadataHook:
                 self._state.playback_speed = 0.0
                 self._state.progress_update_time = time.monotonic()
             self._state.is_playing = playing
-            if self._visualizer:
+            if self._visualizer and not _dj_mixer_active:
                 self._visualizer.set_paused(not playing)
         else:
             self._state.write_to_snapshot("airplay", is_playing=playing)
@@ -940,7 +944,9 @@ class AirPlayReceiver:
 
     @_dj_mixer.setter
     def _dj_mixer(self, mixer):
+        global _dj_mixer_active
         self.__dj_mixer = mixer
+        _dj_mixer_active = mixer is not None
         # Forward to PCM consumer if it exists
         if hasattr(self, "_pcm_consumer") and self._pcm_consumer is not None:
             self._pcm_consumer.dj_mixer = mixer
@@ -1005,14 +1011,17 @@ class AirPlayReceiver:
                 self._remote.send_to_audio("pause")
                 state.is_playing = False
                 state.playback_speed = 0.0
-                self._visualizer.set_paused(True)
+                # Only pause visualizer when DJ mixer isn't running
+                if self._dj_mixer is None:
+                    self._visualizer.set_paused(True)
                 logger.info("AirPlay: paused (local mute)")
             else:
                 self._remote.send_to_audio("play-0")
                 state.is_playing = True
                 state.playback_speed = 1.0
                 state.progress_update_time = time.monotonic()
-                self._visualizer.set_paused(False)
+                if self._dj_mixer is None:
+                    self._visualizer.set_paused(False)
                 logger.info("AirPlay: resumed (local unmute)")
             return
 

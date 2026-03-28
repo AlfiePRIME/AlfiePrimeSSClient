@@ -686,11 +686,13 @@ class SendSpinReceiver:
         if ctrl is None:
             return
         cmds = [cmd.value for cmd in ctrl.supported_commands]
-        # Only apply server volume when SendSpin is the active source —
-        # otherwise the server's state overwrites locally-saved volume
-        # (e.g. muted=True from idle server clobbers the user's setting).
-        if self._sendspin_is_active():
+        # Only apply server volume when SendSpin is the active source and
+        # DJ mixer is NOT running — otherwise the server's state overwrites
+        # locally-saved volume (e.g. muted handler → vol=0 clobbers the saved value).
+        if self._sendspin_is_active() and self._dj_mixer is None:
             self._state.set_source_volume("sendspin", ctrl.volume, ctrl.muted)
+            self._state.supported_commands = cmds
+        elif self._sendspin_is_active():
             self._state.supported_commands = cmds
         else:
             self._state.write_to_snapshot("sendspin", supported_commands=cmds)

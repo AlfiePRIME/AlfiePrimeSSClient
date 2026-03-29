@@ -46,7 +46,14 @@ class Config:
     accepted_devices: list[str] = field(default_factory=list)
     # Clear AirPlay pairing data on close so devices must re-pair
     forget_airplay_devices: bool = False
-    # DJ source mode: "mixed" (SS+AP), "dual_sendspin", "dual_airplay"
+    # Spotify Connect settings
+    spotify_enabled: bool = True
+    spotify_client_id: str = ""  # Spotify Web API client ID (for PKCE OAuth)
+    spotify_device_name: str = ""  # custom librespot device name
+    spotify_bitrate: int = 320  # 160 or 320
+    spotify_username: str = ""  # for librespot auth
+    # DJ source mode: "mixed" (SS+AP), "dual_sendspin", "dual_airplay",
+    # "spotify_sendspin" (SS+SP), "spotify_airplay" (AP+SP), "dual_spotify"
     dj_source_mode: str = "mixed"
 
     def save(self) -> None:

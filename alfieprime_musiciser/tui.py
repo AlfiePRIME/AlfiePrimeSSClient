@@ -157,6 +157,9 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         self._gui_window = None  # TerminalEmulator instance when in GUI mode
         self._command_callback: Callable[[str], None] | None = None
         self._sendspin_command_callback: Callable[[str], None] | None = None
+        self._airplay_dj_play_pause: Callable[[bool], None] | None = None
+        self._spotify_dj_play_pause: Callable[[bool], None] | None = None
+        self._spotify_command_callback: Callable[[str], None] | None = None
         self._source_switch_callback: Callable[[str], None] | None = None
         self._dj_activate_callback: Callable | None = None
         self._dj_receiver_b = None  # Second receiver for dual DJ modes (set by main.py)
@@ -524,14 +527,15 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         self._hint_flash[key] = time.time()
 
     def _build_airplay_hints(self, term_w: int) -> Text:
-        """Build a hint-only line for AirPlay mode (no transport buttons)."""
+        """Build a hint-only line for AirPlay/Spotify mode (no transport buttons)."""
         hint_parts = [
             ("[↑↓]Vol ", "vol", False),
             ("[M]ute ", "m", self.state.muted),
         ]
-        _dual = self.state.sendspin_connected and self.state.airplay_connected
-        if _dual:
-            _src = "AP" if self.state.active_source == "airplay" else "SS"
+        _multi = sum([self.state.sendspin_connected, self.state.airplay_connected, self.state.spotify_connected]) >= 2
+        if _multi:
+            _src_labels = {"sendspin": "SS", "airplay": "AP", "spotify": "SP"}
+            _src = _src_labels.get(self.state.active_source, "SS")
             hint_parts.append((f"[T]oggle({_src}) ", "t", False))
         hint_parts.append(("[A]rt ", "a", self._art_mode))
         if self._art_mode:
@@ -731,7 +735,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 hint_style_fn=self._hint_style, art_mode=self._art_mode,
                 art_calm=self._art_calm, muted=self.state.muted,
                 active_source=self.state.active_source,
-                dual_connected=self.state.sendspin_connected and self.state.airplay_connected,
+                dual_connected=sum([self.state.sendspin_connected, self.state.airplay_connected, self.state.spotify_connected]) >= 2,
             )
             content_col_offset = 3
             self._button_regions = {
@@ -803,7 +807,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 hint_style_fn=self._hint_style, art_mode=self._art_mode,
                 art_calm=self._art_calm, muted=self.state.muted,
                 active_source=self.state.active_source,
-                dual_connected=self.state.sendspin_connected and self.state.airplay_connected,
+                dual_connected=sum([self.state.sendspin_connected, self.state.airplay_connected, self.state.spotify_connected]) >= 2,
             )
             # Panel border(1) + padding(0,1) means content starts at col 3 (border+space+padding)
             content_col_offset = 3
@@ -940,6 +944,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 sendspin_server_name=self.state.sendspin_server_name,
                 airplay_server_name=self.state.airplay_server_name,
                 dj_source_mode=self._config.dj_source_mode if self._config else "mixed",
+                spotify_connected=self.state.spotify_connected,
+                spotify_server_name=self.state.spotify_server_name,
             ),
             border_style="#444444", padding=(0, 0),
         ))
@@ -1069,10 +1075,22 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         elif k == "t":
             # Toggle active source between connected protocols
             s = self.state
-            if s.sendspin_connected and s.airplay_connected:
+            connected = []
+            if s.sendspin_connected:
+                connected.append("sendspin")
+            if s.airplay_connected:
+                connected.append("airplay")
+            if s.spotify_connected:
+                connected.append("spotify")
+            if len(connected) >= 2:
                 from_mode = self._get_current_mode_name()
                 old_source = s.active_source
-                new_source = "airplay" if old_source == "sendspin" else "sendspin"
+                # Cycle to next connected source
+                try:
+                    idx = connected.index(old_source)
+                    new_source = connected[(idx + 1) % len(connected)]
+                except ValueError:
+                    new_source = connected[0]
                 # Pause the outgoing source before switching
                 if s.is_playing:
                     self._fire_command("play_pause")

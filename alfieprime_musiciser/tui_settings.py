@@ -839,6 +839,7 @@ class SettingsMixin:
         proto_items: list[tuple[str, str, object]] = [
             ("AirPlay Receiver", "airplay_enabled", cfg.airplay_enabled),
             ("SendSpin Receiver", "sendspin_enabled", cfg.sendspin_enabled),
+            ("Spotify Connect", "spotify_enabled", cfg.spotify_enabled),
             ("Device Swap Prompt", "swap_prompt", cfg.swap_prompt),
         ]
         if not cfg.swap_prompt:
@@ -881,12 +882,15 @@ class SettingsMixin:
                 if selected:
                     item.append("  ◂▸", Style(color="#555555"))
             elif key == "dj_source_mode":
-                _mode_labels = {"mixed": "MIXED", "dual_sendspin": "DUAL SS", "dual_airplay": "DUAL AP"}
+                _mode_labels = {
+                    "mixed": "MIXED", "dual_sendspin": "DUAL SS", "dual_airplay": "DUAL AP",
+                    "spotify_sendspin": "SS+SP", "spotify_airplay": "AP+SP", "dual_spotify": "DUAL SP",
+                }
                 val_str = _mode_labels.get(value, value.upper())
                 item.append(f"{val_str:>8}", Style(color=th.accent, bold=selected))
                 if selected:
                     item.append("  ◂▸", Style(color="#555555"))
-            elif key in ("airplay_enabled", "sendspin_enabled", "swap_prompt", "forget_airplay_devices"):
+            elif key in ("airplay_enabled", "sendspin_enabled", "spotify_enabled", "swap_prompt", "forget_airplay_devices"):
                 val_str = "ON" if value else "OFF"
                 val_color = th.accent if value else "#666666"
                 item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
@@ -916,7 +920,7 @@ class SettingsMixin:
         cfg = self._config or Config()
 
         # Build the current items list to know bounds and which key is selected
-        proto_keys = ["airplay_enabled", "sendspin_enabled", "swap_prompt"]
+        proto_keys = ["airplay_enabled", "sendspin_enabled", "spotify_enabled", "swap_prompt"]
         if not cfg.swap_prompt:
             proto_keys.append("swap_auto_action")
         proto_keys.append("forget_airplay_devices")
@@ -934,17 +938,20 @@ class SettingsMixin:
                 cfg.airplay_enabled = not cfg.airplay_enabled
             elif key == "sendspin_enabled":
                 cfg.sendspin_enabled = not cfg.sendspin_enabled
+            elif key == "spotify_enabled":
+                cfg.spotify_enabled = not cfg.spotify_enabled
             elif key == "swap_prompt":
                 cfg.swap_prompt = not cfg.swap_prompt
                 # Clamp cursor if auto_action row disappears
                 if cfg.swap_prompt and self._protocol_cursor >= len(proto_keys) - 1:
-                    self._protocol_cursor = min(self._protocol_cursor, 2)
+                    self._protocol_cursor = min(self._protocol_cursor, 3)
             elif key == "swap_auto_action":
                 cfg.swap_auto_action = "accept" if cfg.swap_auto_action == "deny" else "deny"
             elif key == "forget_airplay_devices":
                 cfg.forget_airplay_devices = not cfg.forget_airplay_devices
             elif key == "dj_source_mode":
-                _modes = ["mixed", "dual_sendspin", "dual_airplay"]
+                _modes = ["mixed", "dual_sendspin", "dual_airplay",
+                           "spotify_sendspin", "spotify_airplay", "dual_spotify"]
                 _i = _modes.index(cfg.dj_source_mode) if cfg.dj_source_mode in _modes else 0
                 cfg.dj_source_mode = _modes[(_i + 1) % len(_modes)]
             if self._config:
@@ -958,7 +965,8 @@ class SettingsMixin:
                     self._config = cfg
                     cfg.save()
             elif key == "dj_source_mode":
-                _modes = ["mixed", "dual_sendspin", "dual_airplay"]
+                _modes = ["mixed", "dual_sendspin", "dual_airplay",
+                           "spotify_sendspin", "spotify_airplay", "dual_spotify"]
                 _i = _modes.index(cfg.dj_source_mode) if cfg.dj_source_mode in _modes else 0
                 _dir = 1 if k == "arrow_right" else -1
                 cfg.dj_source_mode = _modes[(_i + _dir) % len(_modes)]

@@ -201,7 +201,8 @@ def render_transport_controls(
     text.append("[↑↓]Vol ", _hs("vol", False))
     text.append("[M]ute ", _hs("m", muted))
     if dual_connected:
-        _src_label = "SS" if active_source == "sendspin" else "AP" if active_source == "airplay" else "SS"
+        _src_labels = {"sendspin": "SS", "airplay": "AP", "spotify": "SP"}
+        _src_label = _src_labels.get(active_source, "SS")
         text.append(f"[T]oggle({_src_label}) ", _hs("t", False))
     text.append("[A]rt ", _hs("a", art_mode))
     if art_mode:
@@ -1566,6 +1567,8 @@ def render_source_info(
     sendspin_server_name: str = "",
     airplay_server_name: str = "",
     dj_source_mode: str = "mixed",
+    spotify_connected: bool = False,
+    spotify_server_name: str = "",
 ) -> Text:
     """Render single-line status: active source + server name + codec + source indicators."""
     th = theme or _default_theme
@@ -1580,6 +1583,8 @@ def render_source_info(
         text.append(" AirPlay", _style_on)
     elif active_source == "sendspin":
         text.append(" SendSpin", _style_on)
+    elif active_source == "spotify":
+        text.append(" Spotify", _style_on)
     else:
         text.append(" Waiting", _cached_style("#ff6600", italic=True))
 
@@ -1589,6 +1594,8 @@ def render_source_info(
         _display_name = airplay_server_name
     elif active_source == "sendspin" and sendspin_server_name:
         _display_name = sendspin_server_name
+    elif active_source == "spotify" and spotify_server_name:
+        _display_name = spotify_server_name
     elif server_name:
         _display_name = server_name
     if _display_name and active_source:
@@ -1623,10 +1630,12 @@ def render_source_info(
         _dot("Src1", sendspin_connected, active_source == "sendspin")
         _dot("Src2", airplay_connected, active_source == "airplay")
     else:
-        _dot("SendSpin", sendspin_connected, active_source == "sendspin")
-        _dot("AirPlay", airplay_connected, active_source == "airplay")
+        _dot("SS", sendspin_connected, active_source == "sendspin")
+        _dot("AP", airplay_connected, active_source == "airplay")
+        _dot("SP", spotify_connected, active_source == "spotify")
 
-    if sendspin_connected and airplay_connected:
+    _total_connected = sum([sendspin_connected, airplay_connected, spotify_connected])
+    if _total_connected >= 2:
         text.append(" [T]", _style_dim)
 
     return text

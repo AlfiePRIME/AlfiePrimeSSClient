@@ -27,6 +27,7 @@ airplay = [
     "cryptography>=41.0.0",
     "zeroconf>=0.80.0",
 ]
+spotify = ["spotipy>=2.23.0"]
 
 [project.scripts]
 alfieprime-musiciser = "alfieprime_musiciser.main:main"

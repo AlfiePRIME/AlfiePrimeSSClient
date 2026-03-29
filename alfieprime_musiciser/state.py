@@ -67,18 +67,21 @@ class PlayerState:
     # Per-protocol connection state
     sendspin_connected: bool = False
     airplay_connected: bool = False
-    # Which protocol is currently active: "" (none), "sendspin", "airplay"
+    spotify_connected: bool = False
+    spotify_ready: bool = False
+    spotify_server_name: str = ""
+    # Which protocol is currently active: "" (none), "sendspin", "airplay", "spotify"
     active_source: str = ""
     # Device swap prompt state
     swap_pending: bool = False
-    swap_pending_source: str = ""  # "sendspin" or "airplay"
+    swap_pending_source: str = ""  # "sendspin", "airplay", or "spotify"
     swap_pending_name: str = ""  # display name of the new device
     swap_response: str = ""  # "accept", "deny", or "" (pending)
     # Toast notification (auto-dismiss overlay)
     toast_message: str = ""  # message to display
     toast_detail: str = ""  # secondary detail line
     toast_expire: float = 0.0  # time.monotonic() when to dismiss
-    # Per-source state snapshots: {"sendspin": {...}, "airplay": {...}}
+    # Per-source state snapshots: {"sendspin": {...}, "airplay": {...}, "spotify": {...}}
     _source_snapshots: dict[str, dict] = field(default_factory=dict, repr=False)
 
     def show_toast(self, message: str, detail: str = "", duration: float = 3.0) -> None:

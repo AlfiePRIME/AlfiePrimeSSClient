@@ -470,6 +470,12 @@ class DJMixin:
             return mode, "sendspin", "sendspin_b", "A · SENDSPIN", "B · SENDSPIN 2"
         elif mode == "dual_airplay":
             return mode, "airplay", "airplay_b", "A · AIRPLAY", "B · AIRPLAY 2"
+        elif mode == "spotify_sendspin":
+            return mode, "sendspin", "spotify", "A · SENDSPIN", "B · SPOTIFY"
+        elif mode == "spotify_airplay":
+            return mode, "airplay", "spotify", "A · AIRPLAY", "B · SPOTIFY"
+        elif mode == "dual_spotify":
+            return mode, "spotify", "spotify", "A · SPOTIFY", "B · SPOTIFY"
         return mode, "sendspin", "airplay", "A · SENDSPIN", "B · AIRPLAY"
 
     def _dj_source_data(self, source: str) -> dict:
@@ -513,6 +519,8 @@ class DJMixin:
                 _sn = state.sendspin_server_name or ""
             elif source == "airplay":
                 _sn = state.airplay_server_name or ""
+            elif source == "spotify":
+                _sn = state.spotify_server_name or ""
             return {
                 "title": state.title,
                 "artist": state.artist,
@@ -528,15 +536,25 @@ class DJMixin:
                 "bit_depth": state.bit_depth,
             }
         snap = state._source_snapshots.get(source, {})
+        # Interpolate snapshot progress so the DJ tonearm moves smoothly
+        snap_progress = snap.get("progress_ms", 0)
+        snap_duration = snap.get("duration_ms", 0)
+        snap_playing = snap.get("is_playing", False)
+        snap_speed = snap.get("playback_speed", 1.0)
+        snap_update = snap.get("progress_update_time", 0.0)
+        if snap_playing and snap_update > 0 and snap_duration > 0:
+            elapsed = time.monotonic() - snap_update
+            speed = snap_speed if snap_speed > 0 else 1.0
+            snap_progress = max(0, min(snap_progress + int(elapsed * 1000 * speed), snap_duration))
         return {
             "title": snap.get("title", ""),
             "artist": snap.get("artist", ""),
             "album": snap.get("album", ""),
             "artwork_data": snap.get("artwork_data", b""),
             "theme": snap.get("theme", ColorTheme()),
-            "is_playing": snap.get("is_playing", False),
-            "progress_ms": snap.get("progress_ms", 0),
-            "duration_ms": snap.get("duration_ms", 0),
+            "is_playing": snap_playing,
+            "progress_ms": snap_progress,
+            "duration_ms": snap_duration,
             "server_name": snap.get("server_name", ""),
             "codec": snap.get("codec", "pcm"),
             "sample_rate": snap.get("sample_rate", 48000),
@@ -643,6 +661,18 @@ class DJMixin:
             conn_a = state.airplay_connected
             conn_b = self._dj_connected_b()
             fallback_a, fallback_b = "AirPlay", "AirPlay 2"
+        elif _dj_mode == "spotify_sendspin":
+            conn_a = state.sendspin_connected
+            conn_b = state.spotify_connected
+            fallback_a, fallback_b = "SendSpin", "Spotify"
+        elif _dj_mode == "spotify_airplay":
+            conn_a = state.airplay_connected
+            conn_b = state.spotify_connected
+            fallback_a, fallback_b = "AirPlay", "Spotify"
+        elif _dj_mode == "dual_spotify":
+            conn_a = state.spotify_connected
+            conn_b = state.spotify_connected
+            fallback_a, fallback_b = "Spotify", "Spotify"
         else:
             conn_a = state.sendspin_connected
             conn_b = state.airplay_connected
@@ -931,18 +961,21 @@ class DJMixin:
             return
 
         if k == "p":
-            # In DJ mode, use explicit dj_pause/dj_play for SendSpin to
-            # avoid race conditions with async play_pause reading stale
-            # is_playing. Also fire play_pause for AirPlay state handling.
+            # In DJ mode, pause/play ALL sources so both decks stop/start.
             state = getattr(self, "state", None)
             ss_cb = getattr(self, "_sendspin_command_callback", None)
+            ap_cb = getattr(self, "_airplay_dj_play_pause", None)
+            sp_cb = getattr(self, "_spotify_dj_play_pause", None)
             want_pause = state.is_playing if state else True
-            # Always send explicit command to SendSpin
+            # SendSpin: explicit dj_pause/dj_play (avoids stale is_playing race)
             if ss_cb:
                 ss_cb("dj_pause" if want_pause else "dj_play")
-            # Only fire play_pause for AirPlay (avoid duplicate to SendSpin)
-            if state and state.active_source == "airplay":
-                self._fire_command("play_pause")  # type: ignore[attr-defined]
+            # AirPlay: dedicated DJ play/pause (bypasses active_source routing)
+            if ap_cb:
+                ap_cb(want_pause)
+            # Spotify: dedicated DJ play/pause
+            if sp_cb:
+                sp_cb(want_pause)
             _flash("p")
             return
 

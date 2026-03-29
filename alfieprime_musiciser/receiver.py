@@ -319,7 +319,7 @@ class SendSpinReceiver:
             if self._client is not None:
                 logger.info("Disconnecting from previous server")
                 self._state.sendspin_connected = False
-                self._state.connected = self._state.airplay_connected
+                self._state.connected = self._state.airplay_connected or getattr(self._state, "spotify_connected", False)
                 self._state.is_playing = False
                 await self._audio_handler.handle_disconnect()
                 if self._client.connected:
@@ -397,13 +397,18 @@ class SendSpinReceiver:
         finally:
             if self._client is client:
                 self._state.sendspin_connected = False
-                self._state.connected = self._state.airplay_connected
+                self._state.connected = self._state.airplay_connected or getattr(self._state, "spotify_connected", False)
                 self._state.sendspin_server_name = f"Listening on :{self._listen_port}"
                 src_label = "Source 1" if self._dj_feed_channel == "a" else "Source 2"
                 self._state.show_toast("SendSpin disconnected", src_label)
                 if self._state.active_source == "sendspin":
                     self._state.save_snapshot("sendspin")
-                    new_src = "airplay" if self._state.airplay_connected else ""
+                    if self._state.airplay_connected:
+                        new_src = "airplay"
+                    elif getattr(self._state, "spotify_connected", False):
+                        new_src = "spotify"
+                    else:
+                        new_src = ""
                     self._state.active_source = new_src
                     if new_src:
                         self._state.restore_snapshot(new_src)
@@ -466,7 +471,7 @@ class SendSpinReceiver:
                 unsub()
 
                 self._state.sendspin_connected = False
-                self._state.connected = self._state.airplay_connected
+                self._state.connected = self._state.airplay_connected or getattr(self._state, "spotify_connected", False)
                 src_label = "Source 1" if self._dj_feed_channel == "a" else "Source 2"
                 self._state.show_toast("SendSpin disconnected", src_label)
                 if self._state.active_source == "sendspin":
@@ -479,7 +484,7 @@ class SendSpinReceiver:
             except (TimeoutError, OSError, ClientError) as e:
                 logger.warning("Connection error (%s), retrying in %.0fs", type(e).__name__, backoff)
                 self._state.sendspin_connected = False
-                self._state.connected = self._state.airplay_connected
+                self._state.connected = self._state.airplay_connected or getattr(self._state, "spotify_connected", False)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 300.0)
             except Exception:

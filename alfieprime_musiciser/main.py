@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import time
 import os
 import signal
 import sys
@@ -27,6 +28,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from alfieprime_musiciser.config import Config, run_setup, _test_connection
+from alfieprime_musiciser.setup_wizard import run_setup_wizard
 from alfieprime_musiciser.receiver import SendSpinReceiver
 from alfieprime_musiciser.tui import BoomBoxTUI
 from alfieprime_musiciser.visualizer import AudioVisualizer
@@ -38,6 +40,13 @@ except ImportError:
     _HAS_AIRPLAY = False
     _MISSING_REASON = "airplay module not found"
 
+# Optional Spotify Connect support
+try:
+    from alfieprime_musiciser.spotify import _HAS_SPOTIFY, _MISSING_REASON as _SPOTIFY_MISSING_REASON
+except ImportError:
+    _HAS_SPOTIFY = False
+    _SPOTIFY_MISSING_REASON = "spotify module not found"
+
 IS_WINDOWS = sys.platform == "win32"
 
 logger = logging.getLogger(__name__)
@@ -46,6 +55,7 @@ logger = logging.getLogger(__name__)
 async def _run_with_config(
     config: Config, demo: bool = False, gui: bool = False, daemon: bool = False,
     airplay_name: str | None = None, airplay_port: int = 7000,
+    spotify_name: str | None = None,
 ) -> None:
     """Run the TUI + receiver using the given config."""
     visualizer = AudioVisualizer()
@@ -104,6 +114,32 @@ async def _run_with_config(
         )
         logger.info("AirPlay receiver enabled on port %d", airplay_port)
 
+    # Optional Spotify Connect receiver
+    spotify_receiver = None
+    if config.spotify_enabled and _HAS_SPOTIFY:
+        from alfieprime_musiciser.spotify.receiver import SpotifyConnectReceiver
+        _sp_name = spotify_name or config.spotify_device_name or config.client_name or "Musiciser"
+        spotify_receiver = SpotifyConnectReceiver(
+            tui, visualizer,
+            device_name=_sp_name,
+            config=config,
+        )
+        logger.info("Spotify Connect receiver enabled as '%s'", _sp_name)
+
+    # 2-source connection limit
+    _connected_sources: set[str] = set()
+
+    def _can_connect(source: str) -> bool:
+        if source in _connected_sources:
+            return True
+        return len(_connected_sources) < 2
+
+    def _on_source_connected(source: str) -> None:
+        _connected_sources.add(source)
+
+    def _on_source_disconnected(source: str) -> None:
+        _connected_sources.discard(source)
+
     # In dual SendSpin mode, rename primary receiver to "Hostname Source 1"
     if dj_mode == "dual_sendspin":
         receiver._client_name = f"{_hostname} Source 1"
@@ -156,6 +192,10 @@ async def _run_with_config(
                 receiver._audio_handler.set_volume(ss_vol, muted=ss_muted)
             else:
                 receiver._audio_handler.set_volume(0, muted=True)
+        # Mute/unmute AirPlay sink based on active source
+        if airplay_receiver is not None:
+            airplay_receiver.set_sink_muted(new_source != "airplay")
+        # Spotify has no native sink to mute (pipe backend)
         # Sync visualizer pause state with the new source's play state
         visualizer.set_paused(not tui.state.is_playing)
 
@@ -169,8 +209,10 @@ async def _run_with_config(
             tui.state._source_volumes["sendspin"] = {"volume": ss_vol, "muted": ss_muted}
             logger.warning("DJ enter: saved SS vol=%d muted=%s, handler=%s",
                            ss_vol, ss_muted, receiver._audio_handler is not None)
-            # Mute native audio outputs — mixer does its own playback
+            # Flush native handler's audio queue so it doesn't accumulate
+            # stale buffered audio while the DJ mixer owns playback.
             if receiver._audio_handler is not None:
+                receiver._audio_handler.clear_queue()
                 receiver._audio_handler.set_volume(0, muted=True)
             # Wire mixer to the correct receivers based on DJ source mode
             _dj = config.dj_source_mode
@@ -186,6 +228,25 @@ async def _run_with_config(
                     airplay_receiver._dj_mixer = mixer
                 if receiver_b is not None:
                     receiver_b._dj_mixer = mixer
+            elif _dj == "spotify_sendspin":
+                # A = SendSpin, B = Spotify
+                receiver._dj_mixer = mixer
+                if spotify_receiver is not None:
+                    spotify_receiver._dj_feed_channel = "b"
+                    spotify_receiver._dj_mixer = mixer
+            elif _dj == "spotify_airplay":
+                # A = AirPlay, B = Spotify
+                if airplay_receiver is not None:
+                    airplay_receiver._dj_feed_channel = "a"
+                    airplay_receiver._dj_mixer = mixer
+                if spotify_receiver is not None:
+                    spotify_receiver._dj_feed_channel = "b"
+                    spotify_receiver._dj_mixer = mixer
+            elif _dj == "dual_spotify":
+                # A = Spotify (only one instance, feeds channel a)
+                if spotify_receiver is not None:
+                    spotify_receiver._dj_feed_channel = "a"
+                    spotify_receiver._dj_mixer = mixer
             else:
                 # Mixed: A = SendSpin, B = AirPlay (default)
                 receiver._dj_mixer = mixer
@@ -198,26 +259,44 @@ async def _run_with_config(
             if airplay_receiver is not None:
                 airplay_receiver._dj_feed_channel = "b"  # restore default
                 airplay_receiver._dj_mixer = None
+                # Only unmute AirPlay sink if AirPlay is the active source;
+                # otherwise keep it muted so it doesn't bleed through.
+                if tui.state.active_source == "airplay":
+                    airplay_receiver.set_sink_muted(False)
+                else:
+                    airplay_receiver.set_sink_muted(True)
+            if spotify_receiver is not None:
+                spotify_receiver._dj_feed_channel = "a"  # restore default
+                spotify_receiver._dj_mixer = None
             if receiver_b is not None:
                 receiver_b._dj_mixer = None
-            # Restore native audio — unmute SendSpin at its saved volume.
-            # If no per-source volume was saved, use 100% unmuted as default.
+            # Snap progress to current interpolated value so the boombox
+            # screen doesn't jump when it picks up rendering.
+            tui.state.progress_ms = tui.state.get_interpolated_progress()
+            tui.state.progress_update_time = time.monotonic()
+            # Flush native handler's buffered audio so it starts fresh from the
+            # current incoming stream position — prevents audible skip on exit.
+            if receiver._audio_handler is not None:
+                receiver._audio_handler.clear_queue()
             logger.warning("DJ exit: handler=%s, source_vols=%s, active_source=%s",
                            receiver._audio_handler is not None,
                            tui.state._source_volumes, tui.state.active_source)
             if receiver._audio_handler is not None:
-                sv = tui.state._source_volumes.get("sendspin")
-                if sv is not None:
-                    ss_vol = sv["volume"]
-                    ss_muted = sv["muted"]
+                if tui.state.active_source == "sendspin":
+                    sv = tui.state._source_volumes.get("sendspin")
+                    if sv is not None:
+                        ss_vol = sv["volume"]
+                        ss_muted = sv["muted"]
+                    else:
+                        ss_vol = tui.state.volume if tui.state.volume > 0 else 100
+                        ss_muted = False
+                    logger.warning("DJ exit: restoring SendSpin audio vol=%d muted=%s", ss_vol, ss_muted)
+                    receiver._audio_handler.set_volume(ss_vol, muted=ss_muted)
+                    tui.state.volume = ss_vol
+                    tui.state.muted = ss_muted
                 else:
-                    ss_vol = tui.state.volume if tui.state.volume > 0 else 100
-                    ss_muted = False
-                logger.warning("DJ exit: restoring SendSpin audio vol=%d muted=%s", ss_vol, ss_muted)
-                receiver._audio_handler.set_volume(ss_vol, muted=ss_muted)
-                # Also update state so TUI reflects correct volume
-                tui.state.volume = ss_vol
-                tui.state.muted = ss_muted
+                    # AirPlay is active — keep SendSpin handler muted
+                    receiver._audio_handler.set_volume(0, muted=True)
             else:
                 logger.warning("DJ exit: NO audio handler — cannot restore volume!")
             # Ensure the master visualizer is unpaused for the boombox screen
@@ -226,6 +305,11 @@ async def _run_with_config(
 
     tui._dj_activate_callback = _on_dj_activate
     tui._sendspin_command_callback = receiver._on_transport_command
+    if airplay_receiver is not None:
+        tui._airplay_dj_play_pause = airplay_receiver.dj_play_pause
+    if spotify_receiver is not None:
+        tui._spotify_dj_play_pause = spotify_receiver.dj_play_pause
+        tui._spotify_command_callback = spotify_receiver._on_transport_command
 
     loop = asyncio.get_running_loop()
 
@@ -233,6 +317,8 @@ async def _run_with_config(
         receiver.stop()
         if airplay_receiver:
             airplay_receiver.stop()
+        if spotify_receiver:
+            spotify_receiver.stop()
         if receiver_b is not None:
             receiver_b.stop()
         tui.stop()
@@ -254,6 +340,8 @@ async def _run_with_config(
             logger.info("SendSpin receiver disabled by config")
     if airplay_receiver:
         tasks.append(airplay_receiver.start())
+    if spotify_receiver:
+        tasks.append(spotify_receiver.start())
     if receiver_b is not None:
         tasks.append(receiver_b.start())
     await asyncio.gather(*tasks)
@@ -275,6 +363,7 @@ def main() -> None:
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
     parser.add_argument("--airplay-name", default=None, help="AirPlay device name (default: client name)")
     parser.add_argument("--airplay-port", type=int, default=7000, help="AirPlay RTSP port (default: 7000)")
+    parser.add_argument("--spotify-name", default=None, help="Spotify Connect device name (default: client name)")
     args = parser.parse_args()
 
     # When launched via pythonw.exe (gui_scripts), stdout/stderr are None.
@@ -350,11 +439,11 @@ def main() -> None:
         sys.exit(1)
 
     # Load or create config
-    config = None if args.setup else Config.load()
+    config = Config.load()
 
-    if config is None:
-        # First run or --setup: run the wizard
-        config = run_setup(console)
+    if config is None or args.setup:
+        # First run or --setup: run the animated wizard
+        config = run_setup_wizard(console, existing=config)
 
     # Connection test + retry loop
     while True:
@@ -383,7 +472,7 @@ def main() -> None:
             if choice == "retry":
                 continue
             elif choice == "setup":
-                config = run_setup(console, existing=config)
+                config = run_setup_wizard(console, existing=config)
                 continue
             else:
                 return
@@ -394,6 +483,7 @@ def main() -> None:
             config, gui=args.gui,
             airplay_name=args.airplay_name,
             airplay_port=args.airplay_port,
+            spotify_name=args.spotify_name,
         ))
     except KeyboardInterrupt:
         pass

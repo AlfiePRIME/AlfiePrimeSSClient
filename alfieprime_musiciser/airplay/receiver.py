@@ -343,16 +343,24 @@ class _MetadataHook:
 
     def on_disconnect(self) -> None:
         self._state.airplay_connected = False
-        self._state.connected = self._state.sendspin_connected
+        self._state.connected = (
+            self._state.sendspin_connected
+            or getattr(self._state, "spotify_connected", False)
+        )
         src_label = getattr(self, "source_label", "")
         self._state.show_toast(
             "AirPlay disconnected",
             src_label if src_label else "",
         )
         if self._state.active_source == "airplay":
-            # Save AirPlay state, switch to SendSpin, restore its snapshot
+            # Save AirPlay state, switch to next connected source
             self._state.save_snapshot("airplay")
-            self._state.active_source = "sendspin" if self._state.sendspin_connected else ""
+            if self._state.sendspin_connected:
+                self._state.active_source = "sendspin"
+            elif getattr(self._state, "spotify_connected", False):
+                self._state.active_source = "spotify"
+            else:
+                self._state.active_source = ""
             if self._state.active_source:
                 self._state.restore_snapshot(self._state.active_source)
             else:
@@ -806,7 +814,8 @@ def _create_patched_handler(meta_hook: _MetadataHook, remote: _RemoteControl, co
             state.airplay_connected = True
             state.connected = True
             # Auto-switch to AirPlay if it's the only connected source
-            if not state.active_source or not state.sendspin_connected:
+            _other_connected = state.sendspin_connected or getattr(state, "spotify_connected", False)
+            if not state.active_source or not _other_connected:
                 if state.active_source and state.active_source != "airplay":
                     state.save_snapshot(state.active_source)
                 state.active_source = "airplay"
@@ -947,10 +956,12 @@ class AirPlayReceiver:
         global _dj_mixer_active
         self.__dj_mixer = mixer
         _dj_mixer_active = mixer is not None
-        # Mute/unmute the audio child's native sink so it doesn't double-play
-        if hasattr(self, "_sink_muted") and self._sink_muted is not None:
-            self._sink_muted.value = mixer is not None
-            logger.info("AirPlay: audio child sink %s", "MUTED" if mixer else "UNMUTED")
+        # NOTE: _sink_muted is now managed by main.py (_on_dj_activate /
+        # _on_source_switch) which knows the active_source.  The setter only
+        # mutes on DJ *enter* (always safe); unmuting is left to the caller.
+        if mixer is not None and hasattr(self, "_sink_muted") and self._sink_muted is not None:
+            self._sink_muted.value = True
+            logger.info("AirPlay: audio child sink MUTED (DJ enter)")
         # Forward to PCM consumer if it exists
         if hasattr(self, "_pcm_consumer") and self._pcm_consumer is not None:
             self._pcm_consumer.dj_mixer = mixer
@@ -959,6 +970,12 @@ class AirPlayReceiver:
                         self._dj_feed_channel, "ON" if mixer else "OFF")
         else:
             logger.warning("AirPlay: DJ mixer set but _pcm_consumer not available yet")
+
+    def set_sink_muted(self, muted: bool) -> None:
+        """Explicitly mute/unmute the audio child's native sink output."""
+        if hasattr(self, "_sink_muted") and self._sink_muted is not None:
+            self._sink_muted.value = muted
+            logger.info("AirPlay: audio child sink %s (explicit)", "MUTED" if muted else "UNMUTED")
 
     @property
     def pin(self) -> str | None:
@@ -974,6 +991,38 @@ class AirPlayReceiver:
         if not hasattr(self, "_daemon_state"):
             self._daemon_state = PlayerState()
         return self._daemon_state
+
+    def dj_play_pause(self, want_pause: bool) -> None:
+        """Pause/play AirPlay audio for DJ mode (bypasses active_source routing).
+
+        *want_pause*: True → pause, False → play.
+        """
+        state = self._state
+        # Determine AirPlay's own play state (may be in snapshot if not active)
+        if state.active_source == "airplay":
+            ap_playing = state.is_playing
+        else:
+            snap = state._source_snapshots.get("airplay", {})
+            ap_playing = snap.get("is_playing", False)
+
+        if want_pause and ap_playing:
+            self._remote.send_to_audio("pause")
+            if state.active_source == "airplay":
+                state.is_playing = False
+                state.playback_speed = 0.0
+            else:
+                state.write_to_snapshot("airplay", is_playing=False, playback_speed=0.0)
+            logger.info("AirPlay: DJ pause")
+        elif not want_pause and not ap_playing:
+            self._remote.send_to_audio("play-0")
+            if state.active_source == "airplay":
+                state.is_playing = True
+                state.playback_speed = 1.0
+                state.progress_update_time = time.monotonic()
+            else:
+                state.write_to_snapshot("airplay", is_playing=True, playback_speed=1.0,
+                                        progress_update_time=time.monotonic())
+            logger.info("AirPlay: DJ play")
 
     def _on_airplay_command(self, command: str) -> None:
         """Route transport commands to the correct source."""

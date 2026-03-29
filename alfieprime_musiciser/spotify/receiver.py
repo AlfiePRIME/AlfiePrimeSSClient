@@ -1,8 +1,13 @@
 """Spotify Connect receiver bridge.
 
 Spawns librespot as a subprocess with ``--backend pipe`` so raw PCM arrives
-on stdout.  Metadata and transport controls use the Spotify Web API (via
-spotipy).  Event callbacks from librespot are received through a named pipe.
+on stdout.  Event callbacks from librespot (play/pause/track change/volume)
+are received through a named pipe and provide basic playback state.
+
+The Spotify Web API (via spotipy) is **entirely optional** — when configured
+it adds rich metadata (title, artist, album, artwork) and TUI transport
+controls (next/prev/shuffle/repeat).  Without it, librespot still works as
+a fully functional Spotify Connect receiver with audio and basic state.
 
 Architecture mirrors the AirPlay receiver: external process bridged into the
 AlfiePRIME audio + metadata pipeline.
@@ -13,8 +18,7 @@ import asyncio
 import json
 import logging
 import os
-import stat
-import struct
+import re
 import sys
 import threading
 import time
@@ -31,7 +35,6 @@ logger = logging.getLogger(__name__)
 
 # Cache/credential paths
 _CACHE_DIR = Path.home() / ".cache" / "alfieprime" / "spotify"
-_EVENT_PIPE = _CACHE_DIR / "event_pipe"
 _LIBRESPOT_CACHE = _CACHE_DIR / "librespot"
 
 # Module-level flag for DJ mixer state
@@ -244,58 +247,21 @@ class _SpotifyAPI:
             return b""
 
 
-# ---------------------------------------------------------------------------
-# Event handler — processes events from librespot via named pipe
-# ---------------------------------------------------------------------------
-
-
-class _EventHandler:
-    """Reads JSON events from the named pipe written by event_script.py."""
-
-    def __init__(self, pipe_path: Path, callback):
-        self._pipe_path = pipe_path
-        self._callback = callback
-        self._running = False
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        self._running = True
-        self._thread = threading.Thread(target=self._read_loop, daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._running = False
-
-    def _read_loop(self) -> None:
-        pipe_path = str(self._pipe_path)
-        while self._running:
-            try:
-                # Opening a FIFO blocks until a writer connects
-                with open(pipe_path, "r") as f:
-                    while self._running:
-                        line = f.readline()
-                        if not line:
-                            break  # writer closed — reopen
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            event = json.loads(line)
-                            self._callback(event)
-                        except json.JSONDecodeError:
-                            logger.debug("Spotify event: invalid JSON: %s", line[:80])
-            except OSError:
-                if self._running:
-                    time.sleep(0.5)
-
 
 # ---------------------------------------------------------------------------
 # Spotify supported commands
 # ---------------------------------------------------------------------------
 
-_SPOTIFY_SUPPORTED_COMMANDS = [
+# Full commands when Web API is available
+_SPOTIFY_API_COMMANDS = [
     "play", "pause", "next", "previous",
     "shuffle", "repeat", "volume",
+]
+
+# Basic commands without Web API — play state comes from librespot events,
+# volume is local only (no Spotify device sync)
+_SPOTIFY_BASIC_COMMANDS = [
+    "play", "pause", "volume",
 ]
 
 
@@ -324,7 +290,6 @@ class SpotifyConnectReceiver:
         self._config = config
         self._process = None
         self._pcm_reader: _PCMReader | None = None
-        self._event_handler: _EventHandler | None = None
         self._api: _SpotifyAPI | None = None
         self._running = False
         self._restart_count = 0
@@ -366,7 +331,6 @@ class SpotifyConnectReceiver:
         """Build the librespot command line."""
         cfg = self._config
         bitrate = str(cfg.spotify_bitrate) if cfg and hasattr(cfg, "spotify_bitrate") else "320"
-        event_script = os.path.join(os.path.dirname(__file__), "event_script.py")
 
         cmd = [
             "librespot",
@@ -374,9 +338,8 @@ class SpotifyConnectReceiver:
             "--format", "S16",
             "--bitrate", bitrate,
             "--name", self._device_name,
-            "--onevent", event_script,
             "--initial-volume", "100",
-            "--autoplay", "on",
+            "--verbose",
         ]
 
         # Username for zeroconf-less auth (optional)
@@ -385,36 +348,23 @@ class SpotifyConnectReceiver:
             cmd += ["--username", username]
 
         # Cache directory for librespot
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cache_dir = str(_LIBRESPOT_CACHE)
         cmd += ["--cache", cache_dir]
 
         return cmd
-
-    def _setup_event_pipe(self) -> None:
-        """Create the named pipe for librespot event callbacks."""
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        pipe_path = str(_EVENT_PIPE)
-        if os.path.exists(pipe_path):
-            if stat.S_ISFIFO(os.stat(pipe_path).st_mode):
-                return  # already a FIFO
-            os.unlink(pipe_path)
-        os.mkfifo(pipe_path)
-        logger.info("Spotify event pipe created: %s", pipe_path)
 
     def _spawn_librespot(self) -> None:
         """Spawn the librespot subprocess."""
         import subprocess
 
         cmd = self._build_librespot_cmd()
-        env = os.environ.copy()
-        env["MUSICISER_EVENT_PIPE"] = str(_EVENT_PIPE)
 
         logger.info("Spawning librespot: %s", " ".join(cmd))
         self._process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=env,
             bufsize=0,
         )
 
@@ -431,7 +381,13 @@ class SpotifyConnectReceiver:
         logger.info("librespot started (PID %d)", self._process.pid)
 
     def _monitor_stderr(self) -> None:
-        """Monitor librespot stderr for connection/disconnection events."""
+        """Monitor librespot stderr for all events.
+
+        librespot's verbose log output contains connection, playback, and
+        track change events.  We parse these directly instead of using
+        --onevent (which spawns a subprocess per event and can stall
+        librespot's audio pipeline, causing track skipping).
+        """
         proc = self._process
         if proc is None or proc.stderr is None:
             return
@@ -443,12 +399,63 @@ class SpotifyConnectReceiver:
             if not line:
                 continue
             logger.debug("librespot: %s", line)
+            ll = line.lower()
 
-            # Detect connection events from stderr messages
-            if "authenticated as" in line.lower() or "country:" in line.lower():
+            # ── Connection / disconnection ──
+            if "authenticated as" in ll or "country:" in ll:
                 self._on_librespot_connected()
-            elif "disconnected" in line.lower() or "connection closed" in line.lower():
+            elif "disconnected" in ll or "connection closed" in ll:
                 self._on_librespot_disconnected()
+
+            # ── Track loading ──
+            # e.g. "Loading <SpotifyId {id}> ..." or "loaded track"
+            elif "loading <" in ll or "loading track" in ll:
+                # Extract track ID if present
+                m = re.search(r'loading <([^>]+)>', line, re.IGNORECASE)
+                if m:
+                    track_id = m.group(1).strip()
+                    if track_id != self._last_track_id:
+                        self._last_track_id = track_id
+                        if self._api:
+                            self._fetch_and_update_metadata()
+
+            # ── Track name from log (available without API) ──
+            # e.g. 'Track "Song Name" loaded'
+            elif 'track "' in ll:
+                m = re.search(r'track "([^"]+)"', line, re.IGNORECASE)
+                if m:
+                    track_name = m.group(1)
+                    self._update_title_from_stderr(track_name)
+
+            # ── Playback state ──
+            elif "command: play" in ll and "command: pause" not in ll:
+                self._set_playing(True)
+            elif "command: pause" in ll:
+                self._set_playing(False)
+            elif "player::preload" in ll or "preloading" in ll:
+                pass  # ignore preload events
+            elif "end of track" in ll or "endoftrack" in ll:
+                # Track finished — next track will start automatically
+                pass
+
+            # ── Volume ──
+            elif "volume:" in ll:
+                m = re.search(r'volume:\s*(\d+)', line)
+                if m:
+                    try:
+                        vol_raw = int(m.group(1))
+                        vol_pct = int(vol_raw / 65535 * 100)
+                        self._state.set_source_volume("spotify", vol_pct, muted=False)
+                    except (ValueError, TypeError):
+                        pass
+
+    def _update_title_from_stderr(self, title: str) -> None:
+        """Update track title from librespot's stderr (no API needed)."""
+        if self._is_active():
+            self._state.title = title
+            self._state.connected = True
+        else:
+            self._state.write_to_snapshot("spotify", title=title)
 
     def _on_librespot_connected(self) -> None:
         """Called when a Spotify client connects to librespot."""
@@ -457,25 +464,27 @@ class SpotifyConnectReceiver:
         state.connected = True
         state.spotify_server_name = self._device_name
 
-        # Set supported commands
+        # Set supported commands based on whether Web API is available
+        cmds = list(_SPOTIFY_API_COMMANDS if self._api else _SPOTIFY_BASIC_COMMANDS)
         if self._is_active():
-            state.supported_commands = list(_SPOTIFY_SUPPORTED_COMMANDS)
+            state.supported_commands = cmds
             state.codec = "vorbis"
             state.sample_rate = 44100
             state.bit_depth = 16
         else:
             state.write_to_snapshot("spotify",
-                supported_commands=list(_SPOTIFY_SUPPORTED_COMMANDS),
+                supported_commands=cmds,
                 codec="vorbis",
                 sample_rate=44100,
                 bit_depth=16,
             )
 
         state.show_toast("Spotify Connected", self._device_name)
-        logger.info("Spotify client connected")
+        logger.info("Spotify client connected (Web API: %s)", "yes" if self._api else "no")
 
-        # Trigger initial metadata fetch
-        self._fetch_and_update_metadata()
+        # Fetch rich metadata if API is available
+        if self._api:
+            self._fetch_and_update_metadata()
 
     def _on_librespot_disconnected(self) -> None:
         """Called when a Spotify client disconnects."""
@@ -503,38 +512,6 @@ class SpotifyConnectReceiver:
 
     def _is_active(self) -> bool:
         return self._state.active_source in ("spotify", "")
-
-    # ── Event handling ──
-
-    def _on_event(self, event: dict) -> None:
-        """Process an event from librespot's onevent script."""
-        ev_type = event.get("event", "")
-        logger.debug("Spotify event: %s", ev_type)
-
-        if ev_type in ("playing", "started"):
-            self._set_playing(True)
-            track_id = event.get("track_id", "")
-            if track_id and track_id != self._last_track_id:
-                self._last_track_id = track_id
-                self._fetch_and_update_metadata()
-        elif ev_type == "paused":
-            self._set_playing(False)
-        elif ev_type == "stopped":
-            self._set_playing(False)
-        elif ev_type in ("changed", "track_changed", "preloading"):
-            track_id = event.get("track_id", "")
-            if track_id:
-                self._last_track_id = track_id
-                self._fetch_and_update_metadata()
-        elif ev_type == "volume_set":
-            vol_raw = event.get("volume", "")
-            if vol_raw:
-                try:
-                    # librespot volume is 0-65535, map to 0-100
-                    vol_pct = int(int(vol_raw) / 65535 * 100)
-                    self._state.set_source_volume("spotify", vol_pct, muted=False)
-                except (ValueError, TypeError):
-                    pass
 
     def _set_playing(self, playing: bool) -> None:
         """Set is_playing, gated by active source."""
@@ -642,61 +619,65 @@ class SpotifyConnectReceiver:
     # ── Transport controls ──
 
     def _on_transport_command(self, command: str) -> None:
-        """Handle transport commands when Spotify is the active source."""
-        if self._api is None:
-            return
+        """Handle transport commands when Spotify is the active source.
 
+        Volume commands always work (local state).  Transport commands
+        (play/pause/next/prev/shuffle/repeat) require the Web API — without
+        it, playback is controlled from the Spotify app.
+        """
         state = self._state
+        api = self._api
+
         if command == "play_pause":
-            if state.is_playing:
-                self._api.send_command("pause")
-            else:
-                self._api.send_command("play")
+            if api:
+                if state.is_playing:
+                    api.send_command("pause")
+                else:
+                    api.send_command("play")
         elif command == "next":
-            self._api.send_command("next")
-            # Trigger metadata refresh after a short delay
-            threading.Timer(0.5, self._fetch_and_update_metadata).start()
+            if api:
+                api.send_command("next")
+                threading.Timer(0.5, self._fetch_and_update_metadata).start()
         elif command == "previous":
-            self._api.send_command("previous")
-            threading.Timer(0.5, self._fetch_and_update_metadata).start()
+            if api:
+                api.send_command("previous")
+                threading.Timer(0.5, self._fetch_and_update_metadata).start()
         elif command == "shuffle":
-            self._api.send_command("shuffle")
-            threading.Timer(0.3, self._fetch_and_update_metadata).start()
+            if api:
+                api.send_command("shuffle")
+                threading.Timer(0.3, self._fetch_and_update_metadata).start()
         elif command == "repeat":
-            self._api.send_command("repeat")
-            threading.Timer(0.3, self._fetch_and_update_metadata).start()
+            if api:
+                api.send_command("repeat")
+                threading.Timer(0.3, self._fetch_and_update_metadata).start()
         elif command == "volume_up":
             vol, _ = state.get_source_volume("spotify")
             new_vol = min(100, vol + 5)
             state.set_source_volume("spotify", new_vol)
-            self._api.send_command("volume", volume_percent=new_vol)
+            if api:
+                api.send_command("volume", volume_percent=new_vol)
         elif command == "volume_down":
             vol, _ = state.get_source_volume("spotify")
             new_vol = max(0, vol - 5)
             state.set_source_volume("spotify", new_vol)
-            self._api.send_command("volume", volume_percent=new_vol)
+            if api:
+                api.send_command("volume", volume_percent=new_vol)
         elif command == "mute":
             vol, muted = state.get_source_volume("spotify")
             state.set_source_muted("spotify", not muted)
-            if not muted:
-                self._api.send_command("volume", volume_percent=0)
-            else:
-                self._api.send_command("volume", volume_percent=vol)
+            if api:
+                if not muted:
+                    api.send_command("volume", volume_percent=0)
+                else:
+                    api.send_command("volume", volume_percent=vol)
         elif command in ("dj_pause", "dj_play"):
-            # DJ mode play/pause
-            if command == "dj_pause":
-                self._api.send_command("pause")
-            else:
-                self._api.send_command("play")
+            if api:
+                api.send_command("pause" if command == "dj_pause" else "play")
 
     def dj_play_pause(self, want_pause: bool) -> None:
         """Pause/play Spotify for DJ mode."""
-        if self._api is None:
-            return
-        if want_pause:
-            self._api.send_command("pause")
-        else:
-            self._api.send_command("play")
+        if self._api is not None:
+            self._api.send_command("pause" if want_pause else "play")
 
     # ── Sink muting (no-op for pipe backend) ──
 
@@ -711,10 +692,7 @@ class SpotifyConnectReceiver:
         self._running = True
         self._state.spotify_ready = True
 
-        # Set up event pipe
-        self._setup_event_pipe()
-
-        # Authenticate with Spotify Web API if client_id configured
+        # Authenticate with Spotify Web API if client_id configured (optional)
         client_id = ""
         if self._config and hasattr(self._config, "spotify_client_id"):
             client_id = self._config.spotify_client_id
@@ -723,10 +701,8 @@ class SpotifyConnectReceiver:
             if not self._api.authenticate():
                 logger.warning("Spotify Web API auth failed — metadata/controls unavailable")
                 self._api = None
-
-        # Start event handler
-        self._event_handler = _EventHandler(_EVENT_PIPE, self._on_event)
-        self._event_handler.start()
+        else:
+            logger.info("Spotify: no client_id — running without Web API (audio + basic state only)")
 
         # Intercept TUI command callback for Spotify transport controls
         if self._tui is not None:
@@ -740,7 +716,7 @@ class SpotifyConnectReceiver:
 
             self._tui._command_callback = _command_router
 
-        # Start metadata polling as fallback
+        # Start metadata polling as fallback when API is available
         if self._api is not None:
             self._start_metadata_poll()
 
@@ -781,8 +757,6 @@ class SpotifyConnectReceiver:
 
         if self._pcm_reader:
             self._pcm_reader.stop()
-        if self._event_handler:
-            self._event_handler.stop()
 
         if self._process is not None:
             try:
@@ -794,13 +768,6 @@ class SpotifyConnectReceiver:
                 except Exception:
                     pass
             self._process = None
-
-        # Clean up event pipe
-        try:
-            if _EVENT_PIPE.exists():
-                _EVENT_PIPE.unlink()
-        except OSError:
-            pass
 
         self._state.spotify_connected = False
         self._state.connected = self._state.sendspin_connected or self._state.airplay_connected

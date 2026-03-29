@@ -290,6 +290,10 @@ class _InputRing:
         with self._lock:
             return (self._write - self._read) % self._size
 
+    def clear(self) -> None:
+        with self._lock:
+            self._read = self._write
+
 
 # ── PCM conversion helpers ───────────────────────────────────────────────────
 
@@ -386,6 +390,9 @@ class DJMixer:
         if self._thread is not None:
             self._thread.join(timeout=2)
             self._thread = None
+        # Clear ring buffers so no stale audio leaks into the next session
+        self._ring_a.clear()
+        self._ring_b.clear()
         if self._stream is not None:
             try:
                 self._stream.stop_stream()

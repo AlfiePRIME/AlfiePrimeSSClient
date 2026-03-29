@@ -20,6 +20,16 @@ def _safe_hex(r: int | float, g: int | float, b: int | float) -> str:
     return f"#{max(0,min(255,int(r))):02x}{max(0,min(255,int(g))):02x}{max(0,min(255,int(b))):02x}"
 
 
+# Tab definitions — (tab_key, display_label)
+_TABS = [
+    ("general", "General"),
+    ("sendspin", "SendSpin"),
+    ("airplay", "AirPlay"),
+    ("spotify", "Spotify"),
+    ("advanced", "Advanced"),
+]
+
+
 class SettingsMixin:
     _MENU_DANCERS = [
         [[" o/", "/| ", "/ \\"], ["\\o ", " |\\", "/ \\"], ["\\o/", " | ", "/ \\"], [" o ", "/|\\", "/ \\"]],
@@ -41,69 +51,44 @@ class SettingsMixin:
         """Generate animated CRT scanline background lines."""
         t = time.time()
         th = self.state.theme
-        if danger:
-            pr, pg, pb = 140, 0, 0
-        else:
-            pr, pg, pb = _hex_to_rgb(th.primary)
+        base_r, base_g, base_b = _hex_to_rgb(th.primary_dim) if th.primary_dim else (30, 30, 30)
         bg_lines: list[Text] = []
+        noise_chars = "░▒▓·.╌"
+        if danger:
+            noise_chars = self._SKULL_GLYPHS
+        phase = t * 8
         for row in range(term_h):
             line = Text()
-            scanline_pos = (t * 8) % term_h
-            scan_dist = min(abs(row - scanline_pos), term_h - abs(row - scanline_pos))
-            scan_glow = max(0, 1.0 - scan_dist / 4.0) * 0.3
-            flicker = 0.06 + 0.04 * math.sin(t * 6 + row * 0.5)
-            band_phase = math.sin(t * 1.2 + row * 0.12) * 0.5 + 0.5
-            if band_phase > 0.8:
-                flicker += 0.08
-            flicker += scan_glow
-            br = 255 * flicker
-            base_c = _safe_hex(br * 0.4 + pr * flicker * 0.3, br * 0.4 + pg * flicker * 0.3, br * 0.4 + pb * flicker * 0.3)
+            # Scanline brightness varies by row position relative to animated phase
+            scan = math.sin(phase + row * 0.6) * 0.5 + 0.5
+            glow = int(scan * 18)
+            r = max(0, min(255, base_r // 6 + glow))
+            g = max(0, min(255, base_g // 6 + glow))
+            b = max(0, min(255, base_b // 6 + glow))
             if danger:
-                # Pre-build row as (char, category) pairs, then batch by category
-                row_chars: list[tuple[str, int]] = []  # (char, 0=bg 1=noise 2=skull)
-                for col in range(term_w):
-                    noise = random.random()
-                    threshold = 0.06 + scan_glow * 0.3
-                    if noise < 0.025:
-                        row_chars.append((random.choice(self._SKULL_GLYPHS), 2))
-                    elif noise < threshold * 0.4:
-                        row_chars.append((random.choice("░▒▓"), 1))
-                    elif noise < threshold:
-                        row_chars.append((random.choice("·.╌"), 1))
-                    else:
-                        row_chars.append((" ", 0))
-                # Batch consecutive same-category chars into single appends
-                # Skulls get individual random red shades per group
-                buf: list[str] = []
-                cur_cat = -1
-                for ch, cat in row_chars:
-                    if cat != cur_cat and buf:
-                        if cur_cat == 2:
-                            shade = random.randint(60, 200)
-                            line.append("".join(buf), Style(color=_safe_hex(shade, shade // 8, 0)))
-                        else:
-                            line.append("".join(buf), Style(color=base_c))
-                        buf = []
-                    cur_cat = cat
-                    buf.append(ch)
-                if buf:
-                    if cur_cat == 2:
-                        shade = random.randint(60, 200)
-                        line.append("".join(buf), Style(color=_safe_hex(shade, shade // 8, 0)))
-                    else:
-                        line.append("".join(buf), Style(color=base_c))
-            else:
-                chars = []
-                for col in range(term_w):
-                    noise = random.random()
-                    threshold = 0.06 + scan_glow * 0.3
-                    if noise < threshold * 0.4:
-                        chars.append(random.choice("░▒▓"))
-                    elif noise < threshold:
-                        chars.append(random.choice("·.╌"))
-                    else:
-                        chars.append(" ")
-                line.append("".join(chars), Style(color=base_c))
+                g = 0
+                b = 0
+                r = max(0, min(255, 12 + glow * 2))
+            color = _safe_hex(r, g, b)
+            row_str_parts: list[str] = []
+            for col in range(term_w):
+                # Sparse noise with occasional characters
+                seed = (row * 1337 + col * 7919 + int(t * 2)) % 137
+                if seed < 8:
+                    row_str_parts.append(noise_chars[seed % len(noise_chars)])
+                else:
+                    row_str_parts.append(" ")
+            row_str = "".join(row_str_parts)
+            # Add flicker band — a horizontal bright band that slowly scrolls
+            band_y = int((t * 3) % (term_h + 20)) - 10
+            dist = abs(row - band_y)
+            if dist < 3:
+                flicker = max(0, 12 - dist * 4)
+                r2 = min(255, r + flicker * 6)
+                g2 = min(255, g + flicker * (0 if danger else 4))
+                b2 = min(255, b + flicker * (0 if danger else 4))
+                color = _safe_hex(r2, g2, b2)
+            line.append(row_str, Style(color=color))
             bg_lines.append(line)
         return bg_lines
 
@@ -202,22 +187,18 @@ class SettingsMixin:
         rng = random.Random(42)
         n_dancers = rng.randint(10, 16)
         colors = ["#ff55ff", "#55ffff", "#ffff55", "#55ff55", "#ff8855", "#ff5555", "#55ff88"]
-        # Panel bounding box (with margin)
         px0 = panel_x - 1
         px1 = panel_x + panel_w + 2
         py0 = panel_y - 1
         py1 = panel_y + panel_h + 1
-
         for i in range(n_dancers):
             dtype = rng.randint(0, len(self._MENU_DANCERS) - 1)
-            # Stable base position from seed, drifts over time
             base_x = rng.randint(1, max(1, term_w - 5))
             base_y = rng.randint(1, max(1, term_h - 5))
             dx = int(3 * math.sin(t * 0.5 + i * 2.3))
             dy = int(2 * math.sin(t * 0.4 + i * 1.7 + 0.8))
             x = max(0, min(term_w - 4, base_x + dx))
             y = max(0, min(term_h - 4, base_y + dy))
-            # Skip if overlapping the panel area
             if px0 <= x <= px1 and py0 <= y <= py1 + 3:
                 continue
             if px0 <= x + 3 <= px1 and py0 <= y <= py1 + 3:
@@ -230,11 +211,9 @@ class SettingsMixin:
                 row_idx = y + r
                 if 0 <= row_idx < len(bg_lines):
                     row_str = frame[r]
-                    # Overwrite chars at position x in the background line
                     line = bg_lines[row_idx]
                     plain = line.plain
                     if x + 3 <= len(plain):
-                        # Rebuild the line with the dancer chars inserted
                         new_line = Text()
                         if x > 0:
                             new_line.append_text(line[:x])
@@ -243,162 +222,140 @@ class SettingsMixin:
                             new_line.append_text(line[x + 3:])
                         bg_lines[row_idx] = new_line
 
+    # ── Tab items ──────────────────────────────────────────────────────────
+
+    def _get_tab_items(self, tab: str) -> list[tuple[str, str, object]]:
+        """Return (label, config_key, value) list for the given tab."""
+        cfg = self._config or Config()
+        if tab == "general":
+            return [
+                ("Auto Play on Connect", "auto_play", cfg.auto_play),
+                ("Auto Volume on Connect", "auto_volume", cfg.auto_volume),
+                ("FPS Limit", "fps_limit", cfg.fps_limit),
+                ("Brightness", "brightness", cfg.brightness),
+                ("Show Artwork (Normal)", "show_artwork", cfg.show_artwork),
+                ("Album Art Colours", "use_art_colors", cfg.use_art_colors),
+                ("Static Colour", "static_color", cfg.static_color),
+                ("DJ Source Mode", "dj_source_mode", cfg.dj_source_mode),
+            ]
+        elif tab == "sendspin":
+            return [
+                ("SendSpin Receiver", "sendspin_enabled", cfg.sendspin_enabled),
+                ("Device Swap Prompt", "swap_prompt", cfg.swap_prompt),
+                *([("Auto Action", "swap_auto_action", cfg.swap_auto_action)] if not cfg.swap_prompt else []),
+            ]
+        elif tab == "airplay":
+            return [
+                ("AirPlay Receiver", "airplay_enabled", cfg.airplay_enabled),
+                ("Forget Devices on Exit", "forget_airplay_devices", cfg.forget_airplay_devices),
+            ]
+        elif tab == "spotify":
+            return [
+                ("Spotify Connect", "spotify_enabled", cfg.spotify_enabled),
+                ("Bitrate (kbps)", "spotify_bitrate", cfg.spotify_bitrate),
+                ("Device Name", "spotify_device_name", cfg.spotify_device_name),
+                ("Username", "spotify_username", cfg.spotify_username),
+                ("Web API Client ID", "spotify_client_id", cfg.spotify_client_id),
+            ]
+        elif tab == "advanced":
+            return [
+                ("Client Name", "client_name", cfg.client_name),
+                ("Client UUID", "client_id", cfg.client_id),
+                ("Reset Config", "reset_config", ""),
+            ]
+        return []
+
+    # ── Main layout ────────────────────────────────────────────────────────
+
     def _build_settings_layout(self) -> Group:
-        """Render settings menu with animated CRT background."""
-        if self._settings_sub == "advanced":
-            return self._build_advanced_layout()
+        """Render tab-based settings menu with animated CRT background."""
         if self._settings_sub == "color_picker":
             return self._build_color_picker_layout()
-        if self._settings_sub == "protocol":
-            return self._build_protocol_layout()
         self._term_width, self._term_height = self._get_terminal_size()
         term_w = self._term_width
         term_h = self._term_height
         th = self.state.theme
         cfg = self._config or Config()
-        menu_items: list[tuple[str, str, object]] = [
-            ("Auto Play on Connect", "auto_play", cfg.auto_play),
-            ("Auto Volume on Connect", "auto_volume", cfg.auto_volume),
-            ("FPS Limit", "fps_limit", cfg.fps_limit),
-            ("Brightness", "brightness", cfg.brightness),
-            ("Show Artwork (Normal)", "show_artwork", cfg.show_artwork),
-            ("Album Art Colours", "use_art_colors", cfg.use_art_colors),
-            ("Static Colour", "static_color", cfg.static_color),
-        ]
-        panel_w = 54
-        bg_lines = self._build_crt_background(term_w, term_h)
+        t = time.time()
+
+        is_advanced = _TABS[self._settings_tab][0] == "advanced"
+        danger = is_advanced
+
+        if danger and self._advanced_confirm_reset:
+            bg_lines = self._build_crt_background(term_w, term_h, danger=True)
+            return self._build_reset_confirm_layout(bg_lines, 58, term_w, term_h, t)
+
+        panel_w = 58
+        bg_lines = self._build_crt_background(term_w, term_h, danger=danger)
+
+        tab_key = _TABS[self._settings_tab][0]
+        items = self._get_tab_items(tab_key)
+
+        # Compute colors
+        if danger:
+            glow = 0.5 + 0.5 * math.sin(t * 3)
+            r_val = int(180 + 75 * glow)
+            title_c = _safe_hex(r_val, 0, 0)
+            border_c = title_c
+            item_sel_c = "#ff8888"
+            item_c = "#886666"
+            cursor_c = "#ff4444"
+        else:
+            title_c = th.primary
+            border_c = th.primary
+            item_sel_c = th.secondary
+            item_c = "#888888"
+            cursor_c = th.accent
+
         def _center(text: str) -> str:
             pad = max(0, (panel_w - len(text)) // 2)
             return " " * pad + text
 
         panel_lines: list[Text] = []
+
+        # ── Tab bar ──
+        tab_line = Text()
+        tab_line.append(" ", Style())
+        for i, (tkey, tlabel) in enumerate(_TABS):
+            is_sel = i == self._settings_tab
+            if is_sel:
+                tab_line.append(f" {tlabel} ", Style(
+                    color="black" if not danger else "#000000",
+                    bgcolor=cursor_c,
+                    bold=True,
+                ))
+            else:
+                tab_line.append(f" {tlabel} ", Style(color="#666666"))
+            if i < len(_TABS) - 1:
+                tab_line.append("│", Style(color="#444444"))
+        panel_lines.append(tab_line)
+
+        # Title border
         title_line = Text()
-        title_line.append("━" * panel_w, Style(color=th.primary, bold=True))
+        title_line.append("━" * panel_w, Style(color=border_c, bold=True))
         panel_lines.append(title_line)
-        header = Text()
-        header.append(_center(" ◈ SETTINGS ◈ "), Style(color=th.primary, bold=True))
-        panel_lines.append(header)
-        title_line2 = Text()
-        title_line2.append("━" * panel_w, Style(color=th.primary, bold=True))
-        panel_lines.append(title_line2)
         panel_lines.append(Text(""))
-        for i, (label, key, value) in enumerate(menu_items):
+
+        # ── Warning for advanced tab ──
+        if danger:
+            warn = Text()
+            warn.append(_center("Changing these may break server recognition"), Style(color="#aa4444"))
+            panel_lines.append(warn)
+            panel_lines.append(Text(""))
+
+        # ── Note for protocol-affecting settings ──
+        if tab_key in ("sendspin", "airplay", "spotify"):
+            note = Text()
+            note.append(_center("Protocol changes apply on next restart"), Style(color="#666666"))
+            panel_lines.append(note)
+            panel_lines.append(Text(""))
+
+        # ── Menu items ──
+        for i, (label, key, value) in enumerate(items):
             item = Text()
             selected = i == self._settings_cursor
-            if selected:
-                item.append("  ▸ ", Style(color=th.accent, bold=True))
-            else:
-                item.append("    ", Style(color="#444444"))
-            item.append(f"{label:<30}", Style(
-                color=th.secondary if selected else "#888888",
-                bold=selected,
-            ))
-            if key == "auto_volume":
-                if value == -1:
-                    val_str = "OFF"
-                    val_color = "#666666"
-                else:
-                    val_str = f"{value}%"
-                    val_color = th.accent
-                item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
-                if selected:
-                    item.append("  ◂▸", Style(color="#555555"))
-            elif key == "fps_limit":
-                item.append(f"{value:>8}", Style(color=th.accent, bold=selected))
-                if selected:
-                    item.append("  ◂▸", Style(color="#555555"))
-            elif key == "brightness":
-                item.append(f"{value}%".rjust(8), Style(color=th.accent, bold=selected))
-                if selected:
-                    item.append("  ◂▸", Style(color="#555555"))
-            elif key == "static_color":
-                if value:
-                    item.append(f"{value:>8}", Style(color=value, bold=selected))
-                    item.append(" ██", Style(color=value))
-                else:
-                    item.append(f"{'None':>8}", Style(color="#666666"))
-                if selected:
-                    item.append("  Enter▸", Style(color="#555555"))
-            elif key in ("auto_play", "show_artwork", "use_art_colors"):
-                val_str = "ON" if value else "OFF"
-                val_color = th.accent if value else "#666666"
-                item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
-            panel_lines.append(item)
-            panel_lines.append(Text(""))
-        panel_lines.append(Text(""))
-        t = time.time()
-        glow = 0.5 + 0.5 * math.sin(t * 3)
-        r_val = int(180 + 75 * glow)
-        g_val = int(30 * glow)
-        adv_color = _safe_hex(r_val, g_val, 0)
-        adv_line = Text()
-        adv_line.append("    [A] ", Style(color=adv_color, bold=True))
-        adv_line.append("Advanced", Style(color=adv_color, bold=True))
-        panel_lines.append(adv_line)
-        panel_lines.append(Text(""))
-        proto_c = th.accent
-        proto_line = Text()
-        proto_line.append("    [P] ", Style(color=proto_c, bold=True))
-        proto_line.append("Protocol", Style(color=proto_c, bold=True))
-        panel_lines.append(proto_line)
-        panel_lines.append(Text(""))
-        footer = Text()
-        footer.append("━" * panel_w, Style(color=th.primary_dim))
-        panel_lines.append(footer)
-        hint_text = "[↑↓]Nav [Enter]Toggle [◂▸]Adj [C]Close"
-        hint = Text()
-        hint.append(" " * max(0, (panel_w - len(hint_text)) // 2))
-        hint.append("[↑↓]Nav ", Style(color="#555555"))
-        hint.append("[Enter]Toggle ", Style(color="#555555"))
-        hint.append("[◂▸]Adj ", Style(color="#555555"))
-        hint.append("[C]Close", Style(color="#555555"))
-        panel_lines.append(hint)
-        panel_x = max(0, (term_w - panel_w - 2) // 2)
-        panel_y = max(0, (term_h - len(panel_lines)) // 2)
-        self._scatter_dancers_on_bg(bg_lines, term_w, term_h, panel_x, panel_y, panel_w, len(panel_lines))
-        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
 
-    def _build_advanced_layout(self) -> Group:
-        """Render advanced settings (client name, UUID, reset) with danger CRT background."""
-        self._term_width, self._term_height = self._get_terminal_size()
-        term_w = self._term_width
-        term_h = self._term_height
-        t = time.time()
-        cfg = self._config or Config()
-        panel_w = 58
-        bg_lines = self._build_crt_background(term_w, term_h, danger=True)
-        if self._advanced_confirm_reset:
-            return self._build_reset_confirm_layout(bg_lines, panel_w, term_w, term_h, t)
-        def _center(text: str) -> str:
-            pad = max(0, (panel_w - len(text)) // 2)
-            return " " * pad + text
-
-        panel_lines: list[Text] = []
-        glow = 0.5 + 0.5 * math.sin(t * 3)
-        r_val = int(180 + 75 * glow)
-        title_c = _safe_hex(r_val, 0, 0)
-        title_line = Text()
-        title_line.append("━" * panel_w, Style(color=title_c, bold=True))
-        panel_lines.append(title_line)
-        header = Text()
-        header.append(_center(" ☠ ADVANCED ☠ "), Style(color=title_c, bold=True))
-        panel_lines.append(header)
-        title_line2 = Text()
-        title_line2.append("━" * panel_w, Style(color=title_c, bold=True))
-        panel_lines.append(title_line2)
-        panel_lines.append(Text(""))
-        warn = Text()
-        warn.append(_center("Changing these may break server recognition"), Style(color="#aa4444"))
-        panel_lines.append(warn)
-        panel_lines.append(Text(""))
-        adv_items: list[tuple[str, str, str]] = [
-            ("Client Name", "client_name", cfg.client_name),
-            ("Client UUID", "client_id", cfg.client_id),
-            ("Reset Config", "reset_config", ""),
-        ]
-        for i, (label, key, value) in enumerate(adv_items):
-            item = Text()
-            selected = i == self._advanced_cursor
+            # Reset config gets special styling
             if key == "reset_config":
                 if selected:
                     item.append("  ▸ ", Style(color="#ff0000", bold=True))
@@ -409,32 +366,111 @@ class SettingsMixin:
                 panel_lines.append(item)
                 panel_lines.append(Text(""))
                 continue
+
             if selected:
-                item.append("  ▸ ", Style(color="#ff4444", bold=True))
+                item.append("  ▸ ", Style(color=cursor_c, bold=True))
             else:
                 item.append("    ", Style(color="#444444"))
-            item.append(f"{label:<14}", Style(
-                color="#ff8888" if selected else "#886666",
+
+            # Text-editable fields (advanced or spotify text fields)
+            editable_keys = ("client_name", "client_id", "spotify_device_name",
+                             "spotify_username", "spotify_client_id")
+            if key in editable_keys:
+                item.append(f"{label:<24}", Style(
+                    color=item_sel_c if selected else item_c,
+                    bold=selected,
+                ))
+                if self._advanced_editing == key:
+                    display = self._advanced_edit_buf
+                    cursor_blink = int(t * 2) % 2 == 0
+                    item.append(f" {display}", Style(color="#ffffff", bold=True))
+                    if cursor_blink:
+                        item.append("▌", Style(color=cursor_c))
+                    else:
+                        item.append(" ")
+                else:
+                    display = str(value) if value else ""
+                    if not display and key == "spotify_device_name":
+                        import socket
+                        display = f"Musiciser@{socket.gethostname()}"
+                    if len(display) > 24:
+                        display = display[:21] + "..."
+                    item.append(f" {display}", Style(
+                        color=(item_sel_c if selected else "#666666"),
+                    ))
+                panel_lines.append(item)
+                panel_lines.append(Text(""))
+                continue
+
+            item.append(f"{label:<30}", Style(
+                color=item_sel_c if selected else item_c,
                 bold=selected,
             ))
-            if self._advanced_editing == key:
-                display = self._advanced_edit_buf
-                cursor_blink = int(t * 2) % 2 == 0
-                item.append(f" {display}", Style(color="#ffffff", bold=True))
-                if cursor_blink:
-                    item.append("▌", Style(color="#ff4444"))
+
+            # Value display based on type
+            if key == "auto_volume":
+                if value == -1:
+                    val_str, val_color = "OFF", "#666666"
                 else:
-                    item.append(" ")
-            else:
-                display = value
-                if len(display) > 34:
-                    display = display[:31] + "..."
-                item.append(f" {display}", Style(color="#cc8888" if selected else "#666666"))
+                    val_str, val_color = f"{value}%", cursor_c
+                item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
+                if selected:
+                    item.append("  ◂▸", Style(color="#555555"))
+            elif key == "fps_limit":
+                item.append(f"{value:>8}", Style(color=cursor_c, bold=selected))
+                if selected:
+                    item.append("  ◂▸", Style(color="#555555"))
+            elif key == "brightness":
+                item.append(f"{value}%".rjust(8), Style(color=cursor_c, bold=selected))
+                if selected:
+                    item.append("  ◂▸", Style(color="#555555"))
+            elif key == "spotify_bitrate":
+                item.append(f"{value}".rjust(8), Style(color=cursor_c, bold=selected))
+                if selected:
+                    item.append("  ◂▸", Style(color="#555555"))
+            elif key == "static_color":
+                if value:
+                    item.append(f"{value:>8}", Style(color=value, bold=selected))
+                    item.append(" ██", Style(color=value))
+                else:
+                    item.append(f"{'None':>8}", Style(color="#666666"))
+                if selected:
+                    item.append("  Enter▸", Style(color="#555555"))
+            elif key == "swap_auto_action":
+                val_str = str(value).upper()
+                val_color = "#44ff44" if value == "accept" else "#ff4444"
+                item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
+                if selected:
+                    item.append("  ◂▸", Style(color="#555555"))
+            elif key == "dj_source_mode":
+                _mode_labels = {
+                    "mixed": "MIXED", "dual_sendspin": "DUAL SS", "dual_airplay": "DUAL AP",
+                    "spotify_sendspin": "SS+SP", "spotify_airplay": "AP+SP", "dual_spotify": "DUAL SP",
+                }
+                val_str = _mode_labels.get(str(value), str(value).upper())
+                item.append(f"{val_str:>8}", Style(color=cursor_c, bold=selected))
+                if selected:
+                    item.append("  ◂▸", Style(color="#555555"))
+            elif key in ("auto_play", "show_artwork", "use_art_colors",
+                         "airplay_enabled", "sendspin_enabled", "spotify_enabled",
+                         "swap_prompt", "forget_airplay_devices"):
+                val_str = "ON" if value else "OFF"
+                val_color = cursor_c if value else "#666666"
+                item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
+
             panel_lines.append(item)
             panel_lines.append(Text(""))
+
+        # Pad to consistent height
+        while len(panel_lines) < 14:
+            panel_lines.append(Text(""))
+
+        # Footer
         footer = Text()
-        footer.append("━" * panel_w, Style(color="#661111"))
+        footer.append("━" * panel_w, Style(color=border_c if not danger else "#661111"))
         panel_lines.append(footer)
+
+        # Hint line
         hint = Text()
         if self._advanced_editing:
             hint_text = "[Type] Edit  [Enter] Save  [Esc] Cancel"
@@ -443,20 +479,26 @@ class SettingsMixin:
             hint.append("[Enter] Save  ", Style(color="#555555"))
             hint.append("[Esc] Cancel", Style(color="#555555"))
         else:
-            hint_text = "[↑↓] Navigate  [Enter] Edit  [B] Back"
+            hint_text = "[◂▸]Tab [↑↓]Nav [Enter]Edit [C]Close"
             hint.append(" " * max(0, (panel_w - len(hint_text)) // 2))
-            hint.append("[↑↓] Navigate  ", Style(color="#555555"))
-            hint.append("[Enter] Edit  ", Style(color="#555555"))
-            hint.append("[B] Back", Style(color="#555555"))
+            hint.append("[◂▸]Tab ", Style(color="#555555"))
+            hint.append("[↑↓]Nav ", Style(color="#555555"))
+            hint.append("[Enter]Edit ", Style(color="#555555"))
+            hint.append("[C]Close", Style(color="#555555"))
         panel_lines.append(hint)
+
+        panel_x = max(0, (term_w - panel_w - 2) // 2)
+        panel_y = max(0, (term_h - len(panel_lines)) // 2)
+        self._scatter_dancers_on_bg(bg_lines, term_w, term_h, panel_x, panel_y, panel_w, len(panel_lines))
         return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
+
+    # ── Reset confirm (preserved from original) ───────────────────────────
 
     def _build_reset_confirm_layout(
         self, bg_lines: list[Text], panel_w: int, term_w: int, term_h: int, t: float,
     ) -> Group:
         """Big ASCII art warning confirmation for config reset."""
         panel_lines: list[Text] = []
-        # Dark-to-bright red glow
         glow = 0.5 + 0.5 * math.sin(t * 4)
         r_val = int(50 + 200 * glow)
         warn_c = _safe_hex(r_val, 0, 0)
@@ -466,12 +508,10 @@ class SettingsMixin:
         skull_c = _safe_hex(skull_r, 0, 0)
 
         def _center(text: str) -> str:
-            """Pad text with leading spaces to center within panel_w."""
             pad = max(0, (panel_w - len(text)) // 2)
             return " " * pad + text
 
-        # Skull border — double-spaced, pre-calculated to fit panel_w
-        skull_unit = "☠  "  # 3 chars per unit
+        skull_unit = "☠  "
         n_skulls = panel_w // len(skull_unit)
         skull_str = (skull_unit * n_skulls).rstrip()
         skull_str = _center(skull_str)
@@ -480,7 +520,6 @@ class SettingsMixin:
         skull_row.append(skull_str, Style(color=skull_c, bold=True))
         panel_lines.append(skull_row)
         panel_lines.append(Text(""))
-        # Warning triangles — all lines exactly 24 chars
         ascii_warning = [
             "   /\\      /\\      /\\   ",
             "  /!!\\    /!!\\    /!!\\  ",
@@ -492,7 +531,6 @@ class SettingsMixin:
             tl.append(_center(art_line), Style(color=warn_c, bold=True))
             panel_lines.append(tl)
         panel_lines.append(Text(""))
-        # Second skull row
         skull_row2 = Text()
         skull_row2.append(skull_str, Style(color=skull_c, bold=True))
         panel_lines.append(skull_row2)
@@ -527,11 +565,12 @@ class SettingsMixin:
         yn.append("No, go back", Style(color="#44aa44"))
         panel_lines.append(yn)
         panel_lines.append(Text(""))
-        # Bottom skull row
         skull_row3 = Text()
         skull_row3.append(skull_str, Style(color=deep_c, bold=True))
         panel_lines.append(skull_row3)
         return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
+
+    # ── Color picker (preserved from original) ────────────────────────────
 
     def _build_color_picker_layout(self) -> Group:
         """Render color picker submenu with 16 presets + hex input."""
@@ -543,6 +582,7 @@ class SettingsMixin:
         cfg = self._config or Config()
         panel_w = 46
         bg_lines = self._build_crt_background(term_w, term_h)
+
         def _center(text: str) -> str:
             pad = max(0, (panel_w - len(text)) // 2)
             return " " * pad + text
@@ -558,115 +598,89 @@ class SettingsMixin:
         title_line2.append("━" * panel_w, Style(color=th.primary, bold=True))
         panel_lines.append(title_line2)
         panel_lines.append(Text(""))
-        cur = Text()
+
+        # Current color preview
         if cfg.static_color:
-            cur_text = f"Current: ████ {cfg.static_color}"
-            cur.append(" " * max(0, (panel_w - len(cur_text)) // 2))
-            cur.append("Current: ", Style(color="#888888"))
-            cur.append(f"████ {cfg.static_color}", Style(color=cfg.static_color, bold=True))
+            preview = Text()
+            preview.append(_center(f"Current: {cfg.static_color}  "), Style(color=cfg.static_color))
+            preview.append("████", Style(color=cfg.static_color))
+            panel_lines.append(preview)
         else:
-            cur.append(_center("Current: None"), Style(color="#666666"))
-        panel_lines.append(cur)
+            preview = Text()
+            preview.append(_center("Current: None (dynamic)"), Style(color="#666666"))
+            panel_lines.append(preview)
         panel_lines.append(Text(""))
-        for row_idx in range(4):
+
+        # 4x4 grid of color presets
+        for row in range(4):
             line = Text()
-            line.append("  ")
-            for col_idx in range(4):
-                i = row_idx * 4 + col_idx
-                name, hex_val = self._COLOR_PRESETS[i]
-                selected = i == self._color_cursor
-                if selected:
-                    line.append("▸", Style(color=th.accent, bold=True))
-                else:
-                    line.append(" ")
-                if hex_val:
-                    line.append("██", Style(color=hex_val))
-                    line.append(f" {name:<7}", Style(
-                        color="#ffffff" if selected else "#888888",
-                        bold=selected,
-                    ))
-                else:
+            line.append("  ", Style())
+            for col in range(4):
+                idx = row * 4 + col
+                name, hex_val = self._COLOR_PRESETS[idx]
+                selected = idx == self._color_cursor
+                if idx == 15:  # Custom Hex
                     if self._color_hex_editing:
+                        display = self._color_hex_buf
                         cursor_blink = int(t * 2) % 2 == 0
-                        display = self._color_hex_buf or "#"
-                        line.append(f"{display:<7}", Style(color="#ffffff", bold=True))
-                        if cursor_blink:
-                            line.append("▌", Style(color=th.accent))
+                        if selected:
+                            line.append(f"[{display}", Style(color="#ffffff", bold=True))
+                            if cursor_blink:
+                                line.append("▌", Style(color=th.accent))
+                            else:
+                                line.append(" ")
+                            pad = max(0, 8 - len(display) - 2)
+                            line.append(" " * pad + "]", Style(color="#ffffff"))
                         else:
-                            line.append(" ")
-                        pad = 3 - max(0, len(display) - 7)
-                        if pad > 0:
-                            line.append(" " * pad)
+                            line.append(f" {name:<9}", Style(color="#888888"))
+                    elif selected:
+                        line.append(f"▸{name:<9}", Style(color=th.accent, bold=True))
                     else:
-                        line.append("## ", Style(color="#666666"))
-                        line.append(f"{'Hex':<7}", Style(
-                            color="#ffffff" if selected else "#888888",
-                            bold=selected,
-                        ))
+                        line.append(f" {name:<9}", Style(color="#888888"))
+                elif selected:
+                    line.append(f" ▸██ ", Style(color=hex_val, bold=True))
+                    line.append(f"{name:<5}", Style(color=th.secondary, bold=True))
+                else:
+                    line.append(f"  ██ ", Style(color=hex_val))
+                    line.append(f"{name:<5}", Style(color="#666666"))
             panel_lines.append(line)
-        panel_lines.append(Text(""))
-        clear_selected = self._color_cursor == 16
+            panel_lines.append(Text(""))
+
+        # Clear button
         clear_line = Text()
-        if clear_selected:
-            clear_line.append("  ▸ ", Style(color=th.accent, bold=True))
+        selected = self._color_cursor == 16
+        if selected:
+            clear_line.append(_center("▸ Clear (use dynamic) ◂"), Style(color=th.accent, bold=True))
         else:
-            clear_line.append("    ")
-        clear_line.append("Clear (use default theme)", Style(
-            color="#ffffff" if clear_selected else "#888888",
-            bold=clear_selected,
-        ))
+            clear_line.append(_center("  Clear (use dynamic)  "), Style(color="#666666"))
         panel_lines.append(clear_line)
         panel_lines.append(Text(""))
+
         footer = Text()
         footer.append("━" * panel_w, Style(color=th.primary_dim))
         panel_lines.append(footer)
         hint = Text()
-        if self._color_hex_editing:
-            hint_text = "[Type] Hex  [Enter] Apply  [Esc] Cancel"
-            hint.append(" " * max(0, (panel_w - len(hint_text)) // 2))
-            hint.append("[Type] Hex  ", Style(color="#555555"))
-            hint.append("[Enter] Apply  ", Style(color="#555555"))
-            hint.append("[Esc] Cancel", Style(color="#555555"))
-        else:
-            hint_text = "[↑↓◂▸] Navigate  [Enter] Select  [B] Back"
-            hint.append(" " * max(0, (panel_w - len(hint_text)) // 2))
-            hint.append("[↑↓◂▸] Navigate  ", Style(color="#555555"))
-            hint.append("[Enter] Select  ", Style(color="#555555"))
-            hint.append("[B] Back", Style(color="#555555"))
+        hint_text = "[↑↓◂▸]Nav [Enter]Select [B]Back"
+        hint.append(" " * max(0, (panel_w - len(hint_text)) // 2))
+        hint.append("[↑↓◂▸]Nav ", Style(color="#555555"))
+        hint.append("[Enter]Select ", Style(color="#555555"))
+        hint.append("[B]Back", Style(color="#555555"))
         panel_lines.append(hint)
+
         panel_x = max(0, (term_w - panel_w - 2) // 2)
         panel_y = max(0, (term_h - len(panel_lines)) // 2)
         self._scatter_dancers_on_bg(bg_lines, term_w, term_h, panel_x, panel_y, panel_w, len(panel_lines))
         return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
 
-    def _handle_settings_main_key(self, k: str) -> None:
-        """Handle keys in the main settings menu."""
+    # ── Key handling ───────────────────────────────────────────────────────
+
+    def _handle_settings_main_key(self, k: str, raw_key: str = "") -> None:
+        """Handle all settings key input (tab navigation + item interaction)."""
         if k == "escape":
             self._start_menu_fade_out(lambda: setattr(self, '_settings_open', False))
-        elif k == "a":
-            def _switch_to_advanced() -> None:
-                self._settings_sub = "advanced"
-                self._advanced_cursor = 0
-                self._advanced_editing = ""
-            self._start_menu_fade_out(_switch_to_advanced)
-        elif k == "p":
-            def _switch_to_protocol() -> None:
-                self._settings_sub = "protocol"
-                self._protocol_cursor = 0
-            self._start_menu_fade_out(_switch_to_protocol)
-        elif k == "arrow_up":
-            self._settings_cursor = (self._settings_cursor - 1) % len(self._settings_items)
-        elif k == "arrow_down":
-            self._settings_cursor = (self._settings_cursor + 1) % len(self._settings_items)
-        elif k in (" ", "\r", "\n"):
-            self._settings_toggle_current()
-        elif k == "arrow_left":
-            self._settings_adjust(-1)
-        elif k == "arrow_right":
-            self._settings_adjust(1)
+            return
 
-    def _handle_advanced_key(self, k: str, raw_key: str) -> None:
-        """Handle keys in the advanced settings submenu."""
+        # ── Reset confirm overlay ──
         if self._advanced_confirm_reset:
             if k == "y":
                 from alfieprime_musiciser.config import CONFIG_FILE
@@ -678,17 +692,27 @@ class SettingsMixin:
             elif k in ("n", "escape", "/"):
                 self._start_menu_fade_out(lambda: setattr(self, '_advanced_confirm_reset', False))
             return
+
+        # ── Text editing mode ──
         if self._advanced_editing:
             if k == "escape":
                 self._advanced_editing = ""
                 self._advanced_edit_buf = ""
             elif k in ("\r", "\n"):
                 cfg = self._config
-                if cfg and self._advanced_edit_buf:
-                    if self._advanced_editing == "client_name":
-                        cfg.client_name = self._advanced_edit_buf
-                    elif self._advanced_editing == "client_id":
-                        cfg.client_id = self._advanced_edit_buf
+                if cfg and self._advanced_edit_buf is not None:
+                    key = self._advanced_editing
+                    val = self._advanced_edit_buf
+                    if key == "client_name":
+                        cfg.client_name = val
+                    elif key == "client_id":
+                        cfg.client_id = val
+                    elif key == "spotify_device_name":
+                        cfg.spotify_device_name = val
+                    elif key == "spotify_username":
+                        cfg.spotify_username = val
+                    elif key == "spotify_client_id":
+                        cfg.spotify_client_id = val
                     cfg.save()
                 self._advanced_editing = ""
                 self._advanced_edit_buf = ""
@@ -697,23 +721,146 @@ class SettingsMixin:
             elif len(raw_key) == 1 and raw_key.isprintable():
                 self._advanced_edit_buf += raw_key
             return
-        if k == "b" or k == "escape":
-            self._start_menu_fade_out(lambda: setattr(self, '_settings_sub', ''))
-        elif k == "arrow_up":
-            self._advanced_cursor = (self._advanced_cursor - 1) % len(self._advanced_items)
+
+        tab_key = _TABS[self._settings_tab][0]
+        items = self._get_tab_items(tab_key)
+
+        # ── Tab navigation ──
+        if k == "arrow_left" and not items:
+            self._settings_tab = (self._settings_tab - 1) % len(_TABS)
+            self._settings_cursor = 0
+            return
+        if k == "arrow_right" and not items:
+            self._settings_tab = (self._settings_tab + 1) % len(_TABS)
+            self._settings_cursor = 0
+            return
+
+        # Tab switching: Tab key or number keys
+        if k in ("1", "2", "3", "4", "5"):
+            idx = int(k) - 1
+            if idx < len(_TABS):
+                self._settings_tab = idx
+                self._settings_cursor = 0
+            return
+        if k == "tab" or k == "\t":
+            self._settings_tab = (self._settings_tab + 1) % len(_TABS)
+            self._settings_cursor = 0
+            return
+
+        if not items:
+            return
+
+        # ── Item navigation ──
+        if k == "arrow_up":
+            self._settings_cursor = (self._settings_cursor - 1) % len(items)
         elif k == "arrow_down":
-            self._advanced_cursor = (self._advanced_cursor + 1) % len(self._advanced_items)
+            self._settings_cursor = (self._settings_cursor + 1) % len(items)
         elif k in (" ", "\r", "\n"):
-            field = self._advanced_items[self._advanced_cursor]
-            if field == "reset_config":
-                self._start_menu_fade_out(lambda: setattr(self, '_advanced_confirm_reset', True))
-                return
-            cfg = self._config or Config()
-            self._advanced_editing = field
-            if field == "client_name":
-                self._advanced_edit_buf = cfg.client_name
-            elif field == "client_id":
-                self._advanced_edit_buf = cfg.client_id
+            self._settings_toggle_current(tab_key, items)
+        elif k in ("arrow_left", "arrow_right"):
+            # Check if current item is adjustable
+            if items and self._settings_cursor < len(items):
+                key = items[self._settings_cursor][1]
+                adjustable = ("auto_volume", "fps_limit", "brightness", "spotify_bitrate",
+                              "swap_auto_action", "dj_source_mode")
+                if key in adjustable:
+                    direction = 1 if k == "arrow_right" else -1
+                    self._settings_adjust_item(key, direction)
+                else:
+                    # Switch tab
+                    direction = 1 if k == "arrow_right" else -1
+                    self._settings_tab = (self._settings_tab + direction) % len(_TABS)
+                    self._settings_cursor = 0
+
+    def _settings_toggle_current(self, tab_key: str, items: list) -> None:
+        """Toggle the currently selected settings item."""
+        if self._settings_cursor >= len(items):
+            return
+        cfg = self._config or Config()
+        label, key, value = items[self._settings_cursor]
+
+        # Boolean toggles
+        bool_keys = ("auto_play", "show_artwork", "use_art_colors",
+                     "airplay_enabled", "sendspin_enabled", "spotify_enabled",
+                     "swap_prompt", "forget_airplay_devices")
+        if key in bool_keys:
+            setattr(cfg, key, not getattr(cfg, key))
+            cfg.save()
+            if self._config:
+                self._config = cfg
+            return
+
+        # Auto volume toggle (off <-> 50%)
+        if key == "auto_volume":
+            cfg.auto_volume = -1 if cfg.auto_volume >= 0 else 50
+            cfg.save()
+            if self._config:
+                self._config = cfg
+            return
+
+        # Static color → open color picker
+        if key == "static_color":
+            def _open_color_picker() -> None:
+                self._settings_sub = "color_picker"
+                self._color_cursor = 0
+                self._color_hex_editing = False
+            self._start_menu_fade_out(_open_color_picker)
+            return
+
+        # Reset config
+        if key == "reset_config":
+            self._start_menu_fade_out(lambda: setattr(self, '_advanced_confirm_reset', True))
+            return
+
+        # Text-editable fields
+        editable_keys = ("client_name", "client_id", "spotify_device_name",
+                         "spotify_username", "spotify_client_id")
+        if key in editable_keys:
+            self._advanced_editing = key
+            self._advanced_edit_buf = str(getattr(cfg, key, ""))
+            return
+
+        # Enum cycling (DJ source mode, auto action)
+        if key == "dj_source_mode":
+            self._settings_adjust_item(key, 1)
+            return
+        if key == "swap_auto_action":
+            self._settings_adjust_item(key, 1)
+            return
+
+    def _settings_adjust_item(self, key: str, direction: int) -> None:
+        """Adjust a numeric or enum setting."""
+        cfg = self._config or Config()
+        if key == "auto_volume":
+            if cfg.auto_volume < 0:
+                cfg.auto_volume = 50
+            else:
+                cfg.auto_volume = max(0, min(100, cfg.auto_volume + direction * 5))
+        elif key == "fps_limit":
+            cfg.fps_limit = max(5, min(120, cfg.fps_limit + direction * 5))
+        elif key == "brightness":
+            cfg.brightness = max(50, min(150, cfg.brightness + direction * 10))
+        elif key == "spotify_bitrate":
+            bitrates = [96, 160, 320]
+            try:
+                i = bitrates.index(cfg.spotify_bitrate)
+            except ValueError:
+                i = 2
+            cfg.spotify_bitrate = bitrates[(i + direction) % len(bitrates)]
+        elif key == "swap_auto_action":
+            cfg.swap_auto_action = "accept" if cfg.swap_auto_action == "deny" else "deny"
+        elif key == "dj_source_mode":
+            _modes = ["mixed", "dual_sendspin", "dual_airplay",
+                       "spotify_sendspin", "spotify_airplay", "dual_spotify"]
+            _i = _modes.index(cfg.dj_source_mode) if cfg.dj_source_mode in _modes else 0
+            cfg.dj_source_mode = _modes[(_i + direction) % len(_modes)]
+        else:
+            return
+        if self._config:
+            self._config = cfg
+            cfg.save()
+
+    # ── Color picker key handling (preserved) ─────────────────────────────
 
     def _handle_color_picker_key(self, k: str, raw_key: str) -> None:
         """Handle keys in the color picker submenu."""
@@ -776,200 +923,3 @@ class SettingsMixin:
                     self._config.static_color = hex_val
                     self._config.save()
                 self._settings_sub = ""
-
-    def _settings_toggle_current(self) -> None:
-        """Toggle the currently selected settings item."""
-        cfg = self._config or Config()
-        item = self._settings_items[self._settings_cursor]
-        if item == "auto_play":
-            cfg.auto_play = not cfg.auto_play
-        elif item == "auto_volume":
-            cfg.auto_volume = -1 if cfg.auto_volume >= 0 else 50
-        elif item == "show_artwork":
-            cfg.show_artwork = not cfg.show_artwork
-        elif item == "use_art_colors":
-            cfg.use_art_colors = not cfg.use_art_colors
-        elif item == "static_color":
-            def _open_color_picker() -> None:
-                self._settings_sub = "color_picker"
-                self._color_cursor = 0
-                self._color_hex_editing = False
-            self._start_menu_fade_out(_open_color_picker)
-            return
-        if self._config:
-            self._config = cfg
-            cfg.save()
-
-    def _settings_adjust(self, direction: int) -> None:
-        """Adjust a numeric setting left/right."""
-        cfg = self._config or Config()
-        item = self._settings_items[self._settings_cursor]
-        if item == "auto_volume":
-            if cfg.auto_volume < 0:
-                cfg.auto_volume = 50
-            else:
-                cfg.auto_volume = max(0, min(100, cfg.auto_volume + direction * 5))
-        elif item == "fps_limit":
-            cfg.fps_limit = max(5, min(120, cfg.fps_limit + direction * 5))
-        elif item == "brightness":
-            cfg.brightness = max(50, min(150, cfg.brightness + direction * 10))
-        else:
-            return
-        if self._config:
-            self._config = cfg
-            cfg.save()
-
-    # ── Protocol settings submenu ──
-
-    def _build_protocol_layout(self) -> Group:
-        """Render protocol settings submenu."""
-        self._term_width, self._term_height = self._get_terminal_size()
-        term_w = self._term_width
-        term_h = self._term_height
-        th = self.state.theme
-        cfg = self._config or Config()
-        panel_w = 54
-        bg_lines = self._build_crt_background(term_w, term_h)
-
-        def _center(text: str) -> str:
-            pad = max(0, (panel_w - len(text)) // 2)
-            return " " * pad + text
-
-        # Build menu items dynamically — swap sub-items only show when prompt is off
-        proto_items: list[tuple[str, str, object]] = [
-            ("AirPlay Receiver", "airplay_enabled", cfg.airplay_enabled),
-            ("SendSpin Receiver", "sendspin_enabled", cfg.sendspin_enabled),
-            ("Spotify Connect", "spotify_enabled", cfg.spotify_enabled),
-            ("Device Swap Prompt", "swap_prompt", cfg.swap_prompt),
-        ]
-        if not cfg.swap_prompt:
-            proto_items.append(("Auto Action", "swap_auto_action", cfg.swap_auto_action))
-        proto_items.append(("Forget AirPlay Devices", "forget_airplay_devices", cfg.forget_airplay_devices))
-        proto_items.append(("DJ Source Mode", "dj_source_mode", cfg.dj_source_mode))
-
-        panel_lines: list[Text] = []
-        title_line = Text()
-        title_line.append("━" * panel_w, Style(color=th.primary, bold=True))
-        panel_lines.append(title_line)
-        header = Text()
-        header.append(_center(" ◈ PROTOCOL ◈ "), Style(color=th.primary, bold=True))
-        panel_lines.append(header)
-        title_line2 = Text()
-        title_line2.append("━" * panel_w, Style(color=th.primary, bold=True))
-        panel_lines.append(title_line2)
-        panel_lines.append(Text(""))
-
-        note = Text()
-        note.append(_center("Protocol changes apply on next restart"), Style(color="#666666"))
-        panel_lines.append(note)
-        panel_lines.append(Text(""))
-
-        for i, (label, key, value) in enumerate(proto_items):
-            item = Text()
-            selected = i == self._protocol_cursor
-            if selected:
-                item.append("  ▸ ", Style(color=th.accent, bold=True))
-            else:
-                item.append("    ", Style(color="#444444"))
-            item.append(f"{label:<30}", Style(
-                color=th.secondary if selected else "#888888",
-                bold=selected,
-            ))
-            if key == "swap_auto_action":
-                val_str = value.upper()
-                val_color = "#44ff44" if value == "accept" else "#ff4444"
-                item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
-                if selected:
-                    item.append("  ◂▸", Style(color="#555555"))
-            elif key == "dj_source_mode":
-                _mode_labels = {
-                    "mixed": "MIXED", "dual_sendspin": "DUAL SS", "dual_airplay": "DUAL AP",
-                    "spotify_sendspin": "SS+SP", "spotify_airplay": "AP+SP", "dual_spotify": "DUAL SP",
-                }
-                val_str = _mode_labels.get(value, value.upper())
-                item.append(f"{val_str:>8}", Style(color=th.accent, bold=selected))
-                if selected:
-                    item.append("  ◂▸", Style(color="#555555"))
-            elif key in ("airplay_enabled", "sendspin_enabled", "spotify_enabled", "swap_prompt", "forget_airplay_devices"):
-                val_str = "ON" if value else "OFF"
-                val_color = th.accent if value else "#666666"
-                item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
-            panel_lines.append(item)
-            panel_lines.append(Text(""))
-
-        panel_lines.append(Text(""))
-        footer = Text()
-        footer.append("━" * panel_w, Style(color=th.primary_dim))
-        panel_lines.append(footer)
-        hint_text = "[↑↓]Nav [Enter]Toggle [◂▸]Adj [B]Back"
-        hint = Text()
-        hint.append(" " * max(0, (panel_w - len(hint_text)) // 2))
-        hint.append("[↑↓]Nav ", Style(color="#555555"))
-        hint.append("[Enter]Toggle ", Style(color="#555555"))
-        hint.append("[◂▸]Adj ", Style(color="#555555"))
-        hint.append("[B]Back", Style(color="#555555"))
-        panel_lines.append(hint)
-
-        panel_x = max(0, (term_w - panel_w - 2) // 2)
-        panel_y = max(0, (term_h - len(panel_lines)) // 2)
-        self._scatter_dancers_on_bg(bg_lines, term_w, term_h, panel_x, panel_y, panel_w, len(panel_lines))
-        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
-
-    def _handle_protocol_key(self, k: str) -> None:
-        """Handle keys in the protocol settings submenu."""
-        cfg = self._config or Config()
-
-        # Build the current items list to know bounds and which key is selected
-        proto_keys = ["airplay_enabled", "sendspin_enabled", "spotify_enabled", "swap_prompt"]
-        if not cfg.swap_prompt:
-            proto_keys.append("swap_auto_action")
-        proto_keys.append("forget_airplay_devices")
-        proto_keys.append("dj_source_mode")
-
-        if k in ("b", "escape"):
-            self._start_menu_fade_out(lambda: setattr(self, '_settings_sub', ''))
-        elif k == "arrow_up":
-            self._protocol_cursor = (self._protocol_cursor - 1) % len(proto_keys)
-        elif k == "arrow_down":
-            self._protocol_cursor = (self._protocol_cursor + 1) % len(proto_keys)
-        elif k in (" ", "\r", "\n"):
-            key = proto_keys[self._protocol_cursor]
-            if key == "airplay_enabled":
-                cfg.airplay_enabled = not cfg.airplay_enabled
-            elif key == "sendspin_enabled":
-                cfg.sendspin_enabled = not cfg.sendspin_enabled
-            elif key == "spotify_enabled":
-                cfg.spotify_enabled = not cfg.spotify_enabled
-            elif key == "swap_prompt":
-                cfg.swap_prompt = not cfg.swap_prompt
-                # Clamp cursor if auto_action row disappears
-                if cfg.swap_prompt and self._protocol_cursor >= len(proto_keys) - 1:
-                    self._protocol_cursor = min(self._protocol_cursor, 3)
-            elif key == "swap_auto_action":
-                cfg.swap_auto_action = "accept" if cfg.swap_auto_action == "deny" else "deny"
-            elif key == "forget_airplay_devices":
-                cfg.forget_airplay_devices = not cfg.forget_airplay_devices
-            elif key == "dj_source_mode":
-                _modes = ["mixed", "dual_sendspin", "dual_airplay",
-                           "spotify_sendspin", "spotify_airplay", "dual_spotify"]
-                _i = _modes.index(cfg.dj_source_mode) if cfg.dj_source_mode in _modes else 0
-                cfg.dj_source_mode = _modes[(_i + 1) % len(_modes)]
-            if self._config:
-                self._config = cfg
-                cfg.save()
-        elif k in ("arrow_left", "arrow_right"):
-            key = proto_keys[self._protocol_cursor]
-            if key == "swap_auto_action":
-                cfg.swap_auto_action = "accept" if cfg.swap_auto_action == "deny" else "deny"
-                if self._config:
-                    self._config = cfg
-                    cfg.save()
-            elif key == "dj_source_mode":
-                _modes = ["mixed", "dual_sendspin", "dual_airplay",
-                           "spotify_sendspin", "spotify_airplay", "dual_spotify"]
-                _i = _modes.index(cfg.dj_source_mode) if cfg.dj_source_mode in _modes else 0
-                _dir = 1 if k == "arrow_right" else -1
-                cfg.dj_source_mode = _modes[(_i + _dir) % len(_modes)]
-                if self._config:
-                    self._config = cfg
-                    cfg.save()

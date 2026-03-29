@@ -192,18 +192,11 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         # Settings menu
         self._settings_open: bool = False
         self._settings_cursor: int = 0
-        self._settings_items: list[str] = [
-            "auto_play", "auto_volume", "fps_limit", "brightness",
-            "show_artwork", "use_art_colors", "static_color",
-        ]
-        self._settings_sub: str = ""  # "" = main, "advanced", "color_picker"
-        self._advanced_cursor: int = 0
-        self._advanced_items: list[str] = ["client_name", "client_id", "reset_config"]
+        self._settings_tab: int = 0  # 0=General, 1=SendSpin, 2=AirPlay, 3=Spotify, 4=Advanced
+        self._settings_sub: str = ""  # "" = tabs, "color_picker"
         self._advanced_editing: str = ""  # which field is being text-edited
         self._advanced_edit_buf: str = ""  # text input buffer
         self._advanced_confirm_reset: bool = False  # reset confirmation dialog
-        # Protocol settings state
-        self._protocol_cursor: int = 0
         # Color picker state
         self._color_cursor: int = 0
         self._color_hex_editing: bool = False
@@ -995,14 +988,10 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 self._settings_sub = ""
                 self._start_menu_fade_out(lambda: setattr(self, '_settings_open', False))
                 return
-            if self._settings_sub == "advanced":
-                self._handle_advanced_key(k, key)
-            elif self._settings_sub == "color_picker":
+            if self._settings_sub == "color_picker":
                 self._handle_color_picker_key(k, key)
-            elif self._settings_sub == "protocol":
-                self._handle_protocol_key(k)
             else:
-                self._handle_settings_main_key(k)
+                self._handle_settings_main_key(k, key)
             return
 
         if self._dj_mode:
@@ -1013,6 +1002,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
             self._settings_open = True
             self._settings_sub = ""
             self._settings_cursor = 0
+            self._settings_tab = 0
             self._settings_dancers = random.random() < 0.33
             self._settings_dancer_tick = time.time()
             self._start_menu_fade_in()

@@ -413,13 +413,24 @@ class SpotifyConnectReceiver:
           [timestamp LEVEL module] message
         We parse these directly instead of using --onevent (which spawns a
         subprocess per event and can stall librespot's audio pipeline).
+
+        IMPORTANT: with bufsize=0 the stderr pipe is raw FileIO, so naive
+        line iteration reads one byte at a time — far too slow to keep up
+        with librespot's verbose output.  We wrap it in a BufferedReader
+        so readline() uses an efficient internal buffer.  If stderr isn't
+        drained fast enough librespot blocks on log writes, stalling the
+        audio pipeline and causing Spotify to skip tracks.
         """
+        import io as _io
+
         proc = self._process
         if proc is None or proc.stderr is None:
             return
+        # Wrap raw FileIO in BufferedReader for efficient line iteration.
+        stderr = _io.BufferedReader(proc.stderr, buffer_size=65536)
         # Track whether we've already fired connected for this session
         connected_fired = False
-        for line_bytes in proc.stderr:
+        for line_bytes in stderr:
             try:
                 line = line_bytes.decode("utf-8", errors="replace").strip()
             except Exception:

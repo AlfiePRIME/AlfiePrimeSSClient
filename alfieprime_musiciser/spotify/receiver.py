@@ -15,11 +15,8 @@ AlfiePRIME audio + metadata pipeline.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
 import re
-import sys
 import threading
 import time
 from pathlib import Path
@@ -60,6 +57,9 @@ class _PCMReader:
     CHUNK_FRAMES = 1024  # read this many frames at a time
     CHUNK_BYTES = CHUNK_FRAMES * FRAME_SIZE
 
+    # Bytes per millisecond of audio (44100 Hz × 4 bytes/frame = 176400 B/s)
+    BYTES_PER_MS = SAMPLE_RATE * FRAME_SIZE / 1000.0
+
     def __init__(self, visualizer: AudioVisualizer, state: PlayerState | None = None):
         self._visualizer = visualizer
         self._state = state
@@ -68,16 +68,31 @@ class _PCMReader:
         self._pipe = None  # stdout file object from subprocess
         self.dj_mixer = None
         self.dj_feed_channel = "a"
+        # Progress tracking from PCM bytes consumed
+        self._bytes_consumed = 0
+        self._progress_base_ms = 0  # starting offset for current track
 
     def start(self, pipe) -> None:
         self._pipe = pipe
         self._running = True
+        self._bytes_consumed = 0
+        self._progress_base_ms = 0
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         self._thread.start()
         logger.info("Spotify PCM reader started (44100 Hz S16LE stereo)")
 
     def stop(self) -> None:
         self._running = False
+
+    def reset_progress(self, base_ms: int = 0) -> None:
+        """Reset progress counter (call on track change)."""
+        self._bytes_consumed = 0
+        self._progress_base_ms = base_ms
+
+    @property
+    def progress_ms(self) -> int:
+        """Current playback progress derived from PCM bytes consumed."""
+        return self._progress_base_ms + int(self._bytes_consumed / self.BYTES_PER_MS)
 
     def _read_loop(self) -> None:
         pipe = self._pipe
@@ -90,6 +105,17 @@ class _PCMReader:
             except (OSError, ValueError):
                 break
 
+            self._bytes_consumed += len(data)
+
+            # Update progress on state periodically (every ~250ms of audio)
+            state = self._state
+            if state and self._bytes_consumed % (chunk_size * 11) < chunk_size:
+                progress = self.progress_ms
+                if state.active_source == "spotify" or state.active_source == "":
+                    state.progress_ms = progress
+                    state.progress_update_time = time.monotonic()
+                    state.playback_speed = 1.0
+
             mixer = self.dj_mixer
             if mixer is not None:
                 if self.dj_feed_channel == "a":
@@ -98,20 +124,19 @@ class _PCMReader:
                 else:
                     mixer.set_format_b(self.SAMPLE_RATE, self.SAMPLE_SIZE, self.CHANNELS)
                     mixer.feed_b(data)
-                # Keep is_playing synced while receiving audio
-                if self._state and not self._state.is_playing:
-                    self._state.is_playing = True
+                if state and not state.is_playing:
+                    state.is_playing = True
                 continue
 
             # Only feed master visualizer when Spotify is active source
-            if self._state and self._state.active_source != "spotify":
+            if state and state.active_source != "spotify":
                 continue
 
             self._visualizer.set_format(self.SAMPLE_RATE, self.SAMPLE_SIZE, self.CHANNELS)
             if self._visualizer._paused:
                 self._visualizer.set_paused(False)
-            if self._state and not self._state.is_playing:
-                self._state.is_playing = True
+            if state and not state.is_playing:
+                state.is_playing = True
             self._visualizer.feed_audio(data, immediate=True)
 
         logger.info("Spotify PCM reader stopped")
@@ -340,6 +365,7 @@ class SpotifyConnectReceiver:
             "--name", self._device_name,
             "--initial-volume", "100",
             "--verbose",
+            "--disable-audio-cache",
         ]
 
         # Username for zeroconf-less auth (optional)
@@ -383,14 +409,16 @@ class SpotifyConnectReceiver:
     def _monitor_stderr(self) -> None:
         """Monitor librespot stderr for all events.
 
-        librespot's verbose log output contains connection, playback, and
-        track change events.  We parse these directly instead of using
-        --onevent (which spawns a subprocess per event and can stall
-        librespot's audio pipeline, causing track skipping).
+        librespot 0.8.0 verbose log format:
+          [timestamp LEVEL module] message
+        We parse these directly instead of using --onevent (which spawns a
+        subprocess per event and can stall librespot's audio pipeline).
         """
         proc = self._process
         if proc is None or proc.stderr is None:
             return
+        # Track whether we've already fired connected for this session
+        connected_fired = False
         for line_bytes in proc.stderr:
             try:
                 line = line_bytes.decode("utf-8", errors="replace").strip()
@@ -402,52 +430,74 @@ class SpotifyConnectReceiver:
             ll = line.lower()
 
             # ── Connection / disconnection ──
-            if "authenticated as" in ll or "country:" in ll:
+            # e.g. "Authenticated as ..." or "Country: ..."
+            if not connected_fired and ("authenticated as" in ll or "country:" in ll):
+                connected_fired = True
                 self._on_librespot_connected()
             elif "disconnected" in ll or "connection closed" in ll:
+                connected_fired = False
                 self._on_librespot_disconnected()
 
             # ── Track loading ──
-            # e.g. "Loading <SpotifyId {id}> ..." or "loaded track"
+            # librespot 0.8: "Loading <SpotifyId(...)>" or just "loading track"
             elif "loading <" in ll or "loading track" in ll:
-                # Extract track ID if present
-                m = re.search(r'loading <([^>]+)>', line, re.IGNORECASE)
-                if m:
-                    track_id = m.group(1).strip()
-                    if track_id != self._last_track_id:
-                        self._last_track_id = track_id
-                        if self._api:
-                            self._fetch_and_update_metadata()
+                m = re.search(r'loading\s+<([^>]+)>', line, re.IGNORECASE)
+                track_id = m.group(1).strip() if m else ""
+                if track_id != self._last_track_id:
+                    self._last_track_id = track_id
+                    # Reset PCM-based progress for new track
+                    if self._pcm_reader:
+                        self._pcm_reader.reset_progress(0)
+                    if self._api:
+                        self._fetch_and_update_metadata()
 
             # ── Track name from log (available without API) ──
             # e.g. 'Track "Song Name" loaded'
             elif 'track "' in ll:
                 m = re.search(r'track "([^"]+)"', line, re.IGNORECASE)
                 if m:
-                    track_name = m.group(1)
-                    self._update_title_from_stderr(track_name)
+                    self._update_title_from_stderr(m.group(1))
+
+            # ── Duration from log ──
+            # e.g. "duration: 234000 ms" or "<duration_ms>"
+            elif "duration" in ll:
+                m = re.search(r'duration[:\s]+(\d+)', line)
+                if m:
+                    dur_ms = int(m.group(1))
+                    if dur_ms > 0:
+                        if self._is_active():
+                            self._state.duration_ms = dur_ms
+                        else:
+                            self._state.write_to_snapshot("spotify", duration_ms=dur_ms)
 
             # ── Playback state ──
-            elif "command: play" in ll and "command: pause" not in ll:
+            elif "command: play" in ll and "pause" not in ll:
                 self._set_playing(True)
             elif "command: pause" in ll:
                 self._set_playing(False)
-            elif "player::preload" in ll or "preloading" in ll:
-                pass  # ignore preload events
-            elif "end of track" in ll or "endoftrack" in ll:
-                # Track finished — next track will start automatically
-                pass
 
             # ── Volume ──
-            elif "volume:" in ll:
-                m = re.search(r'volume:\s*(\d+)', line)
+            # librespot 0.8: "Volume set to 0.42" (fraction) or "volume: 27525"
+            elif "volume" in ll:
+                # Try fraction format: "Volume set to 0.42"
+                m = re.search(r'volume\s+set\s+to\s+([0-9.]+)', line, re.IGNORECASE)
                 if m:
                     try:
-                        vol_raw = int(m.group(1))
-                        vol_pct = int(vol_raw / 65535 * 100)
-                        self._state.set_source_volume("spotify", vol_pct, muted=False)
+                        vol_frac = float(m.group(1))
+                        vol_pct = int(vol_frac * 100)
+                        self._state.set_source_volume("spotify", min(100, vol_pct), muted=False)
                     except (ValueError, TypeError):
                         pass
+                else:
+                    # Try raw integer format: "volume: 27525" (0-65535)
+                    m = re.search(r'volume[:\s]+(\d{3,5})\b', line)
+                    if m:
+                        try:
+                            vol_raw = int(m.group(1))
+                            vol_pct = int(vol_raw / 65535 * 100)
+                            self._state.set_source_volume("spotify", min(100, vol_pct), muted=False)
+                        except (ValueError, TypeError):
+                            pass
 
     def _update_title_from_stderr(self, title: str) -> None:
         """Update track title from librespot's stderr (no API needed)."""
@@ -463,6 +513,14 @@ class SpotifyConnectReceiver:
         state.spotify_connected = True
         state.connected = True
         state.spotify_server_name = self._device_name
+
+        # Auto-switch to Spotify if no source is active, or save current
+        # source snapshot and switch (same pattern as AirPlay do_RECORD)
+        if not state.active_source or state.active_source == "":
+            state.active_source = "spotify"
+        elif state.active_source != "spotify":
+            # Another source is active — save Spotify state to snapshot
+            pass
 
         # Set supported commands based on whether Web API is available
         cmds = list(_SPOTIFY_API_COMMANDS if self._api else _SPOTIFY_BASIC_COMMANDS)
@@ -555,7 +613,7 @@ class SpotifyConnectReceiver:
         repeat_raw = track.get("repeat", "off")
         repeat_map = {"off": "off", "context": "all", "track": "one"}
         fields["repeat_mode"] = repeat_map.get(repeat_raw, "off")
-        fields["supported_commands"] = list(_SPOTIFY_SUPPORTED_COMMANDS)
+        fields["supported_commands"] = list(_SPOTIFY_API_COMMANDS)
 
         if self._is_active():
             for k, v in fields.items():

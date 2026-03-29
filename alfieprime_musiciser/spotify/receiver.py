@@ -71,12 +71,15 @@ class _PCMReader:
         # Progress tracking from PCM bytes consumed
         self._bytes_consumed = 0
         self._progress_base_ms = 0  # starting offset for current track
+        # Real-time pacing — reset on track change
+        self._pacing_reset = False
 
     def start(self, pipe) -> None:
         self._pipe = pipe
         self._running = True
         self._bytes_consumed = 0
         self._progress_base_ms = 0
+        self._pacing_reset = False
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         self._thread.start()
         logger.info("Spotify PCM reader started (44100 Hz S16LE stereo)")
@@ -88,6 +91,7 @@ class _PCMReader:
         """Reset progress counter (call on track change)."""
         self._bytes_consumed = 0
         self._progress_base_ms = base_ms
+        self._pacing_reset = True
 
     @property
     def progress_ms(self) -> int:
@@ -95,8 +99,22 @@ class _PCMReader:
         return self._progress_base_ms + int(self._bytes_consumed / self.BYTES_PER_MS)
 
     def _read_loop(self) -> None:
+        """Read PCM from librespot stdout, paced to real-time.
+
+        librespot's pipe backend has no playback clock — it decodes and
+        writes audio as fast as possible.  Without pacing, the entire
+        track is consumed in ~1 second and Spotify skips to the next.
+
+        We throttle reads to real-time speed so the pipe provides natural
+        backpressure to librespot, matching the behavior of a real audio
+        sink.
+        """
         pipe = self._pipe
         chunk_size = self.CHUNK_BYTES
+        bytes_per_sec = self.SAMPLE_RATE * self.FRAME_SIZE  # 176400 B/s
+        start_time = time.monotonic()
+        total_bytes = 0
+
         while self._running and pipe is not None:
             try:
                 data = pipe.read(chunk_size)
@@ -105,7 +123,25 @@ class _PCMReader:
             except (OSError, ValueError):
                 break
 
+            total_bytes += len(data)
             self._bytes_consumed += len(data)
+
+            # Reset pacing clock on track change
+            if self._pacing_reset:
+                self._pacing_reset = False
+                start_time = time.monotonic()
+                total_bytes = len(data)
+
+            # ── Real-time pacing ──
+            # Calculate how far ahead of real-time we are and sleep
+            # the difference.  This keeps reads at ~44100 Hz stereo S16
+            # speed, providing backpressure via the pipe buffer so
+            # librespot doesn't race through the track.
+            expected_time = total_bytes / bytes_per_sec
+            elapsed = time.monotonic() - start_time
+            ahead = expected_time - elapsed
+            if ahead > 0.005:  # only sleep if >5ms ahead
+                time.sleep(ahead)
 
             # Update progress on state periodically (every ~250ms of audio)
             state = self._state

@@ -439,31 +439,29 @@ class SpotifyConnectReceiver:
                 self._on_librespot_disconnected()
 
             # ── Track loading ──
-            # librespot 0.8: "Loading <SpotifyId(...)>" or just "loading track"
-            elif "loading <" in ll or "loading track" in ll:
-                m = re.search(r'loading\s+<([^>]+)>', line, re.IGNORECASE)
-                track_id = m.group(1).strip() if m else ""
-                if track_id != self._last_track_id:
-                    self._last_track_id = track_id
-                    # Reset PCM-based progress for new track
-                    if self._pcm_reader:
-                        self._pcm_reader.reset_progress(0)
-                    if self._api:
-                        self._fetch_and_update_metadata()
-
-            # ── Track name from log (available without API) ──
-            # e.g. 'Track "Song Name" loaded'
-            elif 'track "' in ll:
-                m = re.search(r'track "([^"]+)"', line, re.IGNORECASE)
+            # librespot 0.8: "Loading <Track Name> with Spotify URI <spotify:track:ID>"
+            elif "loading <" in ll:
+                m = re.search(r'Loading <(.+?)> with Spotify URI <(.+?)>', line)
                 if m:
-                    self._update_title_from_stderr(m.group(1))
+                    track_name = m.group(1).strip()
+                    track_uri = m.group(2).strip()
+                    if track_uri != self._last_track_id:
+                        self._last_track_id = track_uri
+                        # Reset PCM-based progress for new track
+                        if self._pcm_reader:
+                            self._pcm_reader.reset_progress(0)
+                        self._update_title_from_stderr(track_name)
+                        if self._api:
+                            self._fetch_and_update_metadata()
 
-            # ── Duration from log ──
-            # e.g. "duration: 234000 ms" or "<duration_ms>"
-            elif "duration" in ll:
-                m = re.search(r'duration[:\s]+(\d+)', line)
+            # ── Track loaded with duration ──
+            # librespot 0.8: "<Track Name> (288385 ms) loaded"
+            elif "ms) loaded" in ll:
+                m = re.search(r'<(.+?)>\s+\((\d+)\s+ms\)\s+loaded', line)
                 if m:
-                    dur_ms = int(m.group(1))
+                    track_name = m.group(1).strip()
+                    dur_ms = int(m.group(2))
+                    self._update_title_from_stderr(track_name)
                     if dur_ms > 0:
                         if self._is_active():
                             self._state.duration_ms = dur_ms
@@ -471,33 +469,34 @@ class SpotifyConnectReceiver:
                             self._state.write_to_snapshot("spotify", duration_ms=dur_ms)
 
             # ── Playback state ──
-            elif "command: play" in ll and "pause" not in ll:
+            # DEBUG: "command=Load { ..., play: true, ... }"
+            elif "command=load" in ll:
+                if "play: true" in ll or "play:true" in ll:
+                    self._set_playing(True)
+                elif "play: false" in ll or "play:false" in ll:
+                    self._set_playing(False)
+            # TRACE (if RUST_LOG=trace): "==> Playing" / "==> Paused"
+            elif "==> playing" in ll:
                 self._set_playing(True)
-            elif "command: pause" in ll:
+            elif "==> paused" in ll or "==> stopped" in ll:
+                self._set_playing(False)
+            # Also catch "device became inactive"
+            elif "device became inactive" in ll:
                 self._set_playing(False)
 
             # ── Volume ──
-            # librespot 0.8: "Volume set to 0.42" (fraction) or "volume: 27525"
-            elif "volume" in ll:
-                # Try fraction format: "Volume set to 0.42"
-                m = re.search(r'volume\s+set\s+to\s+([0-9.]+)', line, re.IGNORECASE)
+            # DEBUG: "SpircTask::set_volume(32768)" (0-65535)
+            # INFO:  "delayed volume update for all devices: volume is now 32768"
+            elif "set_volume(" in ll or "volume is now" in ll:
+                m = re.search(r'set_volume\((\d+)\)', line) or \
+                    re.search(r'volume is now\s+(\d+)', line)
                 if m:
                     try:
-                        vol_frac = float(m.group(1))
-                        vol_pct = int(vol_frac * 100)
+                        vol_raw = int(m.group(1))
+                        vol_pct = int(vol_raw / 65535 * 100)
                         self._state.set_source_volume("spotify", min(100, vol_pct), muted=False)
                     except (ValueError, TypeError):
                         pass
-                else:
-                    # Try raw integer format: "volume: 27525" (0-65535)
-                    m = re.search(r'volume[:\s]+(\d{3,5})\b', line)
-                    if m:
-                        try:
-                            vol_raw = int(m.group(1))
-                            vol_pct = int(vol_raw / 65535 * 100)
-                            self._state.set_source_volume("spotify", min(100, vol_pct), muted=False)
-                        except (ValueError, TypeError):
-                            pass
 
     def _update_title_from_stderr(self, title: str) -> None:
         """Update track title from librespot's stderr (no API needed)."""

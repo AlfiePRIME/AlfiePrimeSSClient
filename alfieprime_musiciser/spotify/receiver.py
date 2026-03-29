@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import socket
 import threading
 import time
 from pathlib import Path
@@ -347,7 +348,7 @@ class SpotifyConnectReceiver:
         self._tui = tui
         self._visualizer = visualizer
         self._state: PlayerState = tui.state if tui is not None else self._make_standalone_state()
-        self._device_name = device_name or "Musiciser"
+        self._device_name = device_name or f"Musiciser@{socket.gethostname()}"
         self._config = config
         self._process = None
         self._pcm_reader: _PCMReader | None = None
@@ -551,7 +552,7 @@ class SpotifyConnectReceiver:
             self._state.title = title
             self._state.connected = True
         else:
-            self._state.write_to_snapshot("spotify", title=title)
+            self._state.write_to_snapshot("spotify", title=title, server_name=self._device_name)
 
     def _on_librespot_connected(self) -> None:
         """Called when a Spotify client connects to librespot."""
@@ -581,6 +582,7 @@ class SpotifyConnectReceiver:
                 codec="vorbis",
                 sample_rate=44100,
                 bit_depth=16,
+                server_name=self._device_name,
             )
 
         state.show_toast("Spotify Connected", self._device_name)
@@ -670,7 +672,8 @@ class SpotifyConnectReceiver:
                         track["artist"], track["title"], track["album"])
         else:
             self._state.write_to_snapshot("spotify", **fields,
-                                          is_playing=track["is_playing"])
+                                          is_playing=track["is_playing"],
+                                          server_name=self._device_name)
 
         # Fetch artwork if URL changed
         artwork_url = track.get("artwork_url", "")
@@ -738,22 +741,34 @@ class SpotifyConnectReceiver:
                     api.send_command("pause")
                 else:
                     api.send_command("play")
+            else:
+                # No API — toggle local playback state
+                # (user controls Spotify from their phone/desktop)
+                self._set_playing(not state.is_playing)
         elif command == "next":
             if api:
                 api.send_command("next")
                 threading.Timer(0.5, self._fetch_and_update_metadata).start()
+            else:
+                state.show_toast("Spotify API Required", "Set client_id in settings")
         elif command == "previous":
             if api:
                 api.send_command("previous")
                 threading.Timer(0.5, self._fetch_and_update_metadata).start()
+            else:
+                state.show_toast("Spotify API Required", "Set client_id in settings")
         elif command == "shuffle":
             if api:
                 api.send_command("shuffle")
                 threading.Timer(0.3, self._fetch_and_update_metadata).start()
+            else:
+                state.show_toast("Spotify API Required", "Set client_id in settings")
         elif command == "repeat":
             if api:
                 api.send_command("repeat")
                 threading.Timer(0.3, self._fetch_and_update_metadata).start()
+            else:
+                state.show_toast("Spotify API Required", "Set client_id in settings")
         elif command == "volume_up":
             vol, _ = state.get_source_volume("spotify")
             new_vol = min(100, vol + 5)

@@ -120,8 +120,7 @@ _SECTION_DEFS = [
     ("SUMMARY", _ART_SUMMARY, "#00ff88"),
 ]
 
-_TITLE_BANNER_SETUP = " A L F I E P R I M E   S E T U P "
-_TITLE_BANNER_NORMAL = " A L F I E P R I M E   M U S I C I S E R "
+_TITLE_BANNER_SETUP = " M U S I C I S E R   S E T U P "
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -253,12 +252,11 @@ def _build_intro_frame(
             line.append(" " * pad)
             line.append(bar, Style(color=_hex(r, g, b)))
 
-        elif rel_row == art_h + 4 and progress > 0.85:
-            sub = subtitle
-            pad = _center_in_block(len(sub))
+        elif rel_row == art_h + 4 and progress > 0.85 and subtitle:
+            pad = _center_in_block(len(subtitle))
             p5 = min(1.0, (progress - 0.85) / 0.15)
             line.append(" " * pad)
-            line.append(sub, Style(color=_hex(120 * p5, 120 * p5, 120 * p5)))
+            line.append(subtitle, Style(color=_hex(120 * p5, 120 * p5, 120 * p5)))
         else:
             line.append("")
 
@@ -1103,14 +1101,10 @@ class SetupWizard:
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
-def play_intro_animation(subtitle: str | None = None) -> None:
-    """Play the intro splash animation (can be used standalone at app start).
-
-    If *subtitle* is None a random standby phrase is used.
-    """
-    if subtitle is None:
-        from alfieprime_musiciser.tui_animations import _STANDBY_PHRASES
-        subtitle = random.choice(_STANDBY_PHRASES)
+def play_intro_animation() -> None:
+    """Play the intro splash animation with a random quote as the title."""
+    from alfieprime_musiciser.tui_animations import _STANDBY_PHRASES
+    quote = random.choice(_STANDBY_PHRASES)
 
     from rich.live import Live
     tw, th = _term_size()
@@ -1129,8 +1123,8 @@ def play_intro_animation(subtitle: str | None = None) -> None:
                 progress = min(1.0, elapsed / duration)
                 frame = _build_intro_frame(
                     progress, tw, th,
-                    subtitle=subtitle,
-                    title_banner=_TITLE_BANNER_NORMAL,
+                    subtitle="",
+                    title_banner=quote,
                 )
                 live.update(frame)
                 time.sleep(1.0 / fps)

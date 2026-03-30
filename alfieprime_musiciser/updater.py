@@ -837,30 +837,34 @@ def _restart_after_update() -> None:
     import shutil
 
     if sys.platform == "win32":
+        # Give the new process its own console so it has clean I/O
+        flags = _sp.CREATE_NEW_CONSOLE
+
         # Strategy 1: find the .exe entry point from sys.argv[0]
         exe = sys.argv[0]
         if not exe.lower().endswith(".exe"):
             exe += ".exe"
         if os.path.isfile(exe):
-            _sp.Popen([exe] + sys.argv[1:])
-            sys.exit(0)
+            _sp.Popen([exe] + sys.argv[1:], creationflags=flags)
+            os._exit(0)
 
         # Strategy 2: find it on PATH
         found = shutil.which("alfieprime-musiciser")
         if found:
-            _sp.Popen([found] + sys.argv[1:])
-            sys.exit(0)
+            _sp.Popen([found] + sys.argv[1:], creationflags=flags)
+            os._exit(0)
 
         # Strategy 3: try -m (works if __main__.py was installed)
         try:
-            _sp.Popen([sys.executable, "-m", "alfieprime_musiciser"] + sys.argv[1:])
-            sys.exit(0)
+            _sp.Popen([sys.executable, "-m", "alfieprime_musiciser"] + sys.argv[1:],
+                       creationflags=flags)
+            os._exit(0)
         except OSError:
             pass
 
         # All strategies failed — just exit, user restarts manually
         print("\nUpdate installed. Please restart the app manually.")
-        sys.exit(0)
+        os._exit(0)
     else:
         os.execv(sys.executable, [sys.executable] + sys.argv)
 

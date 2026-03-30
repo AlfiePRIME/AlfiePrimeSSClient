@@ -248,6 +248,7 @@ class _MetadataHook:
         self.source_label = ""  # e.g. "Source 2" — set by AirPlayReceiver
         self._sink_volume = None  # set after sink_volume is created
         self._rainbow_timer: threading.Timer | None = None  # delayed theme reset
+        self._artwork_applied = False  # True once artwork theme is set for current track
 
     def _is_active(self) -> bool:
         return self._state.active_source in ("airplay", "")
@@ -290,10 +291,11 @@ class _MetadataHook:
                 # If on_artwork is called before the timer fires, it cancels it.
                 if self._rainbow_timer is not None:
                     self._rainbow_timer.cancel()
+                self._artwork_applied = False
 
                 def _reset_to_rainbow():
                     from alfieprime_musiciser.colors import ColorTheme
-                    if self._is_active():
+                    if not self._artwork_applied and self._is_active():
                         s.theme = ColorTheme()
                         s.artwork_data = b""
                         logger.debug("AirPlay: no artwork received, reset to rainbow")
@@ -307,7 +309,8 @@ class _MetadataHook:
     def on_artwork(self, data: bytes) -> None:
         if not data:
             return
-        # Cancel the delayed rainbow reset — real artwork has arrived
+        # Mark artwork received and cancel the delayed rainbow reset
+        self._artwork_applied = True
         if self._rainbow_timer is not None:
             self._rainbow_timer.cancel()
             self._rainbow_timer = None
@@ -318,6 +321,12 @@ class _MetadataHook:
             from alfieprime_musiciser.mpris import write_art_cache
             theme = _extract_theme_from_image(data) or ColorTheme()
             write_art_cache(data)
+            # Cancel the timer again in case on_metadata started one
+            # after on_artwork was called but before extraction finished
+            self._artwork_applied = True
+            if self._rainbow_timer is not None:
+                self._rainbow_timer.cancel()
+                self._rainbow_timer = None
             if self._is_active():
                 self._state.artwork_data = data
                 self._state.theme = theme

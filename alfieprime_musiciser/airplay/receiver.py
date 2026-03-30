@@ -752,9 +752,37 @@ def _create_patched_handler(meta_hook: _MetadataHook, remote: _RemoteControl, co
             self._send_ok()
 
         def handle_feedback(self):
-            """Handle /feedback — mostly stream status, forward to parent."""
+            """Handle /feedback — respond quickly with stream descriptors.
+
+            The iPhone sends /feedback every ~2 seconds and disconnects if
+            responses are delayed.  We handle this directly instead of
+            delegating to the vendored code, which does unnecessary plist
+            parsing and pformat logging that can add latency.
+            """
+            # Consume the request body (if any) so the socket stays clean
+            cl = int(self.headers.get("Content-Length", 0))
+            if cl > 0:
+                self.rfile.read(cl)
+
+            # Build the stream-descriptors response the iPhone expects
             try:
-                super().handle_feedback()
+                if len(self.server.streams) > 0:
+                    from biplist import writePlistToString  # type: ignore[import-untyped]
+                    stream_data = {'streams': [
+                        s.getDescriptor() for s in self.server.streams
+                    ]}
+                    res = writePlistToString(stream_data)
+                    self.send_response(200)
+                    self.send_header("Server", self.version_string())
+                    cseq = self.headers.get("CSeq")
+                    if cseq:
+                        self.send_header("CSeq", cseq)
+                    self.send_header("Content-Length", len(res))
+                    self.send_header("Content-Type", "application/x-apple-binary-plist")
+                    self.end_headers()
+                    self.wfile.write(res)
+                else:
+                    self._send_ok()
             except Exception:
                 logger.debug("handle_feedback error", exc_info=True)
                 self._send_ok()
@@ -1333,6 +1361,15 @@ class AirPlayReceiver:
             ap2mod.DEV_PROPS = DeviceProperties(ap2mod.PI, False)
             logger.debug("AirPlay: DeviceProperties created with PI=%s", ap2mod.PI)
             setup_global_structs(mock_args, isDebug=False)
+
+            # Fix outputLatencyMicros: the vendored default (400 ms) is far
+            # too high and causes PTP clock drift, leading to periodic
+            # disconnections after 1–3 minutes.  Real AirPlay receivers
+            # report ~11 ms.
+            try:
+                ap2mod.device_info['audioLatencies'][0]['outputLatencyMicros'] = 11025
+            except (KeyError, IndexError):
+                pass
 
             # Transient pairing (Ft48) — iPhone connects without PIN prompt.
             # The vendored SRP uses the default password from DEV_PROPS

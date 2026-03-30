@@ -195,9 +195,14 @@ class SettingsMixin:
                 content_line = panel_lines[content_idx]
             if content_line is not None:
                 line = Text()
-                bg_text = bg_lines[row].plain if row < len(bg_lines) else " " * term_w
-                bg_br = max(10, int(34 * fade))
-                line.append(bg_text[:panel_x], Style(color=_safe_hex(bg_br, bg_br, bg_br)))
+                bg_line = bg_lines[row] if row < len(bg_lines) else Text(" " * term_w)
+                bg_plain = bg_line.plain
+                # Preserve the original background styling (theme-colored CRT)
+                # by extracting styled spans for the left/right portions.
+                left_text = Text()
+                left_text.append_text(bg_line)
+                left_text.truncate(panel_x)
+                line.append_text(left_text)
                 content_plain = content_line.plain
                 pad_needed = panel_w - len(content_plain)
                 line.append(" ", panel_bg_style)
@@ -206,9 +211,14 @@ class SettingsMixin:
                     line.append(" " * pad_needed, panel_bg_style)
                 line.append(" ", panel_bg_style)
                 right_start = panel_x + panel_w + 2
-                right_bg = bg_text[right_start:term_w]
+                right_bg = bg_plain[right_start:term_w]
                 if right_bg:
-                    line.append(right_bg, Style(color=_safe_hex(bg_br, bg_br, bg_br)))
+                    # Use the same bg line's style for the right portion
+                    right_text = Text()
+                    right_text.append_text(bg_line)
+                    # Remove chars before right_start
+                    right_text = right_text[right_start:]
+                    line.append_text(right_text)
                 result_lines.append(line)
             else:
                 result_lines.append(bg_lines[row] if row < len(bg_lines) else Text(" " * term_w))

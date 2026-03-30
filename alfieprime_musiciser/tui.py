@@ -1456,8 +1456,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         self._running = True
         input_task = asyncio.create_task(self._input_loop())
 
-        # Enter alternate screen and hide cursor
-        sys.stdout.write("\x1b[?1049h\x1b[?25l")
+        # Clear main screen then enter alternate screen + hide cursor
+        sys.stdout.write("\x1b[2J\x1b[H\x1b[?1049h\x1b[?25l")
         sys.stdout.flush()
 
         try:

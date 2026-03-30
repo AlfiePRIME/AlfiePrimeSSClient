@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 _REPO_URL = "https://github.com/AlfiePRIME/AlfiePRIME-Musiciser.git"
 _VERSION_URL = (
-    "https://raw.githubusercontent.com/AlfiePRIME/AlfiePRIME-Musiciser"
-    "/main/alfieprime_musiciser/__init__.py"
+    "https://api.github.com/repos/AlfiePRIME/AlfiePRIME-Musiciser"
+    "/contents/alfieprime_musiciser/__init__.py?ref=main"
 )
 
 
@@ -46,7 +46,10 @@ def _fetch_remote_version() -> str | None:
     """Fetch the latest __version__ from GitHub (quick HTTP GET)."""
     try:
         from urllib.request import urlopen, Request
-        req = Request(_VERSION_URL, headers={"User-Agent": "AlfiePRIME-Musiciser"})
+        req = Request(_VERSION_URL, headers={
+            "User-Agent": "AlfiePRIME-Musiciser",
+            "Accept": "application/vnd.github.v3.raw",
+        })
         with urlopen(req, timeout=8) as resp:
             text = resp.read().decode("utf-8", errors="replace")
         match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', text)

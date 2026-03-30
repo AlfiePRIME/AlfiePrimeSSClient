@@ -379,6 +379,11 @@ def main() -> None:
         print(f"AlfiePRIME Musiciser v{__version__}")
         return
 
+    # Clear terminal immediately to prevent any prior content flashing
+    if sys.stdout is not None:
+        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.flush()
+
     # When launched via pythonw.exe (gui_scripts), stdout/stderr are None.
     # Redirect them to devnull so logging / print don't crash.
     _headless = sys.stdout is None

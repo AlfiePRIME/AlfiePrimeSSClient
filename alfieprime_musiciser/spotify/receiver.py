@@ -902,4 +902,17 @@ class SpotifyConnectReceiver:
 
         self._state.spotify_connected = False
         self._state.connected = self._state.sendspin_connected or self._state.airplay_connected
+
+        # Clear cached credentials if "Remember Devices" is off
+        remember = getattr(self._config, "remember_spotify_devices", True)
+        if not remember:
+            import shutil as _shutil
+            for cache_path in (_CACHE_DIR, _LIBRESPOT_CACHE):
+                if cache_path.is_dir():
+                    try:
+                        _shutil.rmtree(cache_path)
+                        logger.debug("Spotify: cleared cache %s", cache_path)
+                    except Exception:
+                        logger.debug("Spotify: failed to clear cache %s", cache_path, exc_info=True)
+
         logger.info("Spotify receiver stopped")

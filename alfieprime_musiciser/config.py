@@ -44,8 +44,9 @@ class Config:
     swap_auto_action: str = "deny"  # "accept" or "deny" when prompt is off
     # Devices the user has previously accepted via the swap prompt
     accepted_devices: list[str] = field(default_factory=list)
-    # Clear AirPlay pairing data on close so devices must re-pair
-    forget_airplay_devices: bool = False
+    # Remember paired devices across restarts
+    remember_airplay_devices: bool = True
+    remember_spotify_devices: bool = True
     # Spotify Connect settings
     spotify_enabled: bool = True
     spotify_client_id: str = ""  # Spotify Web API client ID (for PKCE OAuth)

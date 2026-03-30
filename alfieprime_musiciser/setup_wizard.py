@@ -437,7 +437,7 @@ def _get_section_items(section: str, cfg: Config) -> list[tuple[str, str, str, d
                 "choices": [("accept", "ACCEPT"), ("deny", "DENY")],
             }))
         items += [
-            ("Forget AirPlay Devices", "forget_airplay_devices", "bool", {}),
+            ("Remember Devices", "remember_airplay_devices", "bool", {}),
             ("Continue", "", "continue", {}),
         ]
         return items
@@ -454,6 +454,7 @@ def _get_section_items(section: str, cfg: Config) -> list[tuple[str, str, str, d
                 ("Device Name", "spotify_device_name", "string", {
                     "placeholder": f"Musiciser@{hostname}",
                 }),
+                ("Remember Devices", "remember_spotify_devices", "bool", {}),
                 ("Username", "spotify_username", "string", {"placeholder": "(zeroconf)"}),
                 ("Web API Client ID", "spotify_client_id", "string", {"placeholder": "(optional)"}),
             ]

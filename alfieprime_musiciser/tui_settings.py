@@ -33,7 +33,8 @@ _HELP_TEXT: dict[str, str] = {
     "airplay_enabled": "Enable the AirPlay 2 receiver.\nAllows casting from Apple devices (iPhone, Mac, etc).\nRequires the airplay dependencies.",
     "swap_prompt": "Show a Y/N prompt when a second device tries to\nconnect to an already-occupied source slot.\nWhen OFF, the auto action is used instead.",
     "swap_auto_action": "What to do when a second device connects and the\nswap prompt is disabled.\nACCEPT = swap to the new device.\nDENY = reject the new connection.",
-    "forget_airplay_devices": "Clear AirPlay pairing data when the app closes.\nDevices will need to re-pair on next launch.\nUseful for shared/public setups.",
+    "remember_airplay_devices": "Remember paired AirPlay devices across restarts.\nWhen OFF, pairing data is cleared on exit and\ndevices must re-pair on next launch.",
+    "remember_spotify_devices": "Remember Spotify Connect credentials across restarts.\nWhen OFF, cached auth tokens and librespot data are\ncleared on exit.",
     "spotify_enabled": "Enable the Spotify Connect receiver.\nAppears as a castable device in Spotify apps.\nRequires librespot and spotipy.",
     "spotify_bitrate": "Audio quality for Spotify streaming.\n160 kbps = standard quality, less bandwidth.\n320 kbps = high quality (recommended).",
     "spotify_device_name": "How this device appears in Spotify's device list.\nLeave empty to use 'Musiciser@hostname'.",
@@ -281,13 +282,14 @@ class SettingsMixin:
         elif tab == "airplay":
             return [
                 ("AirPlay Receiver", "airplay_enabled", cfg.airplay_enabled),
-                ("Forget Devices on Exit", "forget_airplay_devices", cfg.forget_airplay_devices),
+                ("Remember Devices", "remember_airplay_devices", cfg.remember_airplay_devices),
             ]
         elif tab == "spotify":
             return [
                 ("Spotify Connect", "spotify_enabled", cfg.spotify_enabled),
                 ("Bitrate (kbps)", "spotify_bitrate", cfg.spotify_bitrate),
                 ("Device Name", "spotify_device_name", cfg.spotify_device_name),
+                ("Remember Devices", "remember_spotify_devices", cfg.remember_spotify_devices),
                 ("Username", "spotify_username", cfg.spotify_username),
                 ("Web API Client ID", "spotify_client_id", cfg.spotify_client_id),
             ]
@@ -534,7 +536,8 @@ class SettingsMixin:
                     item.append("  ◂▸", Style(color="#555555"))
             elif key in ("auto_play", "show_artwork", "use_art_colors",
                          "airplay_enabled", "sendspin_enabled", "spotify_enabled",
-                         "swap_prompt", "forget_airplay_devices", "run_setup"):
+                         "swap_prompt", "remember_airplay_devices",
+                         "remember_spotify_devices", "run_setup"):
                 val_str = "ON" if value else "OFF"
                 val_color = cursor_c if value else "#666666"
                 item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
@@ -940,7 +943,8 @@ class SettingsMixin:
         # Boolean toggles
         bool_keys = ("auto_play", "show_artwork", "use_art_colors",
                      "airplay_enabled", "sendspin_enabled", "spotify_enabled",
-                     "swap_prompt", "forget_airplay_devices", "run_setup")
+                     "swap_prompt", "remember_airplay_devices",
+                     "remember_spotify_devices", "run_setup")
         if key in bool_keys:
             setattr(cfg, key, not getattr(cfg, key))
             cfg.save()

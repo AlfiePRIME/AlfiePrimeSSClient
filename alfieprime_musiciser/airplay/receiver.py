@@ -1571,7 +1571,7 @@ class AirPlayReceiver:
         pairings_dir = os.path.join(_LOG_DIR, "pairings")
         if not os.path.isdir(pairings_dir):
             return
-        forget_all = getattr(self._config, "forget_airplay_devices", False)
+        remember = getattr(self._config, "remember_airplay_devices", True)
         try:
             for fname in os.listdir(pairings_dir):
                 fpath = os.path.join(pairings_dir, fname)
@@ -1579,15 +1579,15 @@ class AirPlayReceiver:
                     continue
                 # Always clear client pairings and device props (fixes
                 # the double-restart bug).  Only clear the LTSK (server
-                # identity) when "forget devices" is enabled.
-                if fname == "ltsk.txt" and not forget_all:
+                # identity) when "remember devices" is disabled.
+                if fname == "ltsk.txt" and remember:
                     continue
                 os.remove(fpath)
                 logger.debug("AirPlay: removed pairing file %s", fname)
         except Exception:
             logger.debug("AirPlay: failed to clear pairing store", exc_info=True)
         # Also clear the remembered-devices list so swap prompt re-appears
-        if forget_all and self._config is not None:
+        if not remember and self._config is not None:
             if self._config.accepted_devices:
                 self._config.accepted_devices.clear()
                 self._config.save()

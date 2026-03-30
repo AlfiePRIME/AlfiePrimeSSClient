@@ -500,10 +500,6 @@ def main() -> None:
                 else:
                     return
 
-    # Clear screen before TUI takes over to prevent any stray output flash
-    sys.stdout.write("\x1b[2J\x1b[H")
-    sys.stdout.flush()
-
     # Run!
     try:
         asyncio.run(_run_with_config(

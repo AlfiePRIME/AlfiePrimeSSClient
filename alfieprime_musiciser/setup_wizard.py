@@ -1167,12 +1167,9 @@ def play_intro_animation() -> None:
             sys.stdout.flush()
             time.sleep(1.0 / fps)
 
-        # Exit alternate screen + show cursor
-        sys.stdout.write("\x1b[?25h\x1b[?1049l")
-        sys.stdout.flush()
-
-        # Clear the main screen so nothing flashes before the TUI
-        sys.stdout.write("\x1b[2J\x1b[H")
+        # Stay in alternate screen — the TUI will take over seamlessly.
+        # Just clear it and show cursor briefly.
+        sys.stdout.write("\x1b[2J\x1b[H\x1b[?25h")
         sys.stdout.flush()
     except Exception:
         # Restore terminal state on any error

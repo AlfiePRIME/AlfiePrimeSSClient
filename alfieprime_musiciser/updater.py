@@ -662,12 +662,13 @@ class _UpdateTUI:
             self._progress = 0.5
             install_source = str(git_dir_inner) if git_dir_inner else f"git+{_REPO_URL}"
 
-            # Try pipx first
+            # Try pipx first (use system Python, not venv Python)
+            pipx_python = "python" if sys.platform == "win32" else sys.executable
             try:
                 self._update_status = "Installing via pipx..."
                 self._progress = 0.6
                 result = subprocess.run(
-                    [sys.executable, "-m", "pipx", "install", "--force", install_source],
+                    [pipx_python, "-m", "pipx", "install", "--force", install_source],
                     capture_output=True,
                     text=True,
                     timeout=180,
@@ -680,12 +681,16 @@ class _UpdateTUI:
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
                 pass
 
-            # Fall back to pip
+            # Fall back to pip — use --force-reinstall so new files
+            # (like __main__.py) are written even if the version looks
+            # the same to pip.
             try:
                 self._update_status = "Installing via pip..."
                 self._progress = 0.7
                 result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "--upgrade", "--quiet", install_source],
+                    [sys.executable, "-m", "pip", "install",
+                     "--force-reinstall", "--no-cache-dir", "--quiet",
+                     install_source],
                     capture_output=True,
                     text=True,
                     timeout=180,
@@ -809,6 +814,44 @@ class _UpdateTUI:
             os.system("cls")
 
 
+def _restart_after_update() -> None:
+    """Re-launch the app after a successful update.
+
+    Tries multiple strategies because the install method (pipx vs pip)
+    and platform affect which approach works.
+    """
+    import subprocess as _sp
+    import shutil
+
+    if sys.platform == "win32":
+        # Strategy 1: find the .exe entry point from sys.argv[0]
+        exe = sys.argv[0]
+        if not exe.lower().endswith(".exe"):
+            exe += ".exe"
+        if os.path.isfile(exe):
+            _sp.Popen([exe] + sys.argv[1:])
+            sys.exit(0)
+
+        # Strategy 2: find it on PATH
+        found = shutil.which("alfieprime-musiciser")
+        if found:
+            _sp.Popen([found] + sys.argv[1:])
+            sys.exit(0)
+
+        # Strategy 3: try -m (works if __main__.py was installed)
+        try:
+            _sp.Popen([sys.executable, "-m", "alfieprime_musiciser"] + sys.argv[1:])
+            sys.exit(0)
+        except OSError:
+            pass
+
+        # All strategies failed — just exit, user restarts manually
+        print("\nUpdate installed. Please restart the app manually.")
+        sys.exit(0)
+    else:
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def check_for_updates(console: Console) -> None:
@@ -831,22 +874,4 @@ def check_for_updates(console: Console) -> None:
     if result == "update":
         success = tui.run_update()
         if success:
-            if sys.platform == "win32":
-                # On Windows with pipx, sys.argv[0] is the .exe entry
-                # point (e.g. alfieprime-musiciser.exe).  After update,
-                # re-launch it directly via subprocess and exit — os.execv
-                # is unreliable on Windows since it emulates fork+exec.
-                import subprocess as _sp
-                exe = sys.argv[0]
-                # Ensure the .exe extension is present
-                if not exe.lower().endswith(".exe"):
-                    exe += ".exe"
-                if os.path.isfile(exe):
-                    _sp.Popen([exe] + sys.argv[1:])
-                    sys.exit(0)
-                else:
-                    # Fallback: try the entry point name from PATH
-                    _sp.Popen(["alfieprime-musiciser"] + sys.argv[1:], shell=True)
-                    sys.exit(0)
-            else:
-                os.execv(sys.executable, [sys.executable] + sys.argv)
+            _restart_after_update()

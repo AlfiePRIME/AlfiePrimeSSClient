@@ -302,7 +302,9 @@ class SettingsMixin:
                 ("Album Art Colours", "dj_use_art_colors", cfg.dj_use_art_colors),
             ]
         elif tab == "advanced":
+            from alfieprime_musiciser import __version__
             return [
+                ("Version", "version_display", __version__),
                 ("Client Name", "client_name", cfg.client_name),
                 ("Client UUID", "client_id", cfg.client_id),
                 ("Re-run Setup", "run_setup", cfg.run_setup),
@@ -456,6 +458,15 @@ class SettingsMixin:
         for i, (label, key, value) in enumerate(items):
             item = Text()
             selected = i == self._settings_cursor
+
+            # Version display (read-only)
+            if key == "version_display":
+                item.append("    ", Style())
+                item.append(f"{label:<24}", Style(color="#888888"))
+                item.append(f" v{value}", Style(color=cursor_c if danger else "#aaaaaa"))
+                panel_lines.append(item)
+                panel_lines.append(Text(""))
+                continue
 
             # Reset config gets special styling
             if key == "reset_config":

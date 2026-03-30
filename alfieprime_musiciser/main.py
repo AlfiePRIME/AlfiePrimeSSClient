@@ -363,6 +363,7 @@ def main() -> None:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--version", "-V", action="store_true", help="Print version and exit")
     parser.add_argument("--setup", action="store_true", help="Re-run the setup wizard")
     parser.add_argument("--demo", action="store_true", help="Run in demo mode without a server")
     parser.add_argument("--gui", action="store_true", help="Run in a standalone GUI window instead of the terminal")
@@ -372,6 +373,11 @@ def main() -> None:
     parser.add_argument("--airplay-port", type=int, default=7000, help="AirPlay RTSP port (default: 7000)")
     parser.add_argument("--spotify-name", default=None, help="Spotify Connect device name (default: client name)")
     args = parser.parse_args()
+
+    if args.version:
+        from alfieprime_musiciser import __version__
+        print(f"AlfiePRIME Musiciser v{__version__}")
+        return
 
     # When launched via pythonw.exe (gui_scripts), stdout/stderr are None.
     # Redirect them to devnull so logging / print don't crash.

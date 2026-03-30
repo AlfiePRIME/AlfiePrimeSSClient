@@ -1109,6 +1109,7 @@ class SetupWizard:
 def play_intro_animation() -> None:
     """Play the intro splash animation with a random quote as the title."""
     from alfieprime_musiciser.tui_animations import _STANDBY_PHRASES
+    from alfieprime_musiciser import __version__
     quote = random.choice(_STANDBY_PHRASES)
 
     from rich.live import Live
@@ -1128,7 +1129,7 @@ def play_intro_animation() -> None:
                 progress = min(1.0, elapsed / duration)
                 frame = _build_intro_frame(
                     progress, tw, th,
-                    subtitle="",
+                    subtitle=f"v{__version__}",
                     title_banner=quote,
                 )
                 live.update(frame)

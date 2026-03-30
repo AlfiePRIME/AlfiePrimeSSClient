@@ -33,7 +33,17 @@ def _parse_version(v: str) -> tuple[int, ...]:
 
 
 def _get_local_version() -> str:
-    """Return the currently installed version."""
+    """Return the currently installed version.
+
+    Prefers the installed package metadata (what pipx/pip actually has)
+    over the source-tree ``__version__``, so the check works correctly
+    even when running from a git checkout that's ahead of the install.
+    """
+    try:
+        from importlib.metadata import version as _pkg_version
+        return _pkg_version("alfieprime-musiciser")
+    except Exception:
+        pass
     try:
         from alfieprime_musiciser import __version__
         return __version__

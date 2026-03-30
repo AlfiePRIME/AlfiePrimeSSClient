@@ -831,4 +831,10 @@ def check_for_updates(console: Console) -> None:
     if result == "update":
         success = tui.run_update()
         if success:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            # On Windows with pipx, sys.argv[0] is a .exe entry point
+            # that can't be passed to python.exe as a script.  Use -m
+            # to re-launch the package instead.
+            if sys.platform == "win32":
+                os.execv(sys.executable, [sys.executable, "-m", "alfieprime_musiciser"] + sys.argv[1:])
+            else:
+                os.execv(sys.executable, [sys.executable] + sys.argv)

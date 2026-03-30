@@ -463,7 +463,11 @@ class DJMixin:
     # ── Helpers to read per-source data from snapshots ───────────────────
 
     def _dj_get_mode(self) -> tuple[str, str, str, str, str]:
-        """Return (mode, source_a, source_b, label_a, label_b) based on config."""
+        """Return (mode, source_a, source_b, label_a, label_b) based on config.
+
+        In 'mixed' mode, auto-detect which sources are actually connected
+        rather than always defaulting to sendspin + airplay.
+        """
         cfg = getattr(self, "_config", None)
         mode = cfg.dj_source_mode if cfg else "mixed"
         if mode == "dual_sendspin":
@@ -476,7 +480,24 @@ class DJMixin:
             return mode, "airplay", "spotify", "A · AIRPLAY", "B · SPOTIFY"
         elif mode == "dual_spotify":
             return mode, "spotify", "spotify", "A · SPOTIFY", "B · SPOTIFY"
-        return mode, "sendspin", "airplay", "A · SENDSPIN", "B · AIRPLAY"
+        # Mixed mode: auto-detect connected sources
+        state = self.state  # type: ignore[attr-defined]
+        _labels = {"sendspin": "SENDSPIN", "airplay": "AIRPLAY", "spotify": "SPOTIFY"}
+        connected = []
+        if getattr(state, "sendspin_connected", False):
+            connected.append("sendspin")
+        if getattr(state, "airplay_connected", False):
+            connected.append("airplay")
+        if getattr(state, "spotify_connected", False):
+            connected.append("spotify")
+        if len(connected) >= 2:
+            src_a, src_b = connected[0], connected[1]
+        elif len(connected) == 1:
+            src_a = connected[0]
+            src_b = "airplay" if src_a != "airplay" else "sendspin"
+        else:
+            src_a, src_b = "sendspin", "airplay"
+        return mode, src_a, src_b, f"A · {_labels.get(src_a, src_a.upper())}", f"B · {_labels.get(src_b, src_b.upper())}"
 
     def _dj_source_data(self, source: str) -> dict:
         """Get snapshot data for a source, or live state if it's active."""

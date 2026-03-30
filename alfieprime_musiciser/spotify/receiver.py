@@ -148,10 +148,18 @@ class _PCMReader:
             state = self._state
             if state and self._bytes_consumed % (chunk_size * 11) < chunk_size:
                 progress = self.progress_ms
-                if state.active_source == "spotify" or state.active_source == "":
+                if state.active_source in ("spotify", ""):
                     state.progress_ms = progress
                     state.progress_update_time = time.monotonic()
                     state.playback_speed = 1.0
+                else:
+                    # Not the active source (e.g. DJ mode) — update snapshot
+                    state.write_to_snapshot("spotify",
+                        progress_ms=progress,
+                        progress_update_time=time.monotonic(),
+                        playback_speed=1.0,
+                        is_playing=True,
+                    )
 
             mixer = self.dj_mixer
             if mixer is not None:

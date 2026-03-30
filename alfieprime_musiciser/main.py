@@ -118,7 +118,7 @@ async def _run_with_config(
     spotify_receiver = None
     if config.spotify_enabled and _HAS_SPOTIFY:
         from alfieprime_musiciser.spotify.receiver import SpotifyConnectReceiver
-        _sp_name = spotify_name or config.spotify_device_name or config.client_name or "Musiciser"
+        _sp_name = spotify_name or config.spotify_device_name or ""
         spotify_receiver = SpotifyConnectReceiver(
             tui, visualizer,
             device_name=_sp_name,

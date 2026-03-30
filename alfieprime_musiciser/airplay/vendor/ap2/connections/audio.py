@@ -674,6 +674,19 @@ class Audio:
             sys.stdin.close()
         except Exception:
             pass
+        # On Windows, elevate this process to HIGH priority so the OS
+        # scheduler services audio ahead of TUI console output.  Heavy
+        # Rich rendering in the parent causes Windows to boost I/O
+        # priority for that process, starving this audio child of CPU
+        # time and causing PyAudio buffer underruns.
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                HIGH_PRIORITY_CLASS = 0x00000080
+                handle = ctypes.windll.kernel32.GetCurrentProcess()
+                ctypes.windll.kernel32.SetPriorityClass(handle, HIGH_PRIORITY_CLASS)
+            except Exception:
+                pass
         # Suppress ALSA lib error/warning messages on Linux.
         # PyAudio's PortAudio backend probes every ALSA device and spews
         # harmless "cannot open" / "Unknown PCM" errors to stderr.
@@ -847,8 +860,20 @@ class AudioRealtime(Audio):
             time.sleep((self.spf / self.sample_rate) * 5)
 
     def play(self, rtspconn, serverconn):
-        import logging as _logging
+        import logging as _logging, sys as _sys
         _log = _logging.getLogger("ap2.audio.child")
+        # Boost this thread's priority on Windows so audio playback is
+        # never starved by the TUI process doing heavy console I/O.
+        if _sys.platform == "win32":
+            try:
+                import ctypes
+                THREAD_PRIORITY_TIME_CRITICAL = 15
+                ctypes.windll.kernel32.SetThreadPriority(
+                    ctypes.windll.kernel32.GetCurrentThread(),
+                    THREAD_PRIORITY_TIME_CRITICAL,
+                )
+            except Exception:
+                pass
         _log.info("AudioRealtime.play() starting init_audio_sink")
         try:
             self.init_audio_sink()
@@ -1001,6 +1026,14 @@ class AudioBuffered(Audio):
 
     # player plays
     def play(self, rtspconn, serverconn):
+        import sys as _sys
+        if _sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.kernel32.SetThreadPriority(
+                    ctypes.windll.kernel32.GetCurrentThread(), 15)
+            except Exception:
+                pass
         playing = False
         buffer_ready = False
         p_write_avg = deque(maxlen=20)

@@ -948,20 +948,20 @@ class AudioRealtime(Audio):
                             audio = self.process(rtp)
 
                             if(audio):
-                                pre_write = time.monotonic_ns()
-                                # Write silence when DJ mixer owns output — keeps
-                                # the audio device clock for precise pacing without
-                                # producing audible output.
                                 _muted = self._sink_muted
                                 if _muted is not None and _muted.value:
-                                    self.sink.write(b'\x00' * len(audio))
+                                    # DJ mixer owns output — sleep for frame
+                                    # duration instead of writing silence so we
+                                    # don't open a competing audio stream.
+                                    time.sleep(one_pkt * 1e-3)
                                 else:
+                                    pre_write = time.monotonic_ns()
                                     self.sink.write(self._apply_volume(audio))
+                                    post_write = time.monotonic_ns()
+                                    p_write = (post_write - pre_write) * 1e-6
+                                    p_write_avg.append(p_write)
+                                    p_write_a = sum(p_write_avg) / len(p_write_avg)
                                 lastPlayedSeqNo = rtp.sequence_no
-                                post_write = time.monotonic_ns()
-                                p_write = (post_write - pre_write) * 1e-6
-                                p_write_avg.append(p_write)
-                                p_write_a = sum(p_write_avg) / len(p_write_avg)
 
                                 playing = True
 
@@ -1117,13 +1117,13 @@ class AudioBuffered(Audio):
                     if audio:
                         _muted = self._sink_muted
                         if _muted is not None and _muted.value:
-                            self.sink.write(b'\x00' * len(audio))
+                            time.sleep(pkt_time_one * 1e-3)
                         else:
                             self.sink.write(self._apply_volume(audio))
-                        post_proc = time.monotonic_ns()
-                        p_write = post_proc - pre_proc
-                        p_write_avg.append(p_write * 1e-6)
-                        p_write_a = sum(p_write_avg) / len(p_write_avg)
+                            post_proc = time.monotonic_ns()
+                            p_write = post_proc - pre_proc
+                            p_write_avg.append(p_write * 1e-6)
+                            p_write_a = sum(p_write_avg) / len(p_write_avg)
 
                         i += 1
 

@@ -254,7 +254,13 @@ def render_now_playing(
             line.append(album, _cached_style("#888888", italic=True))
         lines.append(line)
 
-    prog_width = max(width - 20, 20)
+    cur_min, cur_sec = divmod(progress_ms // 1000, 60)
+    tot_min, tot_sec = divmod(duration_ms // 1000, 60)
+    time_cur = f"{cur_min}:{cur_sec:02d}"
+    time_tot = f"{tot_min}:{tot_sec:02d}"
+    # "  [" (3) + "] " (2) + time_cur + "/" + time_tot
+    chrome = 3 + 2 + len(time_cur) + 1 + len(time_tot)
+    prog_width = max(width - chrome, 10)
     ratio = min(progress_ms / duration_ms, 1.0) if duration_ms > 0 else 0.0
     filled = int(ratio * prog_width)
     empty = prog_width - filled
@@ -267,11 +273,9 @@ def render_now_playing(
     line.append("\u2500" * empty, _cached_style("#333333"))
     line.append("] ", _STYLE_DIM555)
 
-    cur_min, cur_sec = divmod(progress_ms // 1000, 60)
-    tot_min, tot_sec = divmod(duration_ms // 1000, 60)
-    line.append(f"{cur_min}:{cur_sec:02d}", _cached_style(th.accent))
+    line.append(time_cur, _cached_style(th.accent))
     line.append("/", _STYLE_DIM555)
-    line.append(f"{tot_min}:{tot_sec:02d}", _cached_style("#888888"))
+    line.append(time_tot, _cached_style("#888888"))
     lines.append(line)
 
     return lines

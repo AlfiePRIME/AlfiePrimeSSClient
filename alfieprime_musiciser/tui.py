@@ -1498,6 +1498,10 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                     sys.stdout.flush()
                     await asyncio.sleep(1 / anim_fps)
 
+            # ── Auto-start DJ mode if configured ──
+            if self._config and self._config.dj_default and not self._dj_mode:
+                self._start_dj_mode()
+
             # ── Main render loop ──
             while self._running:
                 fps = self._config.fps_limit if self._config else 30

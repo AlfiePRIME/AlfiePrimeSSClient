@@ -56,6 +56,8 @@ class Config:
     # DJ source mode: "mixed" (SS+AP), "dual_sendspin", "dual_airplay",
     # "spotify_sendspin" (SS+SP), "spotify_airplay" (AP+SP), "dual_spotify"
     dj_source_mode: str = "mixed"
+    dj_default: bool = False  # open DJ mode on startup
+    dj_use_art_colors: bool = True  # use album art colours in DJ mode
     # Re-run the setup wizard on next launch
     run_setup: bool = False
 

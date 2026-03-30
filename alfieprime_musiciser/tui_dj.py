@@ -614,8 +614,14 @@ class DJMixin:
         _dj_mode, _src_a, _src_b, _label_a, _label_b = self._dj_get_mode()
         data_a = self._dj_source_data(_src_a)
         data_b = self._dj_source_data(_src_b)
-        theme_a: ColorTheme = data_a.get("theme", ColorTheme())  # type: ignore[assignment]
-        theme_b: ColorTheme = data_b.get("theme", ColorTheme())  # type: ignore[assignment]
+        _cfg = getattr(self, "_config", None)
+        _dj_art = getattr(_cfg, "dj_use_art_colors", True) if _cfg else True
+        if _dj_art:
+            theme_a: ColorTheme = data_a.get("theme", ColorTheme())  # type: ignore[assignment]
+            theme_b: ColorTheme = data_b.get("theme", ColorTheme())  # type: ignore[assignment]
+        else:
+            theme_a = ColorTheme()
+            theme_b = ColorTheme()
         master_theme = blend_themes(theme_a, theme_b, dj.crossfader)
 
         # Get visualizer data — per-channel when available

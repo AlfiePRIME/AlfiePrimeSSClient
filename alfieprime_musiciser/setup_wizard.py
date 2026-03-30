@@ -469,6 +469,8 @@ def _get_section_items(section: str, cfg: Config) -> list[tuple[str, str, str, d
             modes += [("spotify_sendspin", "SS+SP"), ("spotify_airplay", "AP+SP"), ("dual_spotify", "DUAL SP")]
         return [
             ("DJ Source Mode", "dj_source_mode", "choice", {"choices": modes}),
+            ("Open DJ on Start", "dj_default", "bool", {}),
+            ("Album Art Colours", "dj_use_art_colors", "bool", {}),
             ("Continue", "", "continue", {}),
         ]
 
@@ -722,6 +724,8 @@ class SetupWizard:
             ("Spotify", "spotify_enabled"),
             ("Spotify Bitrate", "spotify_bitrate"),
             ("DJ Mode", "dj_source_mode"),
+            ("DJ on Start", "dj_default"),
+            ("DJ Art Colours", "dj_use_art_colors"),
         ]
         for label, field in fields:
             val = getattr(self.config, field)

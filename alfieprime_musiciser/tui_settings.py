@@ -29,6 +29,8 @@ _HELP_TEXT: dict[str, str] = {
     "use_art_colors": "Extract colours from album artwork to theme the UI.\nWhen OFF, a static colour is used instead (or rainbow\nif no static colour is set).",
     "static_color": "Override the UI accent colour with a fixed hex value.\nOnly used when Album Art Colours is OFF.\nClear to use rainbow cycling.",
     "dj_source_mode": "Which audio sources feed the DJ mixer decks.\nMIXED = SendSpin + AirPlay.\nDUAL SS/AP/SP = two of the same source type.\nSS+SP / AP+SP = cross-source mixing.",
+    "dj_default": "Automatically open DJ mode when the app starts.\nWhen OFF, the app starts in the normal boombox view\nand DJ mode can be toggled with [D].",
+    "dj_use_art_colors": "Use album artwork colours to theme the DJ screen.\nWhen OFF, the DJ interface uses a neutral colour\nscheme instead of adapting to each track's art.",
     "sendspin_enabled": "Enable the SendSpin (Music Assistant) receiver.\nThis is the primary protocol for streaming from\nMusic Assistant servers.",
     "airplay_enabled": "Enable the AirPlay 2 receiver.\nAllows casting from Apple devices (iPhone, Mac, etc).\nRequires the airplay dependencies.",
     "swap_prompt": "Show a Y/N prompt when a second device tries to\nconnect to an already-occupied source slot.\nWhen OFF, the auto action is used instead.",
@@ -61,6 +63,7 @@ _TABS = [
     ("sendspin", "SendSpin"),
     ("airplay", "AirPlay"),
     *([("spotify", "Spotify")] if not _IS_WINDOWS else []),
+    ("dj", "DJ Mode"),
     ("advanced", "Advanced"),
 ]
 
@@ -271,7 +274,6 @@ class SettingsMixin:
                 ("Show Artwork (Normal)", "show_artwork", cfg.show_artwork),
                 ("Album Art Colours", "use_art_colors", cfg.use_art_colors),
                 ("Static Colour", "static_color", cfg.static_color),
-                ("DJ Source Mode", "dj_source_mode", cfg.dj_source_mode),
             ]
         elif tab == "sendspin":
             return [
@@ -292,6 +294,12 @@ class SettingsMixin:
                 ("Remember Devices", "remember_spotify_devices", cfg.remember_spotify_devices),
                 ("Username", "spotify_username", cfg.spotify_username),
                 ("Web API Client ID", "spotify_client_id", cfg.spotify_client_id),
+            ]
+        elif tab == "dj":
+            return [
+                ("DJ Source Mode", "dj_source_mode", cfg.dj_source_mode),
+                ("Open DJ on Start", "dj_default", cfg.dj_default),
+                ("Album Art Colours", "dj_use_art_colors", cfg.dj_use_art_colors),
             ]
         elif tab == "advanced":
             return [
@@ -423,6 +431,20 @@ class SettingsMixin:
                 panel_lines.append(line)
             panel_lines.append(Text(""))
 
+        elif tab_key == "dj":
+            logo_c = th.accent if not danger else "#886666"
+            for art_line in [
+                r"    ___      _   __  __         _       ",
+                r"   |   \ _  | | |  \/  |___  __| |___   ",
+                r"   | |) | | | | | |\/| / _ \/ _` / -_)  ",
+                r"   |___/ \__|_| |_|  |_\___/\__,_\___|  ",
+                r"      |__/                              ",
+            ]:
+                line = Text()
+                line.append(_center(art_line), Style(color=logo_c))
+                panel_lines.append(line)
+            panel_lines.append(Text(""))
+
         # ── Note for protocol-affecting settings ──
         if tab_key in ("sendspin", "airplay", "spotify"):
             note = Text()
@@ -537,7 +559,8 @@ class SettingsMixin:
             elif key in ("auto_play", "show_artwork", "use_art_colors",
                          "airplay_enabled", "sendspin_enabled", "spotify_enabled",
                          "swap_prompt", "remember_airplay_devices",
-                         "remember_spotify_devices", "run_setup"):
+                         "remember_spotify_devices", "dj_default",
+                         "dj_use_art_colors", "run_setup"):
                 val_str = "ON" if value else "OFF"
                 val_color = cursor_c if value else "#666666"
                 item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
@@ -944,7 +967,8 @@ class SettingsMixin:
         bool_keys = ("auto_play", "show_artwork", "use_art_colors",
                      "airplay_enabled", "sendspin_enabled", "spotify_enabled",
                      "swap_prompt", "remember_airplay_devices",
-                     "remember_spotify_devices", "run_setup")
+                     "remember_spotify_devices", "dj_default",
+                     "dj_use_art_colors", "run_setup")
         if key in bool_keys:
             setattr(cfg, key, not getattr(cfg, key))
             cfg.save()

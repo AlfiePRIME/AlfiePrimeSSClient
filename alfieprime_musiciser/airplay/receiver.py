@@ -1683,5 +1683,3 @@ class AirPlayReceiver:
                     logger.debug("AirPlay: removed pairing file %s", fname)
         except Exception:
             logger.debug("AirPlay: failed to clear pairing store", exc_info=True)
-                self._config.save()
-                logger.debug("AirPlay: cleared accepted_devices list")

@@ -313,7 +313,7 @@ async def _run_with_config(
 
     loop = asyncio.get_running_loop()
 
-    def _stop_all():
+    def _cleanup_receivers():
         receiver.stop()
         if airplay_receiver:
             airplay_receiver.stop()
@@ -321,6 +321,11 @@ async def _run_with_config(
             spotify_receiver.stop()
         if receiver_b is not None:
             receiver_b.stop()
+        tui._cleanup_done.set()
+
+    tui._cleanup_fn = _cleanup_receivers
+
+    def _stop_all():
         tui.stop()
 
     if IS_WINDOWS:

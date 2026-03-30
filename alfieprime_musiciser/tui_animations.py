@@ -901,6 +901,47 @@ class AnimationsMixin:
 
         return segs
 
+    def _crt_shutdown_hold_segments(
+        self, term_w: int, term_h: int,
+    ) -> list[tuple[str, str | None, str | None, bool]]:
+        """Generate 'Shutting down...' static hold screen during cleanup."""
+        segs: list[tuple[str, str | None, str | None, bool]] = []
+        t = time.time()
+        mid_row = term_h // 2
+
+        _heavy = "░▒▓█▌▐"
+        _light = "·.  · "
+
+        # Pulsing text brightness
+        pulse = 0.6 + 0.4 * math.sin(t * 4)
+        br = int(80 + 175 * pulse)
+        text_c = f"#{br:02x}{br:02x}{br:02x}"
+
+        spinner = "|/-\\"
+        spin_ch = spinner[int(t * 8) % len(spinner)]
+        dots = "." * ((int(t * 2) % 3) + 1)
+        msg = f"{spin_ch} Shutting down{dots}"
+        msg_padded = f"{msg:^{term_w}}"
+
+        for row in range(term_h):
+            if row == mid_row:
+                segs.append((msg_padded, text_c, None, True))
+            else:
+                # Dim static noise
+                buf: list[str] = []
+                for _ in range(term_w):
+                    if random.random() < 0.15:
+                        buf.append(random.choice(_heavy))
+                    else:
+                        buf.append(random.choice(_light))
+                noise_br = int(20 + 10 * math.sin(t * 6 + row * 0.3))
+                c = f"#{noise_br:02x}{noise_br:02x}{noise_br:02x}"
+                segs.append(("".join(buf), c, None, False))
+            if row < term_h - 1:
+                segs.append(("\n", None, None, False))
+
+        return segs
+
     def _crt_to_ansi(
         self, segs: list[tuple[str, str | None, str | None, bool]], term_w: int, term_h: int,
     ) -> str:

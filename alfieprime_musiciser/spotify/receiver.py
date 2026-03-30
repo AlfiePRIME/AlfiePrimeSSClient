@@ -584,6 +584,10 @@ class SpotifyConnectReceiver:
             state.codec = "vorbis"
             state.sample_rate = 44100
             state.bit_depth = 16
+            # No API = no album art — use default rainbow theme
+            if not self._api:
+                from alfieprime_musiciser.colors import ColorTheme
+                state.theme = ColorTheme()
         else:
             state.write_to_snapshot("spotify",
                 supported_commands=cmds,

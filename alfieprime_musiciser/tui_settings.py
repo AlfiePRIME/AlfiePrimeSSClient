@@ -343,6 +343,47 @@ class SettingsMixin:
             panel_lines.append(warn)
             panel_lines.append(Text(""))
 
+        # ── ASCII art logos for protocol tabs ──
+        if tab_key == "sendspin":
+            logo_c = th.accent if not danger else "#886666"
+            for art_line in [
+                r"   ___            _ ___      _       ",
+                r"  / __| ___ _ _  | / __|_ __(_)_ _   ",
+                r"  \__ \/ -_) ' \ | \__ \ '_ \ | ' \  ",
+                r"  |___/\___|_||_||_|___/ .__/_|_||_| ",
+                r"                       |_|           ",
+            ]:
+                line = Text()
+                line.append(_center(art_line), Style(color=logo_c))
+                panel_lines.append(line)
+            panel_lines.append(Text(""))
+        elif tab_key == "airplay":
+            logo_c = th.accent if not danger else "#886666"
+            for art_line in [
+                r"     _   _      ___  _             ",
+                r"    /_\ (_)_ _ | _ \| |__ _ _  _   ",
+                r"   / _ \| | '_||  _/| / _` | || |  ",
+                r"  /_/ \_\_|_|  |_|  |_\__,_|\_, |  ",
+                r"                            |__/   ",
+            ]:
+                line = Text()
+                line.append(_center(art_line), Style(color=logo_c))
+                panel_lines.append(line)
+            panel_lines.append(Text(""))
+        elif tab_key == "spotify":
+            logo_c = "#1db954"  # Spotify green
+            for art_line in [
+                r"   ___          _   _  __       ",
+                r"  / __|_ __  __| |_(_)/ _|_  _  ",
+                r"  \__ \ '_ \/ _ \  _| |  _| || | ",
+                r"  |___/ .__/\___/\__|_|_|  \_, | ",
+                r"      |_|                  |__/  ",
+            ]:
+                line = Text()
+                line.append(_center(art_line), Style(color=logo_c))
+                panel_lines.append(line)
+            panel_lines.append(Text(""))
+
         # ── Note for protocol-affecting settings ──
         if tab_key in ("sendspin", "airplay", "spotify"):
             note = Text()
@@ -462,7 +503,7 @@ class SettingsMixin:
             panel_lines.append(Text(""))
 
         # Pad to consistent height
-        while len(panel_lines) < 14:
+        while len(panel_lines) < 20:
             panel_lines.append(Text(""))
 
         # Footer

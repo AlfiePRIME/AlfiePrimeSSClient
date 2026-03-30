@@ -11,6 +11,7 @@ import re
 import shutil
 import signal
 import sys
+import threading
 import time
 
 from collections import deque
@@ -233,6 +234,9 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         self._debug_log_buffer: deque[str] = deque(maxlen=200)
         self._debug_log_handler: _DebugLogHandler | None = None
         self._debug_scroll_offset: int = 0
+        # Shutdown coordination
+        self._cleanup_done = threading.Event()
+        self._cleanup_fn: Callable[[], None] | None = None
         # Track active source for smooth transitions on background connect
         self._last_active_source: str = ""
         # DJ mixing console
@@ -1457,6 +1461,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
 
         try:
             term_w, term_h = self._get_terminal_size()
+            anim_fps = max(30, self._config.fps_limit if self._config else 60)
 
             # ── Phase 1: CRT boot animation (1.5s) ──
             duration = 1.5
@@ -1467,7 +1472,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 frame = self._crt_to_ansi(segs, term_w, term_h)
                 sys.stdout.write(f"\x1b[H{frame}")
                 sys.stdout.flush()
-                await asyncio.sleep(1 / 60)
+                await asyncio.sleep(1 / anim_fps)
 
             # ── Phase 2: Hold on static until connected ──
             self._connect_wait_start = time.monotonic()
@@ -1477,7 +1482,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 frame = self._crt_to_ansi(segs, term_w, term_h)
                 sys.stdout.write(f"\x1b[H{frame}")
                 sys.stdout.flush()
-                await asyncio.sleep(1 / 30)
+                await asyncio.sleep(1 / anim_fps)
 
             # ── Phase 3: Lights-on sweep (1.8s) ──
             if self._running:
@@ -1490,7 +1495,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                     frame = self._crt_to_ansi(segs, term_w, term_h)
                     sys.stdout.write(f"\x1b[H{frame}")
                     sys.stdout.flush()
-                    await asyncio.sleep(1 / 60)
+                    await asyncio.sleep(1 / anim_fps)
 
             # ── Main render loop ──
             while self._running:
@@ -1514,15 +1519,43 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
             # ── CRT shutdown animation ──
             term_w, term_h = self._get_terminal_size()
             last_segs = self._render_frame_gui()
-            duration = 1.2
+            fps = max(30, self._config.fps_limit if self._config else 60)
+
+            # Start cleanup in background if a cleanup function was registered
+            if self._cleanup_fn:
+                threading.Thread(target=self._cleanup_fn, daemon=True).start()
+            else:
+                self._cleanup_done.set()
+
+            # Phase 1: Content noise + collapse to horizontal line (progress 0.0-0.55)
+            duration_p1 = 0.66  # 0.55 * 1.2s
             start = time.monotonic()
-            while time.monotonic() - start < duration:
-                progress = (time.monotonic() - start) / duration
+            while time.monotonic() - start < duration_p1:
+                progress = (time.monotonic() - start) / duration_p1 * 0.55
                 segs = self._crt_shutdown_segments(progress, term_w, term_h, last_segs)
                 frame = self._crt_to_ansi(segs, term_w, term_h)
                 sys.stdout.write(f"\x1b[H{frame}")
                 sys.stdout.flush()
-                await asyncio.sleep(1 / 60)
+                await asyncio.sleep(1 / fps)
+
+            # Phase 2: Hold on "Shutting down..." static until cleanup is done
+            while not self._cleanup_done.wait(timeout=0):
+                segs = self._crt_shutdown_hold_segments(term_w, term_h)
+                frame = self._crt_to_ansi(segs, term_w, term_h)
+                sys.stdout.write(f"\x1b[H{frame}")
+                sys.stdout.flush()
+                await asyncio.sleep(1 / 30)
+
+            # Phase 3: Line shrinks to dot and fades (progress 0.55-1.0)
+            duration_p3 = 0.54  # 0.45 * 1.2s
+            start = time.monotonic()
+            while time.monotonic() - start < duration_p3:
+                progress = 0.55 + (time.monotonic() - start) / duration_p3 * 0.45
+                segs = self._crt_shutdown_segments(progress, term_w, term_h, last_segs)
+                frame = self._crt_to_ansi(segs, term_w, term_h)
+                sys.stdout.write(f"\x1b[H{frame}")
+                sys.stdout.flush()
+                await asyncio.sleep(1 / fps)
 
             self._running = False
             # Reset terminal title and leave alternate screen
@@ -1546,6 +1579,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         self._gui_window = gui
 
         try:
+            anim_fps = max(30, self._config.fps_limit if self._config else 60)
+
             # ── Phase 1: CRT boot animation (1.5s) ──
             duration = 1.5
             start = time.monotonic()
@@ -1555,7 +1590,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 term_w, term_h = self._get_terminal_size()
                 segs = self._crt_startup_segments(progress, term_w, term_h)
                 gui.send_segments(segs)
-                await asyncio.sleep(1 / 60)
+                await asyncio.sleep(1 / anim_fps)
 
             # ── Phase 2: Hold on static until connected ──
             self._connect_wait_start = time.monotonic()
@@ -1564,7 +1599,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 term_w, term_h = self._get_terminal_size()
                 segs = self._crt_static_hold_segments(term_w, term_h)
                 gui.send_segments(segs)
-                await asyncio.sleep(1 / 30)
+                await asyncio.sleep(1 / anim_fps)
 
             # ── Phase 3: Lights-on sweep (1.8s) ──
             if self._running and gui.alive:
@@ -1576,7 +1611,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                     term_w, term_h = self._get_terminal_size()
                     segs = self._crt_lights_on_segments(progress, term_w, term_h)
                     gui.send_segments(segs)
-                    await asyncio.sleep(1 / 60)
+                    await asyncio.sleep(1 / anim_fps)
 
             # ── Main render loop ──
             while self._running and gui.alive:
@@ -1598,14 +1633,40 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
             if gui.alive:
                 last_segs = self._render_frame_gui()
                 term_w, term_h = self._get_terminal_size()
-                duration = 1.2
+                fps = max(30, self._config.fps_limit if self._config else 60)
+
+                # Start cleanup in background
+                if self._cleanup_fn:
+                    threading.Thread(target=self._cleanup_fn, daemon=True).start()
+                else:
+                    self._cleanup_done.set()
+
+                # Phase 1: Content noise + collapse to line
+                duration_p1 = 0.66
                 start = time.monotonic()
-                while time.monotonic() - start < duration and gui.alive:
+                while time.monotonic() - start < duration_p1 and gui.alive:
                     gui.process_events()
-                    progress = (time.monotonic() - start) / duration
+                    progress = (time.monotonic() - start) / duration_p1 * 0.55
                     segs = self._crt_shutdown_segments(progress, term_w, term_h, last_segs)
                     gui.send_segments(segs)
-                    await asyncio.sleep(1 / 60)
+                    await asyncio.sleep(1 / fps)
+
+                # Phase 2: Hold on "Shutting down..." static
+                while gui.alive and not self._cleanup_done.wait(timeout=0):
+                    gui.process_events()
+                    segs = self._crt_shutdown_hold_segments(term_w, term_h)
+                    gui.send_segments(segs)
+                    await asyncio.sleep(1 / 30)
+
+                # Phase 3: Line shrinks to dot and fades
+                duration_p3 = 0.54
+                start = time.monotonic()
+                while time.monotonic() - start < duration_p3 and gui.alive:
+                    gui.process_events()
+                    progress = 0.55 + (time.monotonic() - start) / duration_p3 * 0.45
+                    segs = self._crt_shutdown_segments(progress, term_w, term_h, last_segs)
+                    gui.send_segments(segs)
+                    await asyncio.sleep(1 / fps)
 
             self._running = False
             self._gui_window = None

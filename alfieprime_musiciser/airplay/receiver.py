@@ -1336,32 +1336,55 @@ class AirPlayReceiver:
         def _patched_event_spawn(addr=None, port=None, name='events', shared_key=None, isDebug=False):
             """Thread-based event listener (read-only — receives from iPhone)."""
             event = EventGeneric(addr, port, name, shared_key, isDebug)
+            # Store the listener socket so stop() can close it to unblock accept()
+            listener_sock: list[socket.socket | None] = [None]
 
             def _serve():
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.settimeout(2.0)  # allow periodic check for shutdown
                 sock.bind((event.addr, event.port))
                 sock.listen(1)
+                listener_sock[0] = sock
                 try:
-                    conn, peer = sock.accept()
-                    logger.info("Event connection (%s) from %s:%d", name, peer[0], peer[1])
-                    try:
-                        while True:
-                            data = conn.recv(4096)
-                            if not data:
-                                break
-                    except (OSError, ConnectionError):
-                        pass
-                    finally:
-                        conn.close()
-                        logger.info("Event connection (%s) closed", name)
+                    while True:
+                        try:
+                            conn, peer = sock.accept()
+                        except socket.timeout:
+                            continue
+                        except OSError:
+                            break
+                        logger.info("Event connection (%s) from %s:%d", name, peer[0], peer[1])
+                        try:
+                            while True:
+                                data = conn.recv(4096)
+                                if not data:
+                                    break
+                        except (OSError, ConnectionError):
+                            pass
+                        finally:
+                            conn.close()
+                            logger.info("Event connection (%s) closed", name)
                 except (OSError, KeyboardInterrupt):
                     pass
                 finally:
-                    sock.close()
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
 
             t = threading.Thread(target=_serve, daemon=True)
-            t.terminate = lambda: None  # type: ignore[attr-defined]
+
+            def _terminate():
+                """Close the listener socket to unblock the thread."""
+                s = listener_sock[0]
+                if s is not None:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+
+            t.terminate = _terminate  # type: ignore[attr-defined]
             t.start()
             return event.port, t
 
@@ -1493,23 +1516,6 @@ class AirPlayReceiver:
         if hasattr(self, "_pcm_consumer"):
             self._pcm_consumer.stop()
 
-        # Unregister mDNS so the device disappears from AirPlay lists
-        if self._zeroconf is not None:
-            try:
-                self._zeroconf.unregister_all_services()
-                self._zeroconf.close()
-            except Exception:
-                pass
-            self._zeroconf = None
-
-        # Clear the vendored module's global so it re-registers fresh
-        # on next start instead of trying to update a closed instance
-        try:
-            from alfieprime_musiciser.airplay.vendor import ap2_receiver as ap2mod
-            ap2mod.MDNS_OBJ = None
-        except Exception:
-            pass
-
         if self._server is not None:
             srv = self._server
             self._server = None
@@ -1545,7 +1551,7 @@ class AirPlayReceiver:
                     pass
             getattr(srv, "connections", {}).clear()
 
-            # 3) Terminate event/timing threads
+            # 3) Terminate event/timing threads — closes their listener sockets
             for attr in ("event_proc", "timing_proc"):
                 proc = getattr(srv, attr, None)
                 if proc is not None:
@@ -1553,6 +1559,12 @@ class AirPlayReceiver:
                         proc.terminate()
                     except Exception:
                         pass
+                    # Wait for the thread to actually exit so sockets are released
+                    if hasattr(proc, "join"):
+                        try:
+                            proc.join(timeout=3.0)
+                        except Exception:
+                            pass
                     setattr(srv, attr, None)
 
             # 4) Shut down the TCPServer (signals serve_forever to stop)
@@ -1564,6 +1576,33 @@ class AirPlayReceiver:
                 srv.server_close()
             except Exception:
                 pass
+
+        # Unregister mDNS so the device disappears from AirPlay lists
+        # (done after server shutdown to avoid race conditions)
+        if self._zeroconf is not None:
+            try:
+                self._zeroconf.unregister_all_services()
+            except Exception:
+                pass
+            try:
+                self._zeroconf.close()
+            except Exception:
+                pass
+            self._zeroconf = None
+
+        # Clear ALL vendored module globals so a fresh start re-initialises
+        # everything from scratch — prevents stale state on Windows restarts
+        try:
+            from alfieprime_musiciser.airplay.vendor import ap2_receiver as ap2mod
+            ap2mod.MDNS_OBJ = None
+            ap2mod.DEVICE_ID = None
+            ap2mod.DEV_PROPS = None
+            ap2mod.DEV_NAME = None
+            ap2mod.IPV4 = None
+            ap2mod.IPV6 = None
+            ap2mod.IPADDR = None
+        except Exception:
+            pass
 
         # Clear pairing state so devices can reconnect on next start.
         # Transient pairing (Ft48) means clients re-pair each session anyway,

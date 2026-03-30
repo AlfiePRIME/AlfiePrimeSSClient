@@ -12,8 +12,12 @@ from rich.console import Group
 from rich.style import Style
 from rich.text import Text
 
+import sys
+
 from alfieprime_musiciser.colors import _hex_to_rgb
 from alfieprime_musiciser.config import Config
+
+_IS_WINDOWS = sys.platform == "win32"
 
 
 def _safe_hex(r: int | float, g: int | float, b: int | float) -> str:
@@ -21,11 +25,12 @@ def _safe_hex(r: int | float, g: int | float, b: int | float) -> str:
 
 
 # Tab definitions — (tab_key, display_label)
+# Spotify Connect requires librespot which is not available on Windows
 _TABS = [
     ("general", "General"),
     ("sendspin", "SendSpin"),
     ("airplay", "AirPlay"),
-    ("spotify", "Spotify"),
+    *([("spotify", "Spotify")] if not _IS_WINDOWS else []),
     ("advanced", "Advanced"),
 ]
 
@@ -780,7 +785,7 @@ class SettingsMixin:
             return
 
         # Tab switching: Tab key or number keys
-        if k in ("1", "2", "3", "4", "5"):
+        if k.isdigit() and 1 <= int(k) <= len(_TABS):
             idx = int(k) - 1
             if idx < len(_TABS):
                 self._settings_tab = idx
@@ -894,8 +899,9 @@ class SettingsMixin:
         elif key == "swap_auto_action":
             cfg.swap_auto_action = "accept" if cfg.swap_auto_action == "deny" else "deny"
         elif key == "dj_source_mode":
-            _modes = ["mixed", "dual_sendspin", "dual_airplay",
-                       "spotify_sendspin", "spotify_airplay", "dual_spotify"]
+            _modes = ["mixed", "dual_sendspin", "dual_airplay"]
+            if not _IS_WINDOWS:
+                _modes += ["spotify_sendspin", "spotify_airplay", "dual_spotify"]
             _i = _modes.index(cfg.dj_source_mode) if cfg.dj_source_mode in _modes else 0
             cfg.dj_source_mode = _modes[(_i + direction) % len(_modes)]
         else:

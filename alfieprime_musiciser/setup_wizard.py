@@ -813,17 +813,25 @@ class SetupWizard:
             )
 
     def _run_dj(self) -> None:
+        import sys as _sys
         c = self._section_color(5)
+
+        modes = [
+            ("mixed", "Channel A = SendSpin, Channel B = AirPlay"),
+            ("dual_sendspin", "Both channels from SendSpin receivers"),
+            ("dual_airplay", "Both channels from AirPlay receivers"),
+        ]
+        if _sys.platform != "win32":
+            modes += [
+                ("spotify_sendspin", "Channel A = SendSpin, Channel B = Spotify"),
+                ("spotify_airplay", "Channel A = AirPlay, Channel B = Spotify"),
+                ("dual_spotify", "Both channels from Spotify"),
+            ]
 
         self.config.dj_source_mode = self._ask_choice(
             "DJ Source Mode",
             "Which audio sources feed the two DJ mixer channels.",
-            [("mixed", "Channel A = SendSpin, Channel B = AirPlay"),
-             ("dual_sendspin", "Both channels from SendSpin receivers"),
-             ("dual_airplay", "Both channels from AirPlay receivers"),
-             ("spotify_sendspin", "Channel A = SendSpin, Channel B = Spotify"),
-             ("spotify_airplay", "Channel A = AirPlay, Channel B = Spotify"),
-             ("dual_spotify", "Both channels from Spotify")],
+            modes,
             self.config.dj_source_mode, c,
         )
 
@@ -916,14 +924,16 @@ class SetupWizard:
 
     def run(self) -> Config:
         """Run the full setup wizard. Returns the (possibly modified) Config."""
+        import sys as _sys
         sections = [
             ("CONNECTION", self._run_connection),
             ("DISPLAY",    self._run_display),
             ("PLAYBACK",   self._run_playback),
             ("PROTOCOL",   self._run_protocol),
-            ("SPOTIFY",    self._run_spotify),
-            ("DJ MODE",    self._run_dj),
         ]
+        if _sys.platform != "win32":
+            sections.append(("SPOTIFY", self._run_spotify))
+        sections.append(("DJ MODE", self._run_dj))
 
         self._play_intro()
 

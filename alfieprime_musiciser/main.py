@@ -115,9 +115,9 @@ async def _run_with_config(
         )
         logger.info("AirPlay receiver enabled on port %d", airplay_port)
 
-    # Optional Spotify Connect receiver
+    # Optional Spotify Connect receiver (not available on Windows)
     spotify_receiver = None
-    if config.spotify_enabled and _HAS_SPOTIFY:
+    if config.spotify_enabled and _HAS_SPOTIFY and not IS_WINDOWS:
         from alfieprime_musiciser.spotify.receiver import SpotifyConnectReceiver
         _sp_name = spotify_name or config.spotify_device_name or ""
         spotify_receiver = SpotifyConnectReceiver(

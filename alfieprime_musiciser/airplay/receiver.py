@@ -1281,6 +1281,15 @@ class AirPlayReceiver:
         ap2mod.DISABLE_PTP_MASTER = False
         ap2mod.DEBUG = False
 
+        # Generate a FRESH Public Identifier each startup.  iOS caches
+        # AirPlay devices by PI — reusing the same PI after a restart can
+        # cause iOS to suppress rediscovery.  With transient pairing (Ft48)
+        # there is no benefit to a persistent PI.
+        import uuid as _uuid_mod
+        fresh_pi = str(_uuid_mod.uuid4()).encode()
+        ap2mod.PI = fresh_pi
+        logger.debug("AirPlay: using fresh PI=%s", fresh_pi)
+
         # Set up the screen logger the vendored code expects
         ap2mod.SCR_LOG = get_screen_logger("AirPlay", level="INFO")
 
@@ -1308,6 +1317,18 @@ class AirPlayReceiver:
             _hap_mod.PAIRING_STORE = pairings_dir
             logger.debug("AirPlay: pairing store: %s", pairings_dir)
 
+            # Clean slate: remove ALL pairing files so stale LTSK/device
+            # props from a previous session can't confuse iOS.  With
+            # transient pairing + fresh PI, we regenerate everything anyway.
+            for _fname in os.listdir(pairings_dir):
+                _fpath = os.path.join(pairings_dir, _fname)
+                if os.path.isfile(_fpath):
+                    try:
+                        os.remove(_fpath)
+                        logger.debug("AirPlay: cleared stale pairing file %s", _fname)
+                    except Exception:
+                        pass
+
             from ap2.pairing.hap import DeviceProperties  # type: ignore[import-untyped]
             ap2mod.DEV_PROPS = DeviceProperties(ap2mod.PI, False)
             logger.debug("AirPlay: DeviceProperties created with PI=%s", ap2mod.PI)
@@ -1327,9 +1348,11 @@ class AirPlayReceiver:
 
         # Log the mDNS properties that will be advertised
         mdns_props = getattr(ap2mod, 'mdns_props', {})
+        pk_val = mdns_props.get('pk', '')
         logger.info("AirPlay: device_name=%s mac=%s ipv4=%s ipv6=%s",
                      self._device_name, mac_addr, ipv4_addr, ipv6_addr)
         logger.debug("AirPlay: mDNS TXT props: %s", {k: v for k, v in mdns_props.items() if k != 'pk'})
+        logger.debug("AirPlay: pk present=%s len=%d", bool(pk_val), len(pk_val) if pk_val else 0)
 
         # Create metadata hook
         meta_hook = _MetadataHook(self._state, visualizer=self._visualizer)
@@ -1644,28 +1667,21 @@ class AirPlayReceiver:
         logger.info("AirPlay receiver stopped")
 
     def _clear_pairing_store(self) -> None:
-        """Remove HAP pairing files so next startup gets a clean handshake."""
+        """Remove ALL HAP pairing files so next startup gets a clean slate.
+
+        With transient pairing (Ft48) and a fresh PI generated per session,
+        there is no benefit to keeping any pairing state across restarts.
+        """
         pairings_dir = os.path.join(_LOG_DIR, "pairings")
         if not os.path.isdir(pairings_dir):
             return
-        remember = getattr(self._config, "remember_airplay_devices", True)
         try:
             for fname in os.listdir(pairings_dir):
                 fpath = os.path.join(pairings_dir, fname)
-                if not os.path.isfile(fpath):
-                    continue
-                # Always clear client pairings and device props (fixes
-                # the double-restart bug).  Only clear the LTSK (server
-                # identity) when "remember devices" is disabled.
-                if fname == "ltsk.txt" and remember:
-                    continue
-                os.remove(fpath)
-                logger.debug("AirPlay: removed pairing file %s", fname)
+                if os.path.isfile(fpath):
+                    os.remove(fpath)
+                    logger.debug("AirPlay: removed pairing file %s", fname)
         except Exception:
             logger.debug("AirPlay: failed to clear pairing store", exc_info=True)
-        # Also clear the remembered-devices list so swap prompt re-appears
-        if not remember and self._config is not None:
-            if self._config.accepted_devices:
-                self._config.accepted_devices.clear()
                 self._config.save()
                 logger.debug("AirPlay: cleared accepted_devices list")

@@ -1,6 +1,6 @@
 [project]
 name = "alfieprime-musiciser"
-version = "1.4.7"
+version = "1.5.0"
 description = "Party-themed AirPlay 2 and SendSpin receiver with boom box UI and audio visualizer"
 requires-python = ">=3.12"
 dependencies = [
@@ -9,14 +9,7 @@ dependencies = [
     "rich>=13.0.0",
     "Pillow>=10.0.0",
     "dbus-next>=0.2.3; sys_platform == 'linux'",
-]
-
-[project.urls]
-Homepage = "https://github.com/AlfiePRIME/AlfiePRIME-Musiciser"
-
-[project.optional-dependencies]
-smtc = ["winsdk>=1.0.0b10"]
-airplay = [
+    # AirPlay 2 receiver deps (gracefully disabled if install fails)
     "av>=10.0.0",
     "pyaudio>=0.2.13",
     "pycryptodome>=3.18.0",
@@ -26,8 +19,15 @@ airplay = [
     "hkdf>=0.0.3",
     "cryptography>=41.0.0",
     "zeroconf>=0.80.0",
+    # Spotify Connect deps
+    "spotipy>=2.23.0",
 ]
-spotify = ["spotipy>=2.23.0"]
+
+[project.urls]
+Homepage = "https://github.com/AlfiePRIME/AlfiePRIME-Musiciser"
+
+[project.optional-dependencies]
+smtc = ["winsdk>=1.0.0b10"]
 
 [project.scripts]
 alfieprime-musiciser = "alfieprime_musiciser.main:main"

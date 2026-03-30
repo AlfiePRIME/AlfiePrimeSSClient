@@ -1502,6 +1502,14 @@ class AirPlayReceiver:
                 pass
             self._zeroconf = None
 
+        # Clear the vendored module's global so it re-registers fresh
+        # on next start instead of trying to update a closed instance
+        try:
+            from alfieprime_musiciser.airplay.vendor import ap2_receiver as ap2mod
+            ap2mod.MDNS_OBJ = None
+        except Exception:
+            pass
+
         if self._server is not None:
             srv = self._server
             self._server = None

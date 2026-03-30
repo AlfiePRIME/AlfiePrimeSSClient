@@ -453,11 +453,7 @@ class Audio:
         self.remoteClockMonotonic_ts, self.remoteClockId = None, None
 
     def _apply_volume(self, audio: bytes) -> bytes:
-        """Scale 16-bit PCM audio by the shared volume value (0.0–1.0).
-
-        Uses integer-only math via the stdlib ``array`` module to avoid
-        numpy allocation/GC spikes in the realtime audio loop.
-        """
+        """Scale 16-bit PCM audio by the shared volume value (0.0–1.0)."""
         vol = self._sink_volume
         if vol is None:
             return audio
@@ -466,13 +462,10 @@ class Audio:
             return audio
         if v <= 0.0:
             return b'\x00' * len(audio)
-        import array as _array
-        a = _array.array('h')
-        a.frombytes(audio)
-        factor = int(v * 256)
-        for i in range(len(a)):
-            a[i] = max(-32768, min(32767, (a[i] * factor) >> 8))
-        return a.tobytes()
+        import numpy as np
+        samples = np.frombuffer(audio, dtype=np.int16)
+        scaled = np.clip(samples * v, -32768, 32767).astype(np.int16)
+        return scaled.tobytes()
 
     def init_audio_sink(self):
         codecLatencySec = 0
@@ -924,15 +917,15 @@ class AudioRealtime(Audio):
                             audio = self.process(rtp)
 
                             if(audio):
-                                # Apply volume scaling before the timing
-                                # measurement so it doesn't inflate p_write_a.
+                                pre_write = time.monotonic_ns()
+                                # Write silence when DJ mixer owns output — keeps
+                                # the audio device clock for precise pacing without
+                                # producing audible output.
                                 _muted = self._sink_muted
                                 if _muted is not None and _muted.value:
-                                    audio = b'\x00' * len(audio)
+                                    self.sink.write(b'\x00' * len(audio))
                                 else:
-                                    audio = self._apply_volume(audio)
-                                pre_write = time.monotonic_ns()
-                                self.sink.write(audio)
+                                    self.sink.write(self._apply_volume(audio))
                                 lastPlayedSeqNo = rtp.sequence_no
                                 post_write = time.monotonic_ns()
                                 p_write = (post_write - pre_write) * 1e-6
@@ -1079,16 +1072,15 @@ class AudioBuffered(Audio):
                             self.rtp_buffer.pop()
                             msec_to_playout = self.msec_to_playout(rtp.timestamp) - p_write_a
 
+                    pre_proc = time.monotonic_ns()
                     audio = self.process(rtp)
 
                     if audio:
                         _muted = self._sink_muted
                         if _muted is not None and _muted.value:
-                            audio = b'\x00' * len(audio)
+                            self.sink.write(b'\x00' * len(audio))
                         else:
-                            audio = self._apply_volume(audio)
-                        pre_proc = time.monotonic_ns()
-                        self.sink.write(audio)
+                            self.sink.write(self._apply_volume(audio))
                         post_proc = time.monotonic_ns()
                         p_write = post_proc - pre_proc
                         p_write_avg.append(p_write * 1e-6)

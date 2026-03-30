@@ -59,6 +59,7 @@ async def _run_with_config(
 ) -> None:
     """Run the TUI + receiver using the given config."""
     visualizer = AudioVisualizer()
+    _effective_name = config.client_name or __import__("socket").gethostname()
 
     if daemon:
         # Headless daemon mode — no TUI/GUI, audio only
@@ -67,7 +68,7 @@ async def _run_with_config(
             None, visualizer,  # type: ignore[arg-type]
             server_url=server_url,
             listen_port=config.listen_port,
-            client_name=config.client_name,
+            client_name=_effective_name,
             config=config,
         )
         loop = asyncio.get_running_loop()
@@ -91,7 +92,7 @@ async def _run_with_config(
         tui, visualizer,
         server_url=server_url,
         listen_port=config.listen_port,
-        client_name=config.client_name,
+        client_name=_effective_name,
         config=config,
     )
 

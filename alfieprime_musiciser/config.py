@@ -18,7 +18,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 class Config:
     """Persistent configuration."""
 
-    client_name: str = "MKUltra"
+    client_name: str = ""  # empty = use hostname
     mode: str = "listen"  # "listen" (mDNS) or "connect" (explicit URL)
     server_url: str = ""  # only used when mode == "connect"
     listen_port: int = 8928  # only used when mode == "listen"
@@ -83,9 +83,11 @@ def run_setup(console: Console, existing: Config | None = None) -> Config:
     defaults = existing or Config()
 
     # Client name
+    import socket as _socket
+    _default_name = defaults.client_name or _socket.gethostname()
     client_name = Prompt.ask(
         "[bright_cyan]Client name[/] (how this player appears in Music Assistant)",
-        default=defaults.client_name,
+        default=_default_name,
         console=console,
     )
 

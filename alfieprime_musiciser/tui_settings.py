@@ -431,9 +431,12 @@ class SettingsMixin:
                         item.append(" ")
                 else:
                     display = str(value) if value else ""
-                    if not display and key == "spotify_device_name":
+                    if not display:
                         import socket
-                        display = f"Musiciser@{socket.gethostname()}"
+                        if key == "spotify_device_name":
+                            display = f"Musiciser@{socket.gethostname()}"
+                        elif key == "client_name":
+                            display = socket.gethostname()
                     if len(display) > 24:
                         display = display[:21] + "..."
                     item.append(f" {display}", Style(

@@ -178,6 +178,7 @@ def _hsv_to_rgb_simple(h: float, s: float, v: float) -> tuple[int, int, int]:
 
 def _build_intro_frame(
     progress: float, term_w: int, term_h: int,
+    subtitle: str = "Interactive Setup Wizard",
 ) -> Group:
     """Intro splash: boom box materialises with title banner."""
     lines: list[Text] = []
@@ -242,7 +243,7 @@ def _build_intro_frame(
             line.append(bar, Style(color=_hex(r, g, b)))
 
         elif rel_row == art_h + 4 and progress > 0.85:
-            sub = "Interactive Setup Wizard"
+            sub = subtitle
             pad = max(0, (term_w - len(sub)) // 2)
             p5 = min(1.0, (progress - 0.85) / 0.15)
             line.append(" " * pad)
@@ -515,7 +516,7 @@ class SetupWizard:
             pass
 
     def _play_intro(self) -> None:
-        self._play_animation(_build_intro_frame, duration=2.5)
+        self._play_animation(_build_intro_frame, duration=2.5, subtitle="Interactive Setup Wizard")
 
     def _play_outro(self, color: str = "#00ff88") -> None:
         self._play_animation(_build_outro_frame, duration=0.8, color=color)
@@ -1087,8 +1088,15 @@ class SetupWizard:
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
-def play_intro_animation() -> None:
-    """Play the intro splash animation (can be used standalone at app start)."""
+def play_intro_animation(subtitle: str | None = None) -> None:
+    """Play the intro splash animation (can be used standalone at app start).
+
+    If *subtitle* is None a random standby phrase is used.
+    """
+    if subtitle is None:
+        from alfieprime_musiciser.tui_animations import _STANDBY_PHRASES
+        subtitle = random.choice(_STANDBY_PHRASES)
+
     from rich.live import Live
     tw, th = _term_size()
     fps = 24
@@ -1104,7 +1112,7 @@ def play_intro_animation() -> None:
                 if elapsed >= duration:
                     break
                 progress = min(1.0, elapsed / duration)
-                frame = _build_intro_frame(progress, tw, th)
+                frame = _build_intro_frame(progress, tw, th, subtitle=subtitle)
                 live.update(frame)
                 time.sleep(1.0 / fps)
     except Exception:

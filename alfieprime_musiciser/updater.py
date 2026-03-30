@@ -10,7 +10,6 @@ import os
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 from rich.console import Console
@@ -23,8 +22,6 @@ _VERSION_URL = (
     "https://raw.githubusercontent.com/AlfiePRIME/AlfiePRIME-Musiciser"
     "/main/alfieprime_musiciser/__init__.py"
 )
-# Only check once per day at most
-_CHECK_INTERVAL = 86400  # seconds
 
 
 def _parse_version(v: str) -> tuple[int, ...]:
@@ -35,15 +32,9 @@ def _parse_version(v: str) -> tuple[int, ...]:
 def _get_local_version() -> str:
     """Return the currently installed version.
 
-    Prefers the installed package metadata (what pipx/pip actually has)
-    over the source-tree ``__version__``, so the check works correctly
-    even when running from a git checkout that's ahead of the install.
+    Uses the source-tree ``__version__`` which is the version the app
+    is actually running as.
     """
-    try:
-        from importlib.metadata import version as _pkg_version
-        return _pkg_version("alfieprime-musiciser")
-    except Exception:
-        pass
     try:
         from alfieprime_musiciser import __version__
         return __version__
@@ -66,43 +57,6 @@ def _fetch_remote_version() -> str | None:
     return None
 
 
-def _last_check_file() -> Path:
-    """Path to the timestamp file for throttling update checks."""
-    config_dir = Path.home() / ".config" / "alfieprime-musiciser"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    return config_dir / ".last_update_check"
-
-
-def _should_check() -> bool:
-    """Return True if enough time has passed since the last check.
-
-    Also re-checks if the local version changed (e.g. after an update),
-    since there may be another newer version available.
-    """
-    check_file = _last_check_file()
-    if not check_file.exists():
-        return True
-    try:
-        content = check_file.read_text().strip()
-        parts = content.split("|", 1)
-        last = float(parts[0])
-        checked_version = parts[1] if len(parts) > 1 else ""
-        # Re-check if local version changed since last check
-        if checked_version != _get_local_version():
-            return True
-        return (time.time() - last) >= _CHECK_INTERVAL
-    except (ValueError, OSError):
-        return True
-
-
-def _record_check() -> None:
-    """Record that we just checked for updates (with current version)."""
-    try:
-        _last_check_file().write_text(f"{time.time()}|{_get_local_version()}")
-    except OSError:
-        pass
-
-
 def _find_git_dir() -> Path | None:
     """Find the git repo root if installed from a git clone."""
     path = Path(__file__).resolve().parent
@@ -115,23 +69,22 @@ def _find_git_dir() -> Path | None:
 
 def check_for_updates(console: Console) -> None:
     """Check for updates and prompt user to upgrade if available."""
-    if not _should_check():
-        return
-
     local_version = _get_local_version()
-    console.print("[dim]Checking for updates...[/]", highlight=False)
+    console.print(f"[dim]Checking for updates (current: v{local_version})...[/]", highlight=False)
 
     remote_version = _fetch_remote_version()
-    _record_check()
 
     if remote_version is None:
-        # Network error — skip silently
+        console.print("[dim]Could not reach GitHub, skipping update check.[/]")
         return
 
     local_tuple = _parse_version(local_version)
     remote_tuple = _parse_version(remote_version)
 
+    console.print(f"[dim]Latest: v{remote_version}[/]", highlight=False)
+
     if remote_tuple <= local_tuple:
+        console.print("[dim]Already up to date.[/]")
         return
 
     console.print()

@@ -55,6 +55,8 @@ class Config:
     # DJ source mode: "mixed" (SS+AP), "dual_sendspin", "dual_airplay",
     # "spotify_sendspin" (SS+SP), "spotify_airplay" (AP+SP), "dual_spotify"
     dj_source_mode: str = "mixed"
+    # Re-run the setup wizard on next launch
+    run_setup: bool = False
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)

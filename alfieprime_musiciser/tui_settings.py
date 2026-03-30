@@ -266,6 +266,7 @@ class SettingsMixin:
             return [
                 ("Client Name", "client_name", cfg.client_name),
                 ("Client UUID", "client_id", cfg.client_id),
+                ("Re-run Setup", "run_setup", cfg.run_setup),
                 ("Reset Config", "reset_config", ""),
             ]
         return []
@@ -831,7 +832,7 @@ class SettingsMixin:
         # Boolean toggles
         bool_keys = ("auto_play", "show_artwork", "use_art_colors",
                      "airplay_enabled", "sendspin_enabled", "spotify_enabled",
-                     "swap_prompt", "forget_airplay_devices")
+                     "swap_prompt", "forget_airplay_devices", "run_setup")
         if key in bool_keys:
             setattr(cfg, key, not getattr(cfg, key))
             cfg.save()

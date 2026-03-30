@@ -1,24 +1,27 @@
 """Animated interactive setup wizard for AlfiePRIME Musiciser.
 
 Walks the user through every configurable setting grouped into logical
-sections, with CRT-style transitions and ASCII art between each section.
+sections.  Each section is rendered as a full TUI screen with CRT-style
+background, cursor navigation, and inline editing — matching the look and
+feel of the in-app settings menu.
 """
 from __future__ import annotations
 
+import io as _io
 import math
+import os
 import random
 import shutil
+import sys
 import time
 
 from rich.console import Console, Group
-from rich.live import Live
-from rich.panel import Panel
-from rich.prompt import Confirm, Prompt
 from rich.style import Style
-from rich.table import Table
 from rich.text import Text
 
 from alfieprime_musiciser.config import Config
+
+IS_WINDOWS = sys.platform == "win32"
 
 # ── ASCII art per section ────────────────────────────────────────────────────
 
@@ -99,16 +102,25 @@ _ART_SPOTIFY = r"""
           ♪  ♫  ♪
 """.strip("\n")
 
+_ART_SUMMARY = r"""
+    ╔═══════════════════════╗
+    ║   ┌─┐  ✓  DONE  ┌─┐  ║
+    ║   └─┘           └─┘  ║
+    ╚═══════════════════════╝
+""".strip("\n")
+
 _SECTION_DEFS = [
-    ("CONNECTION",  _ART_CONNECTION, "#00ccff"),
-    ("DISPLAY",     _ART_DISPLAY,   "#ff88ff"),
-    ("PLAYBACK",    _ART_PLAYBACK,  "#88ff44"),
-    ("PROTOCOL",    _ART_PROTOCOL,  "#ffaa00"),
-    ("SPOTIFY",     _ART_SPOTIFY,   "#1db954"),
-    ("DJ MODE",     _ART_DJ,        "#ff4488"),
+    ("CONNECTION", _ART_CONNECTION, "#00ccff"),
+    ("DISPLAY", _ART_DISPLAY, "#ff88ff"),
+    ("PLAYBACK", _ART_PLAYBACK, "#88ff44"),
+    ("PROTOCOL", _ART_PROTOCOL, "#ffaa00"),
+    ("SPOTIFY", _ART_SPOTIFY, "#1db954"),
+    ("DJ MODE", _ART_DJ, "#ff4488"),
+    ("SUMMARY", _ART_SUMMARY, "#00ff88"),
 ]
 
 _TITLE_BANNER = " A L F I E P R I M E   S E T U P "
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -126,147 +138,42 @@ def _dim(color: str, factor: float) -> str:
     return _hex(r * factor, g * factor, b * factor)
 
 
-def _term_w() -> int:
-    return shutil.get_terminal_size((80, 24)).columns
+def _center(text: str, width: int = 50) -> str:
+    return text.center(width)
 
 
-# ── Animation frames ─────────────────────────────────────────────────────────
+def _term_size() -> tuple[int, int]:
+    sz = shutil.get_terminal_size((80, 24))
+    return sz.columns, sz.lines
 
-def _build_scanline_frame(
-    progress: float, term_w: int, term_h: int, color: str,
-) -> Group:
-    """CRT scanline wipe animation frame."""
-    lines: list[Text] = []
-    cr, cg, cb = _hex_to_rgb(color)
 
-    center_y = term_h // 2
-    # Phase 1 (0-0.4): scanline appears and glows
-    # Phase 2 (0.4-1.0): content expands from scanline
-    if progress < 0.4:
-        p = progress / 0.4
-        for row in range(term_h):
-            line = Text()
-            dist = abs(row - center_y)
-            if dist == 0:
-                brightness = 0.5 + 0.5 * p
-                flicker = 1.0 + 0.1 * math.sin(time.time() * 30 + row)
-                br = brightness * flicker
-                c = _hex(cr * br, cg * br, cb * br)
-                line.append("▓" * term_w, Style(color=c))
-            elif dist <= 1 and p > 0.5:
-                glow = (p - 0.5) * 2.0 * 0.3
-                c = _hex(cr * glow, cg * glow, cb * glow)
-                noise = "".join(random.choice("░·  ") for _ in range(term_w))
-                line.append(noise, Style(color=c))
-            else:
-                line.append(" " * term_w)
-            lines.append(line)
+def _hsv_to_rgb_simple(h: float, s: float, v: float) -> tuple[int, int, int]:
+    """Simple HSV->RGB (0-1 inputs, 0-255 outputs)."""
+    if s <= 0:
+        c = int(v * 255)
+        return c, c, c
+    h6 = h * 6.0
+    i = int(h6) % 6
+    f = h6 - int(h6)
+    p = v * (1.0 - s)
+    q = v * (1.0 - s * f)
+    t = v * (1.0 - s * (1.0 - f))
+    if i == 0:
+        r, g, b = v, t, p
+    elif i == 1:
+        r, g, b = q, v, p
+    elif i == 2:
+        r, g, b = p, v, t
+    elif i == 3:
+        r, g, b = p, q, v
+    elif i == 4:
+        r, g, b = t, p, v
     else:
-        p = (progress - 0.4) / 0.6
-        visible_half = int(p * center_y)
-        for row in range(term_h):
-            line = Text()
-            dist = abs(row - center_y)
-            if dist <= visible_half:
-                edge_fade = 1.0 - (dist / max(1, visible_half)) * 0.5
-                flicker = 0.9 + 0.2 * math.sin(time.time() * 8 + row * 0.3)
-                br = edge_fade * flicker * p
-                c = _hex(cr * br * 0.15, cg * br * 0.15, cb * br * 0.15)
-                noise = "".join(
-                    random.choice("░▒ · " if random.random() < 0.08 else "   ")
-                    for _ in range(term_w)
-                )
-                line.append(noise, Style(color=c))
-            elif dist == visible_half + 1:
-                br = 0.3 * (1.0 - p)
-                c = _hex(cr * br, cg * br, cb * br)
-                line.append("─" * term_w, Style(color=c))
-            else:
-                line.append(" " * term_w)
-            lines.append(line)
-    return Group(*lines)
+        r, g, b = v, p, q
+    return int(r * 255), int(g * 255), int(b * 255)
 
 
-def _build_section_intro_frame(
-    progress: float, term_w: int, term_h: int,
-    section_name: str, ascii_art: str, color: str,
-) -> Group:
-    """Section intro animation: ASCII art materialises with title."""
-    lines: list[Text] = []
-    art_lines = ascii_art.split("\n")
-    art_h = len(art_lines)
-    art_max_w = max(len(l) for l in art_lines) if art_lines else 0
-
-    total_h = art_h + 4  # art + gap + title + underline
-    start_y = max(0, (term_h - total_h) // 2)
-    cr, cg, cb = _hex_to_rgb(color)
-
-    # Phase 1 (0-0.3): static noise reveals
-    # Phase 2 (0.3-0.7): art characters fade in
-    # Phase 3 (0.7-1.0): title appears with glow
-
-    for row in range(term_h):
-        line = Text()
-        rel_row = row - start_y
-
-        if 0 <= rel_row < art_h:
-            art_line = art_lines[rel_row]
-            pad = max(0, (term_w - art_max_w) // 2)
-
-            if progress < 0.3:
-                # Noise with occasional revealed chars
-                p = progress / 0.3
-                result = []
-                for i, ch in enumerate(art_line):
-                    reveal = random.random() < p * 0.7
-                    if ch == " ":
-                        result.append(" ")
-                    elif reveal:
-                        result.append(ch)
-                    else:
-                        result.append(random.choice("░▒▓·"))
-                txt = "".join(result)
-                br = 0.3 + 0.4 * p
-                c = _hex(cr * br, cg * br, cb * br)
-                line.append(" " * pad)
-                line.append(txt, Style(color=c))
-            else:
-                # Fully revealed with glow
-                p2 = min(1.0, (progress - 0.3) / 0.4)
-                glow = 0.7 + 0.3 * p2
-                flicker = 1.0 + 0.03 * math.sin(time.time() * 6 + rel_row * 0.5)
-                c = _hex(cr * glow * flicker, cg * glow * flicker, cb * glow * flicker)
-                line.append(" " * pad)
-                line.append(art_line, Style(color=c))
-
-        elif rel_row == art_h + 1 and progress > 0.5:
-            # Section title
-            p3 = min(1.0, (progress - 0.5) / 0.3)
-            title = f" ◈ {section_name} ◈ "
-            pad = max(0, (term_w - len(title)) // 2)
-            glow = 0.5 + 0.5 * p3
-            flicker = 1.0 + 0.05 * math.sin(time.time() * 4)
-            br = glow * flicker
-            c = _hex(cr * br, cg * br, cb * br)
-            line.append(" " * pad)
-            line.append(title, Style(color=c, bold=True))
-
-        elif rel_row == art_h + 2 and progress > 0.6:
-            # Underline
-            p4 = min(1.0, (progress - 0.6) / 0.3)
-            bar_w = int(40 * p4)
-            bar = "━" * bar_w
-            pad = max(0, (term_w - 40) // 2)
-            c = _dim(color, 0.5)
-            line.append(" " * pad)
-            line.append(bar, Style(color=c))
-        else:
-            line.append("")
-
-        lines.append(line)
-
-    return Group(*lines)
-
+# ── Animation frame builders ────────────────────────────────────────────────
 
 def _build_intro_frame(
     progress: float, term_w: int, term_h: int,
@@ -276,11 +183,8 @@ def _build_intro_frame(
     art_lines = _ART_INTRO.split("\n")
     art_h = len(art_lines)
     art_max_w = max(len(l) for l in art_lines) if art_lines else 0
-
     total_h = art_h + 5
     start_y = max(0, (term_h - total_h) // 2)
-
-    # Colors cycle through rainbow
     t = time.time()
 
     for row in range(term_h):
@@ -290,7 +194,6 @@ def _build_intro_frame(
         if 0 <= rel_row < art_h:
             art_line = art_lines[rel_row]
             pad = max(0, (term_w - art_max_w) // 2)
-
             if progress < 0.4:
                 p = progress / 0.4
                 result = []
@@ -315,7 +218,6 @@ def _build_intro_frame(
                 line.append(art_line, Style(color=_hex(r, g, b)))
 
         elif rel_row == art_h + 1 and progress > 0.5:
-            # Title banner
             p3 = min(1.0, (progress - 0.5) / 0.3)
             pad = max(0, (term_w - len(_TITLE_BANNER)) // 2)
             chars_visible = int(len(_TITLE_BANNER) * p3)
@@ -352,32 +254,6 @@ def _build_intro_frame(
     return Group(*lines)
 
 
-def _hsv_to_rgb_simple(h: float, s: float, v: float) -> tuple[int, int, int]:
-    """Simple HSV→RGB (0-1 inputs, 0-255 outputs)."""
-    if s <= 0:
-        c = int(v * 255)
-        return c, c, c
-    h6 = h * 6.0
-    i = int(h6) % 6
-    f = h6 - int(h6)
-    p = v * (1.0 - s)
-    q = v * (1.0 - s * f)
-    t = v * (1.0 - s * (1.0 - f))
-    if i == 0:
-        r, g, b = v, t, p
-    elif i == 1:
-        r, g, b = q, v, p
-    elif i == 2:
-        r, g, b = p, v, t
-    elif i == 3:
-        r, g, b = p, q, v
-    elif i == 4:
-        r, g, b = t, p, v
-    else:
-        r, g, b = v, p, q
-    return int(r * 255), int(g * 255), int(b * 255)
-
-
 def _build_outro_frame(
     progress: float, term_w: int, term_h: int, color: str,
 ) -> Group:
@@ -387,7 +263,6 @@ def _build_outro_frame(
     center_y = term_h // 2
 
     if progress < 0.5:
-        # Collapse to scanline
         p = progress / 0.5
         visible_half = int((1.0 - p) * center_y)
         for row in range(term_h):
@@ -406,7 +281,6 @@ def _build_outro_frame(
                 line.append(" " * term_w)
             lines.append(line)
     else:
-        # Scanline shrinks to dot
         p = (progress - 0.5) / 0.5
         dot_w = max(1, int((1.0 - p) * term_w))
         pad = (term_w - dot_w) // 2
@@ -424,36 +298,207 @@ def _build_outro_frame(
     return Group(*lines)
 
 
+# ── CRT background (standalone, matches settings menu style) ────────────────
+
+def _build_crt_bg(term_w: int, term_h: int, color: str = "#888888") -> list[Text]:
+    """Generate animated CRT scanline background."""
+    t = time.time()
+    cr, cg, cb = _hex_to_rgb(color)
+    bg_lines: list[Text] = []
+    noise_chars = "░▒▓·.╌"
+    phase = t * 8
+    for row in range(term_h):
+        line = Text()
+        scan = math.sin(phase + row * 0.6) * 0.5 + 0.5
+        glow = int(scan * 18)
+        r = max(0, min(255, cr // 8 + glow))
+        g = max(0, min(255, cg // 8 + glow))
+        b = max(0, min(255, cb // 8 + glow))
+        fc = _hex(r, g, b)
+        parts: list[str] = []
+        for col in range(term_w):
+            seed = (row * 1337 + col * 7919 + int(t * 2)) % 137
+            parts.append(noise_chars[seed % len(noise_chars)] if seed < 8 else " ")
+        row_str = "".join(parts)
+        band_y = int((t * 3) % (term_h + 20)) - 10
+        dist = abs(row - band_y)
+        if dist < 3:
+            flicker = max(0, 12 - dist * 4)
+            fc = _hex(min(255, r + flicker * 5), min(255, g + flicker * 4), min(255, b + flicker * 4))
+        line.append(row_str, Style(color=fc))
+        bg_lines.append(line)
+    return bg_lines
+
+
+def _compose_panel(
+    bg_lines: list[Text], panel_lines: list[Text],
+    panel_w: int, term_w: int, term_h: int,
+) -> Group:
+    """Overlay a centered panel onto CRT background."""
+    total_content = len(panel_lines)
+    panel_x = max(0, (term_w - panel_w - 2) // 2)
+    panel_y = max(0, (term_h - total_content) // 2)
+    bg_a = 10
+    panel_bg_style = Style(bgcolor=_hex(bg_a, bg_a, bg_a))
+
+    result_lines: list[Text] = []
+    for row in range(term_h):
+        content_idx = row - panel_y
+        if 0 <= content_idx < total_content:
+            content_line = panel_lines[content_idx]
+            line = Text()
+            bg_text = bg_lines[row].plain if row < len(bg_lines) else " " * term_w
+            line.append(bg_text[:panel_x], Style(color="#222222"))
+            content_plain = content_line.plain
+            pad_needed = panel_w - len(content_plain)
+            line.append(" ", panel_bg_style)
+            line.append_text(content_line)
+            if pad_needed > 0:
+                line.append(" " * pad_needed, panel_bg_style)
+            line.append(" ", panel_bg_style)
+            right_start = panel_x + panel_w + 2
+            right_bg = bg_text[right_start:term_w]
+            if right_bg:
+                line.append(right_bg, Style(color="#222222"))
+            result_lines.append(line)
+        else:
+            result_lines.append(bg_lines[row] if row < len(bg_lines) else Text(" " * term_w))
+    return Group(*result_lines)
+
+
+# ── Item definitions ─────────────────────────────────────────────────────────
+
+def _get_section_items(section: str, cfg: Config) -> list[tuple[str, str, str, dict]]:
+    """Return (label, config_key, type, extra) items for a setup section."""
+    import socket
+    hostname = socket.gethostname()
+
+    if section == "CONNECTION":
+        items: list[tuple[str, str, str, dict]] = [
+            ("Client Name", "client_name", "string", {"placeholder": hostname}),
+            ("Connection Mode", "mode", "choice", {
+                "choices": [("listen", "LISTEN"), ("connect", "CONNECT")],
+            }),
+        ]
+        if cfg.mode == "connect":
+            items.append(("Server URL", "server_url", "string", {
+                "placeholder": "ws://192.168.1.100:8097/sendspin",
+            }))
+        else:
+            items.append(("Listen Port", "listen_port", "int", {
+                "min": 1024, "max": 65535, "step": 1,
+            }))
+        items.append(("Continue", "", "continue", {}))
+        return items
+
+    elif section == "DISPLAY":
+        items = [
+            ("FPS Limit", "fps_limit", "int", {"min": 5, "max": 120, "step": 5}),
+            ("Brightness", "brightness", "int", {"min": 50, "max": 150, "step": 10}),
+            ("Show Artwork", "show_artwork", "bool", {}),
+            ("Album Art Colours", "use_art_colors", "bool", {}),
+        ]
+        if not cfg.use_art_colors:
+            items.append(("Static Colour", "static_color", "string", {
+                "placeholder": "#ff0088",
+            }))
+        items.append(("Continue", "", "continue", {}))
+        return items
+
+    elif section == "PLAYBACK":
+        return [
+            ("Auto Play", "auto_play", "bool", {}),
+            ("Auto Volume", "auto_volume", "int", {
+                "min": -1, "max": 100, "step": 5,
+                "format": lambda v: "OFF" if v == -1 else f"{v}%",
+            }),
+            ("Continue", "", "continue", {}),
+        ]
+
+    elif section == "PROTOCOL":
+        items = [
+            ("SendSpin Receiver", "sendspin_enabled", "bool", {}),
+            ("AirPlay Receiver", "airplay_enabled", "bool", {}),
+            ("Swap Prompt", "swap_prompt", "bool", {}),
+        ]
+        if not cfg.swap_prompt:
+            items.append(("Auto Action", "swap_auto_action", "choice", {
+                "choices": [("accept", "ACCEPT"), ("deny", "DENY")],
+            }))
+        items += [
+            ("Forget AirPlay Devices", "forget_airplay_devices", "bool", {}),
+            ("Continue", "", "continue", {}),
+        ]
+        return items
+
+    elif section == "SPOTIFY":
+        items = [
+            ("Spotify Connect", "spotify_enabled", "bool", {}),
+        ]
+        if cfg.spotify_enabled:
+            items += [
+                ("Bitrate", "spotify_bitrate", "choice", {
+                    "choices": [(160, "160 kbps"), (320, "320 kbps")],
+                }),
+                ("Device Name", "spotify_device_name", "string", {
+                    "placeholder": f"Musiciser@{hostname}",
+                }),
+                ("Username", "spotify_username", "string", {"placeholder": "(zeroconf)"}),
+                ("Web API Client ID", "spotify_client_id", "string", {"placeholder": "(optional)"}),
+            ]
+        items.append(("Continue", "", "continue", {}))
+        return items
+
+    elif section == "DJ MODE":
+        modes: list[tuple[str, str]] = [
+            ("mixed", "MIXED"), ("dual_sendspin", "DUAL SS"), ("dual_airplay", "DUAL AP"),
+        ]
+        if not IS_WINDOWS:
+            modes += [("spotify_sendspin", "SS+SP"), ("spotify_airplay", "AP+SP"), ("dual_spotify", "DUAL SP")]
+        return [
+            ("DJ Source Mode", "dj_source_mode", "choice", {"choices": modes}),
+            ("Continue", "", "continue", {}),
+        ]
+
+    elif section == "SUMMARY":
+        return [
+            ("Save & Launch", "", "action_save", {}),
+            ("Cancel", "", "action_cancel", {}),
+        ]
+
+    return []
+
+
 # ── Wizard ───────────────────────────────────────────────────────────────────
 
 class SetupWizard:
-    """Interactive animated setup wizard."""
+    """Interactive animated setup wizard with full TUI rendering."""
 
-    def __init__(self, console: Console, existing: Config | None = None) -> None:
-        self.console = console
+    def __init__(self, existing: Config | None = None) -> None:
         self.config = existing or Config()
-        # Track which fields changed for summary
         self._original = Config(**{
             k: v for k, v in existing.__dict__.items()
             if k in Config.__dataclass_fields__
         }) if existing else Config()
-        self._skipped_sections: set[str] = set()
+        self._running = True
+        self._cursor = 0
+        self._editing = ""
+        self._edit_buf = ""
+        self._section_done = False
+        self._result: str = ""
+        self._console: Console | None = None
+        self._console_size: tuple[int, int] = (0, 0)
 
     # ── Animations ──
 
-    def _play_animation(
-        self, builder, duration: float = 1.5, **kwargs,
-    ) -> None:
-        """Play a timed animation using Rich Live."""
-        tw = _term_w()
-        th = shutil.get_terminal_size((80, 24)).lines
+    def _play_animation(self, builder, duration: float = 1.5, **kwargs) -> None:
+        from rich.live import Live
+        tw, th = _term_size()
         fps = 24
         try:
             with Live(
-                console=self.console,
-                refresh_per_second=fps,
-                transient=True,
-                screen=True,
+                console=Console(), refresh_per_second=fps,
+                transient=True, screen=True,
             ) as live:
                 start = time.monotonic()
                 while True:
@@ -465,528 +510,517 @@ class SetupWizard:
                     live.update(frame)
                     time.sleep(1.0 / fps)
         except Exception:
-            pass  # Graceful fallback if terminal doesn't support Live
+            pass
 
     def _play_intro(self) -> None:
         self._play_animation(_build_intro_frame, duration=2.5)
 
-    def _play_section_intro(self, idx: int) -> None:
-        name, art, color = _SECTION_DEFS[idx]
-        self._play_animation(
-            _build_section_intro_frame,
-            duration=1.5,
-            section_name=name,
-            ascii_art=art,
-            color=color,
-        )
-
     def _play_outro(self, color: str = "#00ff88") -> None:
         self._play_animation(_build_outro_frame, duration=0.8, color=color)
 
-    # ── Input helpers ──
+    # ── Rendering ──
 
-    def _section_color(self, idx: int) -> str:
-        return _SECTION_DEFS[idx][2]
-
-    def _print_setting(
-        self,
-        label: str,
-        description: str,
-        current: str,
-        color: str,
-        hint: str = "",
-    ) -> None:
-        """Print a styled setting box."""
-        self.console.print()
-        inner = Text()
-        inner.append(f"  {label}\n", Style(color=color, bold=True))
-        inner.append(f"  {description}\n", Style(color="#888888"))
-        inner.append(f"\n  Current: ", Style(color="#666666"))
-        inner.append(f"{current}", Style(color=color, bold=True))
-        if hint:
-            inner.append(f"\n  {hint}", Style(color="#555555"))
-        self.console.print(Panel(
-            inner,
-            border_style=Style(color=_dim(color, 0.5)),
-            width=min(62, _term_w() - 4),
-        ))
-
-    def _ask_string(
-        self, label: str, desc: str, current: str, color: str,
-    ) -> str:
-        self._print_setting(label, desc, current or "(empty)", color)
-        return Prompt.ask(
-            f"  [{_dim(color, 0.7)}]▸[/] Enter value",
-            default=current,
-            console=self.console,
-        )
-
-    def _ask_bool(
-        self, label: str, desc: str, current: bool, color: str,
-    ) -> bool:
-        cur_str = "[bold green]ON[/]" if current else "[dim]OFF[/]"
-        self._print_setting(label, desc, "ON" if current else "OFF", color)
-        return Confirm.ask(
-            f"  [{_dim(color, 0.7)}]▸[/] Enable?",
-            default=current,
-            console=self.console,
-        )
-
-    def _ask_int(
-        self, label: str, desc: str, current: int, color: str,
-        min_val: int, max_val: int,
-    ) -> int:
-        hint = f"Range: {min_val}–{max_val}"
-        self._print_setting(label, desc, str(current), color, hint=hint)
-        while True:
-            raw = Prompt.ask(
-                f"  [{_dim(color, 0.7)}]▸[/] Enter value",
-                default=str(current),
-                console=self.console,
+    def _render_to_ansi(self, group: Group, term_w: int, term_h: int) -> str:
+        buf = _io.StringIO()
+        if self._console is None or self._console_size != (term_w, term_h):
+            self._console = Console(
+                file=buf, width=term_w, height=term_h,
+                force_terminal=True, color_system="truecolor", no_color=False,
             )
-            try:
-                val = int(raw)
-                if min_val <= val <= max_val:
-                    return val
-                self.console.print(
-                    f"  [red]Must be between {min_val} and {max_val}[/]"
-                )
-            except ValueError:
-                self.console.print("  [red]Please enter a number[/]")
-
-    def _ask_choice(
-        self, label: str, desc: str, choices: list[tuple[str, str]],
-        current: str, color: str,
-    ) -> str:
-        """choices = [(value, display_label), ...]"""
-        choice_desc = "  ".join(
-            f"[bold {color}]{v}[/] = {lbl}" if v == current
-            else f"[dim]{v}[/] = {lbl}"
-            for v, lbl in choices
-        )
-        self._print_setting(label, desc, current, color, hint=choice_desc)
-        valid = [v for v, _ in choices]
-        return Prompt.ask(
-            f"  [{_dim(color, 0.7)}]▸[/] Choose",
-            choices=valid,
-            default=current,
-            console=self.console,
-        )
-
-    def _ask_hex_color(
-        self, label: str, desc: str, current: str, color: str,
-    ) -> str:
-        presets = [
-            ("Red", "#ff0000"), ("Orange", "#ff8800"), ("Yellow", "#ffff00"),
-            ("Lime", "#88ff00"), ("Green", "#00ff00"), ("Teal", "#00ff88"),
-            ("Cyan", "#00ffff"), ("Sky", "#0088ff"), ("Blue", "#0000ff"),
-            ("Purple", "#8800ff"), ("Magenta", "#ff00ff"), ("Pink", "#ff0088"),
-            ("White", "#ffffff"),
-        ]
-        self._print_setting(label, desc, current or "(disabled)", color)
-        # Show colour swatches
-        swatch = Text("  ")
-        for name, hex_c in presets:
-            swatch.append("██", Style(color=hex_c))
-            swatch.append(f" {name}  ", Style(color="#666666"))
-            if len(swatch.plain) > _term_w() - 10:
-                self.console.print(swatch)
-                swatch = Text("  ")
-        if swatch.plain.strip():
-            self.console.print(swatch)
-        self.console.print()
-        raw = Prompt.ask(
-            f"  [{_dim(color, 0.7)}]▸[/] Enter hex colour (e.g. #ff0000) or 'none' to disable",
-            default=current or "none",
-            console=self.console,
-        )
-        if raw.lower() in ("none", "off", "disable", ""):
-            return ""
-        if not raw.startswith("#"):
-            raw = "#" + raw
-        if len(raw) == 7:
-            return raw
-        self.console.print("  [red]Invalid hex colour, keeping current value[/]")
-        return current
-
-    def _ask_auto_volume(
-        self, label: str, desc: str, current: int, color: str,
-    ) -> int:
-        hint = "-1 = disabled, 0–100 = set volume on connect"
-        cur_str = "Disabled" if current == -1 else f"{current}%"
-        self._print_setting(label, desc, cur_str, color, hint=hint)
-        raw = Prompt.ask(
-            f"  [{_dim(color, 0.7)}]▸[/] Enter volume (0-100) or -1 to disable",
-            default=str(current),
-            console=self.console,
-        )
-        try:
-            val = int(raw)
-            if val == -1 or 0 <= val <= 100:
-                return val
-            self.console.print("  [red]Must be -1 or 0–100[/]")
-            return current
-        except ValueError:
-            self.console.print("  [red]Please enter a number[/]")
-            return current
-
-    def _section_skip_prompt(self, section_name: str, color: str) -> bool:
-        """Ask if the user wants to configure this section or skip it."""
-        self.console.print()
-        result = Confirm.ask(
-            f"  [{color}]▸[/] Configure [bold]{section_name}[/] settings?",
-            default=True,
-            console=self.console,
-        )
-        if not result:
-            self.console.print(f"  [dim]Skipping {section_name} (keeping defaults)[/]")
-        return not result
-
-    # ── Section runners ──
-
-    def _run_connection(self) -> None:
-        c = self._section_color(0)
-
-        self.config.client_name = self._ask_string(
-            "Client Name",
-            "How this player appears in Music Assistant / AirPlay.",
-            self.config.client_name, c,
-        )
-
-        self.config.mode = self._ask_choice(
-            "Connection Mode",
-            "How to find and connect to the music server.",
-            [("listen", "mDNS auto-discovery (recommended)"),
-             ("connect", "Connect to a specific server URL")],
-            self.config.mode, c,
-        )
-
-        if self.config.mode == "connect":
-            url = self._ask_string(
-                "Server URL",
-                "WebSocket URL of the SendSpin/Music Assistant server.\n"
-                "  Example: ws://192.168.1.100:8097/sendspin",
-                self.config.server_url, c,
-            )
-            # Auto-prefix ws://
-            if url and not url.startswith(("ws://", "wss://")):
-                if ":" in url and "/" in url:
-                    url = "ws://" + url
-                else:
-                    url = f"ws://{url}:8097/sendspin"
-                self.console.print(f"  [dim]Using URL: {url}[/]")
-            self.config.server_url = url
+            self._console_size = (term_w, term_h)
         else:
-            self.config.listen_port = self._ask_int(
-                "Listen Port",
-                "TCP port to listen on for incoming connections.",
-                self.config.listen_port, c,
-                min_val=1024, max_val=65535,
-            )
+            self._console._file = buf  # type: ignore[attr-defined]
+        self._console.print(group)
+        rendered = buf.getvalue()
+        lines = rendered.split("\n")
+        while lines and lines[-1] == "":
+            lines.pop()
+        n = len(lines)
+        if n > term_h:
+            lines = lines[:term_h]
+        elif n < term_h:
+            lines.extend([" " * term_w] * (term_h - n))
+        return "\n".join(lines)
 
-    def _run_display(self) -> None:
-        c = self._section_color(1)
+    def _build_section_frame(
+        self, section_idx: int, term_w: int, term_h: int,
+    ) -> Group:
+        name, art, color = _SECTION_DEFS[section_idx]
+        cr, cg, cb = _hex_to_rgb(color)
+        t = time.time()
 
-        self.config.fps_limit = self._ask_int(
-            "FPS Limit",
-            "Terminal rendering frame rate. Higher = smoother but uses more CPU.",
-            self.config.fps_limit, c,
-            min_val=5, max_val=120,
-        )
+        bg = _build_crt_bg(term_w, term_h, color)
+        panel_w = min(56, term_w - 6)
+        panel_lines: list[Text] = []
 
-        self.config.brightness = self._ask_int(
-            "Brightness",
-            "Terminal brightness percentage. Adjust if colours look washed out or too dim.",
-            self.config.brightness, c,
-            min_val=50, max_val=150,
-        )
+        # Section header
+        header = Text()
+        hc = _hex(min(255, cr + 40), min(255, cg + 40), min(255, cb + 40))
+        header.append(_center(f"◈ {name} ◈", panel_w), Style(color=hc, bold=True))
+        panel_lines.append(header)
 
-        self.config.show_artwork = self._ask_bool(
-            "Show Artwork",
-            "Display album art as braille art on the main screen.",
-            self.config.show_artwork, c,
-        )
+        sep = Text()
+        sep.append(_center("━" * (panel_w - 8), panel_w), Style(color=_dim(color, 0.4)))
+        panel_lines.append(sep)
+        panel_lines.append(Text(""))
 
-        self.config.use_art_colors = self._ask_bool(
-            "Album Art Colours",
-            "Dynamically theme the UI from album artwork colours.",
-            self.config.use_art_colors, c,
-        )
+        # ASCII art
+        for al in art.split("\n"):
+            aline = Text()
+            flicker = 0.5 + 0.1 * math.sin(t * 3 + len(panel_lines) * 0.4)
+            ac = _hex(cr * flicker, cg * flicker, cb * flicker)
+            aline.append(_center(al, panel_w), Style(color=ac))
+            panel_lines.append(aline)
+        panel_lines.append(Text(""))
 
-        if not self.config.use_art_colors:
-            self.config.static_color = self._ask_hex_color(
-                "Static Colour",
-                "Fixed UI colour when album art colours are disabled.",
-                self.config.static_color, c,
-            )
+        # Items
+        items = _get_section_items(name, self.config)
+        for i, (label, key, itype, extra) in enumerate(items):
+            selected = i == self._cursor
+            line = Text()
 
-    def _run_playback(self) -> None:
-        c = self._section_color(2)
+            if itype == "continue":
+                panel_lines.append(Text(""))
+                line = Text()
+                btn_text = "  [ Continue ▸ ]  "
+                line.append(_center(btn_text, panel_w),
+                            Style(color=color if selected else "#555555", bold=selected))
+                panel_lines.append(line)
+                continue
 
-        self.config.auto_play = self._ask_bool(
-            "Auto Play on Connect",
-            "Automatically start playback when a music server connects.",
-            self.config.auto_play, c,
-        )
+            if itype in ("action_save", "action_cancel"):
+                is_save = itype == "action_save"
+                btn_c = "#00ff88" if is_save else "#ff4444"
+                btn_text = f"  [ {label} ]  "
+                line.append(_center(btn_text, panel_w),
+                            Style(color=btn_c if selected else "#555555", bold=selected))
+                panel_lines.append(line)
+                panel_lines.append(Text(""))
+                continue
 
-        self.config.auto_volume = self._ask_auto_volume(
-            "Auto Volume on Connect",
-            "Automatically set volume when a server connects.",
-            self.config.auto_volume, c,
-        )
+            cursor_c = color if selected else "#333333"
+            line.append("  ", Style())
+            line.append("▸ " if selected else "  ", Style(color=cursor_c, bold=selected))
 
-    def _run_protocol(self) -> None:
-        c = self._section_color(3)
+            label_c = "#ffffff" if selected else "#888888"
+            line.append(f"{label:<22}", Style(color=label_c, bold=selected))
 
-        self.config.sendspin_enabled = self._ask_bool(
-            "SendSpin Receiver",
-            "Enable the SendSpin/Music Assistant protocol receiver.",
-            self.config.sendspin_enabled, c,
-        )
+            if key and self._editing == key:
+                display = self._edit_buf
+                cursor_blink = int(t * 2) % 2 == 0
+                line.append(f" {display}", Style(color="#ffffff", bold=True))
+                line.append("▌" if cursor_blink else " ", Style(color=color))
+            elif itype == "bool":
+                val = getattr(self.config, key, False)
+                if val:
+                    line.append("    ON", Style(color="#44ff44" if selected else "#338833", bold=selected))
+                else:
+                    line.append("   OFF", Style(color="#ff4444" if selected else "#883333", bold=selected))
+                if selected:
+                    line.append("  ◂▸", Style(color="#555555"))
+            elif itype == "int":
+                val = getattr(self.config, key, 0)
+                fmt = extra.get("format")
+                val_str = fmt(val) if fmt else str(val)
+                line.append(f"{val_str:>6}", Style(
+                    color=color if selected else "#666666", bold=selected))
+                if selected:
+                    line.append("  ◂▸", Style(color="#555555"))
+            elif itype == "choice":
+                val = getattr(self.config, key, "")
+                choices = extra.get("choices", [])
+                display = str(val).upper()
+                for cv, cl in choices:
+                    if cv == val:
+                        display = cl
+                        break
+                line.append(f"{display:>12}", Style(
+                    color=color if selected else "#666666", bold=selected))
+                if selected:
+                    line.append("  ◂▸", Style(color="#555555"))
+            elif itype == "string":
+                val = getattr(self.config, key, "")
+                placeholder = extra.get("placeholder", "")
+                display = val or placeholder
+                if len(display) > 20:
+                    display = display[:17] + "..."
+                display_c = (color if selected else "#666666") if val else "#444444"
+                line.append(f" {display}", Style(color=display_c, italic=not val))
+                if selected:
+                    line.append("  Enter▸", Style(color="#555555"))
 
-        self.config.airplay_enabled = self._ask_bool(
-            "AirPlay Receiver",
-            "Enable the AirPlay 2 protocol receiver.",
-            self.config.airplay_enabled, c,
-        )
+            panel_lines.append(line)
 
-        self.config.swap_prompt = self._ask_bool(
-            "Device Swap Prompt",
-            "Show a Y/N prompt when a second device tries to connect.",
-            self.config.swap_prompt, c,
-        )
+        while len(panel_lines) < 22:
+            panel_lines.append(Text(""))
 
-        if not self.config.swap_prompt:
-            self.config.swap_auto_action = self._ask_choice(
-                "Auto Swap Action",
-                "What to do automatically when a new device connects\n"
-                "  and the swap prompt is disabled.",
-                [("accept", "Accept new device"),
-                 ("deny", "Deny new device")],
-                self.config.swap_auto_action, c,
-            )
+        # Section progress indicator
+        sections = self._get_section_list()
+        total = len(sections)
+        try:
+            current = sections.index(section_idx) + 1
+        except ValueError:
+            current = 0
+        progress_line = Text()
+        progress_line.append(_center(f"Step {current} of {total}", panel_w),
+                             Style(color=_dim(color, 0.4)))
+        panel_lines.append(progress_line)
 
-        self.config.forget_airplay_devices = self._ask_bool(
-            "Forget AirPlay Devices on Exit",
-            "Clear AirPlay pairing data on close so devices must re-pair.\n"
-            "  Useful if you share this machine with others.",
-            self.config.forget_airplay_devices, c,
-        )
+        # Key hints
+        hints = Text()
+        hint_c = _dim(color, 0.5)
+        hints.append(_center("↑↓ Navigate  ←→ Adjust  Enter Edit  Esc Skip", panel_w),
+                      Style(color=hint_c))
+        panel_lines.append(hints)
 
-    def _run_spotify(self) -> None:
-        c = self._section_color(4)
+        return _compose_panel(bg, panel_lines, panel_w, term_w, term_h)
 
-        self.config.spotify_enabled = self._ask_bool(
-            "Spotify Connect",
-            "Enable the Spotify Connect receiver (requires librespot).",
-            self.config.spotify_enabled, c,
-        )
+    def _build_summary_frame(self, term_w: int, term_h: int) -> Group:
+        name, art, color = _SECTION_DEFS[-1]
+        bg = _build_crt_bg(term_w, term_h, color)
+        panel_w = min(56, term_w - 6)
+        panel_lines: list[Text] = []
 
-        if self.config.spotify_enabled:
-            self.config.spotify_client_id = self._ask_string(
-                "Spotify Client ID",
-                "Your Spotify Web API client ID for metadata and controls.\n"
-                "  Create one at https://developer.spotify.com/dashboard",
-                self.config.spotify_client_id, c,
-            )
+        header = Text()
+        header.append(_center("◈ SETUP SUMMARY ◈", panel_w), Style(color=color, bold=True))
+        panel_lines.append(header)
+        sep = Text()
+        sep.append(_center("━" * (panel_w - 8), panel_w), Style(color=_dim(color, 0.4)))
+        panel_lines.append(sep)
+        panel_lines.append(Text(""))
 
-            self.config.spotify_username = self._ask_string(
-                "Spotify Username",
-                "Your Spotify username (for librespot authentication).\n"
-                "  Leave empty to use zeroconf discovery.",
-                self.config.spotify_username, c,
-            )
-
-            self.config.spotify_bitrate = self._ask_choice(
-                "Bitrate",
-                "Audio quality for Spotify playback.",
-                [("160", "160 kbps (Normal)"),
-                 ("320", "320 kbps (High)")],
-                str(self.config.spotify_bitrate), c,
-            )
-            self.config.spotify_bitrate = int(self.config.spotify_bitrate)
-
-            self.config.spotify_device_name = self._ask_string(
-                "Device Name",
-                "Name shown in Spotify app when casting.",
-                self.config.spotify_device_name or self.config.client_name, c,
-            )
-
-    def _run_dj(self) -> None:
-        import sys as _sys
-        c = self._section_color(5)
-
-        modes = [
-            ("mixed", "Channel A = SendSpin, Channel B = AirPlay"),
-            ("dual_sendspin", "Both channels from SendSpin receivers"),
-            ("dual_airplay", "Both channels from AirPlay receivers"),
-        ]
-        if _sys.platform != "win32":
-            modes += [
-                ("spotify_sendspin", "Channel A = SendSpin, Channel B = Spotify"),
-                ("spotify_airplay", "Channel A = AirPlay, Channel B = Spotify"),
-                ("dual_spotify", "Both channels from Spotify"),
-            ]
-
-        self.config.dj_source_mode = self._ask_choice(
-            "DJ Source Mode",
-            "Which audio sources feed the two DJ mixer channels.",
-            modes,
-            self.config.dj_source_mode, c,
-        )
-
-    # ── Summary ──
-
-    def _show_summary(self) -> str:
-        """Show all settings with changes highlighted. Returns 'save'/'edit'/'cancel'."""
-        self.console.print()
-
-        table = Table(
-            title="[bold bright_cyan]◈ SETUP SUMMARY ◈[/]",
-            border_style="bright_cyan",
-            show_header=True,
-            header_style="bold",
-            width=min(72, _term_w() - 4),
-            padding=(0, 1),
-        )
-        table.add_column("Setting", style="bright_white", min_width=26)
-        table.add_column("Value", min_width=20)
-        table.add_column("", min_width=3)
-
-        # Fields to display (label, field_name, formatter)
-        display_fields: list[tuple[str, str]] = [
+        fields = [
             ("Client Name", "client_name"),
-            ("Connection Mode", "mode"),
+            ("Mode", "mode"),
             ("Server URL", "server_url"),
             ("Listen Port", "listen_port"),
-            ("FPS Limit", "fps_limit"),
+            ("FPS", "fps_limit"),
             ("Brightness", "brightness"),
-            ("Show Artwork", "show_artwork"),
-            ("Album Art Colours", "use_art_colors"),
-            ("Static Colour", "static_color"),
+            ("Artwork", "show_artwork"),
+            ("Art Colours", "use_art_colors"),
             ("Auto Play", "auto_play"),
             ("Auto Volume", "auto_volume"),
-            ("SendSpin Enabled", "sendspin_enabled"),
-            ("AirPlay Enabled", "airplay_enabled"),
-            ("Spotify Connect", "spotify_enabled"),
-            ("Spotify Client ID", "spotify_client_id"),
-            ("Spotify Username", "spotify_username"),
+            ("SendSpin", "sendspin_enabled"),
+            ("AirPlay", "airplay_enabled"),
+            ("Spotify", "spotify_enabled"),
             ("Spotify Bitrate", "spotify_bitrate"),
-            ("Spotify Device Name", "spotify_device_name"),
-            ("Swap Prompt", "swap_prompt"),
-            ("Swap Auto Action", "swap_auto_action"),
-            ("Forget AirPlay", "forget_airplay_devices"),
-            ("DJ Source Mode", "dj_source_mode"),
+            ("DJ Mode", "dj_source_mode"),
         ]
-
-        for label, field in display_fields:
-            new_val = getattr(self.config, field)
-            old_val = getattr(self._original, field)
-            changed = new_val != old_val
-
-            # Format value
-            if isinstance(new_val, bool):
-                val_str = "ON" if new_val else "OFF"
-            elif field == "auto_volume":
-                val_str = "Disabled" if new_val == -1 else f"{new_val}%"
-            elif field == "brightness":
-                val_str = f"{new_val}%"
-            else:
-                val_str = str(new_val) if new_val else "(empty)"
-
-            # Skip irrelevant fields
+        for label, field in fields:
+            val = getattr(self.config, field)
+            old = getattr(self._original, field)
             if field == "server_url" and self.config.mode != "connect":
                 continue
             if field == "listen_port" and self.config.mode != "listen":
                 continue
-            if field == "static_color" and self.config.use_art_colors:
+            if field in ("spotify_enabled", "spotify_bitrate") and IS_WINDOWS:
                 continue
-            if field in ("spotify_client_id", "spotify_username", "spotify_bitrate", "spotify_device_name") and not self.config.spotify_enabled:
-                continue
-            if field == "swap_auto_action" and self.config.swap_prompt:
-                continue
+            changed = val != old
 
-            val_style = "bold bright_green" if changed else "dim"
-            marker = "[bright_green]◂[/]" if changed else ""
-            table.add_row(label, f"[{val_style}]{val_str}[/]", marker)
+            if isinstance(val, bool):
+                val_str = "ON" if val else "OFF"
+            elif field == "auto_volume":
+                val_str = "OFF" if val == -1 else f"{val}%"
+            elif field == "brightness":
+                val_str = f"{val}%"
+            else:
+                val_str = str(val) if val else "(default)"
 
-        self.console.print(table)
-        self.console.print()
+            line = Text()
+            line.append(f"  {label:<20}", Style(color="#aaaaaa"))
+            vc = "#44ff88" if changed else "#666666"
+            line.append(f"{val_str:<16}", Style(color=vc, bold=changed))
+            if changed:
+                line.append("◂", Style(color="#44ff88"))
+            panel_lines.append(line)
 
-        return Prompt.ask(
-            "[bright_cyan]▸[/] What would you like to do?",
-            choices=["save", "edit", "cancel"],
-            default="save",
-            console=self.console,
-        )
+        while len(panel_lines) < 22:
+            panel_lines.append(Text(""))
+
+        items = _get_section_items("SUMMARY", self.config)
+        for i, (label, _, itype, _) in enumerate(items):
+            selected = i == self._cursor
+            line = Text()
+            is_save = itype == "action_save"
+            btn_c = "#00ff88" if is_save else "#ff4444"
+            btn_text = f"  [ {label} ]  "
+            line.append(_center(btn_text, panel_w),
+                        Style(color=btn_c if selected else "#555555", bold=selected))
+            panel_lines.append(line)
+
+        panel_lines.append(Text(""))
+        hints = Text()
+        hints.append(_center("↑↓ Select  Enter Confirm", panel_w), Style(color=_dim(color, 0.5)))
+        panel_lines.append(hints)
+
+        return _compose_panel(bg, panel_lines, panel_w, term_w, term_h)
+
+    # ── Key handling ──
+
+    def _handle_key(self, k: str, section: str) -> None:
+        items = _get_section_items(section, self.config)
+        n_items = len(items)
+
+        if self._editing:
+            if k in ("\r", "\n"):
+                key = self._editing
+                val = self._edit_buf
+                # Type coercion for int fields
+                field_type = type(getattr(self.config, key, ""))
+                if field_type == int:
+                    try:
+                        val = int(val)
+                    except ValueError:
+                        val = getattr(self.config, key)
+                setattr(self.config, key, val)
+                self._editing = ""
+                self._edit_buf = ""
+            elif k in ("\x1b", "escape"):
+                self._editing = ""
+                self._edit_buf = ""
+            elif k in ("\x7f", "backspace"):
+                self._edit_buf = self._edit_buf[:-1]
+            elif len(k) == 1 and k.isprintable():
+                self._edit_buf += k
+            return
+
+        if k == "arrow_up":
+            self._cursor = (self._cursor - 1) % n_items
+        elif k == "arrow_down":
+            self._cursor = (self._cursor + 1) % n_items
+        elif k in ("\x1b", "escape"):
+            for i, (_, _, itype, _) in enumerate(items):
+                if itype == "continue":
+                    self._cursor = i
+                    break
+
+        elif k in ("\r", "\n", " "):
+            if self._cursor >= n_items:
+                return
+            label, key, itype, extra = items[self._cursor]
+
+            if itype == "continue":
+                self._section_done = True
+            elif itype == "action_save":
+                self._result = "save"
+                self._section_done = True
+            elif itype == "action_cancel":
+                self._result = "cancel"
+                self._section_done = True
+            elif itype == "bool":
+                val = getattr(self.config, key, False)
+                setattr(self.config, key, not val)
+            elif itype == "string":
+                self._editing = key
+                self._edit_buf = str(getattr(self.config, key, ""))
+            elif itype == "choice":
+                self._cycle_choice(key, extra, 1)
+            elif itype == "int":
+                self._editing = key
+                self._edit_buf = str(getattr(self.config, key, 0))
+
+        elif k in ("arrow_left", "arrow_right"):
+            if self._cursor >= n_items:
+                return
+            _, key, itype, extra = items[self._cursor]
+            direction = 1 if k == "arrow_right" else -1
+
+            if itype == "bool":
+                val = getattr(self.config, key, False)
+                setattr(self.config, key, not val)
+            elif itype == "int":
+                val = getattr(self.config, key, 0)
+                step = extra.get("step", 1)
+                mn, mx = extra.get("min", 0), extra.get("max", 100)
+                setattr(self.config, key, max(mn, min(mx, val + step * direction)))
+            elif itype == "choice":
+                self._cycle_choice(key, extra, direction)
+
+    def _cycle_choice(self, key: str, extra: dict, direction: int) -> None:
+        val = getattr(self.config, key, "")
+        choices = extra.get("choices", [])
+        vals = [cv for cv, _ in choices]
+        try:
+            idx = vals.index(val)
+        except ValueError:
+            idx = 0
+        setattr(self.config, key, vals[(idx + direction) % len(vals)])
+
+    # ── Input parsing ──
+
+    def _parse_input(self, data: bytes, section: str) -> None:
+        i = 0
+        while i < len(data):
+            if data[i:i + 3] == b"\x1b[A":
+                self._handle_key("arrow_up", section)
+                i += 3
+            elif data[i:i + 3] == b"\x1b[B":
+                self._handle_key("arrow_down", section)
+                i += 3
+            elif data[i:i + 3] == b"\x1b[C":
+                self._handle_key("arrow_right", section)
+                i += 3
+            elif data[i:i + 3] == b"\x1b[D":
+                self._handle_key("arrow_left", section)
+                i += 3
+            elif data[i:i + 1] == b"\x1b":
+                rest = data[i + 1:]
+                if not rest or rest[0:1] not in (b"[", b"O"):
+                    self._handle_key("escape", section)
+                    i += 1
+                else:
+                    i += 1
+                    while i < len(data) and not data[i:i + 1].isalpha() and data[i:i + 1] != b"~":
+                        i += 1
+                    i += 1
+            elif data[i:i + 1] == b"\x03":
+                self._result = "cancel"
+                self._section_done = True
+                self._running = False
+                i += 1
+            elif data[i:i + 1] == b"\x7f":
+                self._handle_key("backspace", section)
+                i += 1
+            elif data[i:i + 1] in (b"\r", b"\n"):
+                self._handle_key("\r", section)
+                i += 1
+            elif data[i:i + 1] == b"\t":
+                self._handle_key("arrow_down", section)
+                i += 1
+            else:
+                ch = data[i:i + 1].decode("ascii", errors="ignore")
+                if ch:
+                    self._handle_key(ch, section)
+                i += 1
+
+    # ── Section TUI loop ──
+
+    def _get_section_list(self) -> list[int]:
+        sections = [0, 1, 2, 3]  # CONNECTION, DISPLAY, PLAYBACK, PROTOCOL
+        if not IS_WINDOWS:
+            sections.append(4)  # SPOTIFY
+        sections.append(5)  # DJ MODE
+        return sections
+
+    def _run_section(self, section_idx: int) -> None:
+        name = _SECTION_DEFS[section_idx][0]
+        self._cursor = 0
+        self._editing = ""
+        self._section_done = False
+        is_summary = name == "SUMMARY"
+
+        if IS_WINDOWS:
+            self._run_section_windows(section_idx, name, is_summary)
+        else:
+            self._run_section_unix(section_idx, name, is_summary)
+
+    def _run_section_unix(self, section_idx: int, name: str, is_summary: bool) -> None:
+        import select
+        import termios
+        import tty
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            sys.stdout.write("\x1b[?1049h\x1b[?25l")
+            sys.stdout.flush()
+
+            while not self._section_done and self._running:
+                tw, th = _term_size()
+                if is_summary:
+                    frame = self._build_summary_frame(tw, th)
+                else:
+                    frame = self._build_section_frame(section_idx, tw, th)
+                rendered = self._render_to_ansi(frame, tw, th)
+                sys.stdout.write(f"\x1b[H{rendered}")
+                sys.stdout.flush()
+
+                ready = select.select([fd], [], [], 1.0 / 24)
+                if ready[0]:
+                    data = os.read(fd, 64)
+                    if data:
+                        self._parse_input(data, name)
+        finally:
+            sys.stdout.write("\x1b[?25h\x1b[?1049l")
+            sys.stdout.flush()
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+    def _run_section_windows(self, section_idx: int, name: str, is_summary: bool) -> None:
+        import msvcrt
+        _ARROW_MAP = {b"H": "arrow_up", b"P": "arrow_down", b"M": "arrow_right", b"K": "arrow_left"}
+
+        os.system("cls")
+        try:
+            while not self._section_done and self._running:
+                tw, th = _term_size()
+                if is_summary:
+                    frame = self._build_summary_frame(tw, th)
+                else:
+                    frame = self._build_section_frame(section_idx, tw, th)
+                rendered = self._render_to_ansi(frame, tw, th)
+                sys.stdout.write(f"\x1b[H{rendered}")
+                sys.stdout.flush()
+
+                if msvcrt.kbhit():
+                    data = msvcrt.getch()
+                    if data in (b"\xe0", b"\x00"):
+                        data2 = msvcrt.getch()
+                        arrow = _ARROW_MAP.get(data2)
+                        if arrow:
+                            self._handle_key(arrow, name)
+                    elif data == b"\x03":
+                        self._result = "cancel"
+                        self._section_done = True
+                        self._running = False
+                    elif data == b"\r":
+                        self._handle_key("\r", name)
+                    elif data == b"\x1b":
+                        self._handle_key("escape", name)
+                    elif data == b"\x08":
+                        self._handle_key("backspace", name)
+                    elif data == b"\t":
+                        self._handle_key("arrow_down", name)
+                    else:
+                        ch = data.decode("ascii", errors="ignore")
+                        if ch:
+                            self._handle_key(ch, name)
+                else:
+                    time.sleep(1.0 / 24)
+        finally:
+            os.system("cls")
 
     # ── Main flow ──
 
     def run(self) -> Config:
         """Run the full setup wizard. Returns the (possibly modified) Config."""
-        import sys as _sys
-        sections = [
-            ("CONNECTION", self._run_connection),
-            ("DISPLAY",    self._run_display),
-            ("PLAYBACK",   self._run_playback),
-            ("PROTOCOL",   self._run_protocol),
-        ]
-        if _sys.platform != "win32":
-            sections.append(("SPOTIFY", self._run_spotify))
-        sections.append(("DJ MODE", self._run_dj))
+        sections = self._get_section_list()
 
         self._play_intro()
 
-        for idx, (name, runner) in enumerate(sections):
-            self._play_section_intro(idx)
-            color = self._section_color(idx)
-            if self._section_skip_prompt(name, color):
-                continue
-            runner()
+        for idx in sections:
+            self._run_section(idx)
+            if not self._running:
+                break
 
-        # Summary loop
-        while True:
-            action = self._show_summary()
-            if action == "save":
-                self.config.save()
-                self._play_outro("#00ff88")
-                self.console.print()
-                from alfieprime_musiciser.config import CONFIG_FILE
-                self.console.print(
-                    f"[bold bright_green]✓[/] Config saved to [dim]{CONFIG_FILE}[/]"
-                )
-                self.console.print()
-                return self.config
-            elif action == "edit":
-                self.console.print()
-                # Let user pick which section to re-edit
-                self.console.print("[bold]Sections:[/]")
-                for i, (name, _) in enumerate(sections):
-                    color = self._section_color(i)
-                    self.console.print(
-                        f"  [{color}]{i + 1}[/] - {name}"
-                    )
-                self.console.print()
-                choice = Prompt.ask(
-                    "[bright_cyan]▸[/] Which section?",
-                    choices=[str(i + 1) for i in range(len(sections))],
-                    console=self.console,
-                )
-                idx = int(choice) - 1
-                self._play_section_intro(idx)
-                sections[idx][1]()
-            else:
-                # Cancel — return original config
-                self._play_outro("#ff4444")
-                self.console.print()
-                self.console.print("[dim]Setup cancelled. Using previous settings.[/]")
-                self.console.print()
-                return self._original
+        if self._running:
+            self._cursor = 0
+            self._section_done = False
+            summary_idx = len(_SECTION_DEFS) - 1
+            self._run_section(summary_idx)
+
+        if self._result == "save":
+            self.config.save()
+            self._play_outro("#00ff88")
+            return self.config
+        else:
+            self._play_outro("#ff4444")
+            return self._original
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
-def run_setup_wizard(console: Console, existing: Config | None = None) -> Config:
+def run_setup_wizard(console: Console | None = None, existing: Config | None = None) -> Config:
     """Run the animated setup wizard. Returns the final Config."""
-    wizard = SetupWizard(console, existing)
+    wizard = SetupWizard(existing)
     return wizard.run()

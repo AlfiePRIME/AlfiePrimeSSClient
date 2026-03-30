@@ -447,41 +447,48 @@ def main() -> None:
     # Load or create config
     config = Config.load()
 
-    if config is None or args.setup:
-        # First run or --setup: run the animated wizard
+    ran_setup = False
+    if config is None or args.setup or (config is not None and config.run_setup):
+        # First run, --setup flag, or re-run requested from settings
         config = run_setup_wizard(console, existing=config)
+        ran_setup = True
+        # Clear the re-run flag so it doesn't loop
+        if config.run_setup:
+            config.run_setup = False
+            config.save()
 
-    # Connection test + retry loop
-    while True:
-        console.print(f"[dim]Mode:[/] [bright_cyan]{config.mode}[/]", highlight=False)
-        if config.mode == "connect":
-            console.print(f"[dim]Server:[/] [bright_cyan]{config.server_url}[/]", highlight=False)
-        else:
-            console.print(f"[dim]Listen port:[/] [bright_cyan]{config.listen_port}[/]", highlight=False)
-        console.print(f"[dim]Client name:[/] [bright_cyan]{config.client_name}[/]", highlight=False)
-        console.print()
-
-        console.print("[dim]Testing connection...[/]")
-        error = _test_connection(config, console)
-
-        if error is None:
-            console.print("[bright_green]OK![/] Starting party...\n")
-            break
-        else:
-            console.print(f"\n[bold red]Connection failed:[/] {error}\n")
-            choice = Prompt.ask(
-                "What would you like to do?",
-                choices=["retry", "setup", "quit"],
-                default="setup",
-                console=console,
-            )
-            if choice == "retry":
-                continue
-            elif choice == "setup":
-                config = run_setup_wizard(console, existing=config)
-                continue
+    if not ran_setup:
+        # Connection test + retry loop (skip after setup — go straight to launch)
+        while True:
+            console.print(f"[dim]Mode:[/] [bright_cyan]{config.mode}[/]", highlight=False)
+            if config.mode == "connect":
+                console.print(f"[dim]Server:[/] [bright_cyan]{config.server_url}[/]", highlight=False)
             else:
-                return
+                console.print(f"[dim]Listen port:[/] [bright_cyan]{config.listen_port}[/]", highlight=False)
+            console.print(f"[dim]Client name:[/] [bright_cyan]{config.client_name}[/]", highlight=False)
+            console.print()
+
+            console.print("[dim]Testing connection...[/]")
+            error = _test_connection(config, console)
+
+            if error is None:
+                console.print("[bright_green]OK![/] Starting party...\n")
+                break
+            else:
+                console.print(f"\n[bold red]Connection failed:[/] {error}\n")
+                choice = Prompt.ask(
+                    "What would you like to do?",
+                    choices=["retry", "setup", "quit"],
+                    default="setup",
+                    console=console,
+                )
+                if choice == "retry":
+                    continue
+                elif choice == "setup":
+                    config = run_setup_wizard(console, existing=config)
+                    break  # after manual setup retry, launch directly
+                else:
+                    return
 
     # Run!
     try:

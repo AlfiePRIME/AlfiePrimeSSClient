@@ -718,7 +718,7 @@ class Audio:
         """
         msec until intended playout of RTP packet with timestamp rtp_ts
         """
-        if self.anchorRTPTimestamp is None:
+        if not self.anchorRTPTimestamp:
             return 0
         rtp_ts_diff = rtp_ts - self.anchorRTPTimestamp
         millis_to_anchor = int((time.monotonic_ns() - self.anchorMonotonicNanosLocal) * 1e-6)

@@ -374,15 +374,19 @@ class DJMixin:
 
     def _stop_dj_mode(self) -> None:
         """Deactivate DJ mode: stop mixer, restore native audio."""
-        if self._dj_mixer is not None:
-            self._dj_mixer.stop()
-            self._dj_mixer = None
+        mixer = self._dj_mixer
+        self._dj_mode = False
         self._dj_viz_a = None
         self._dj_viz_b = None
-        self._dj_mode = False
-        # Notify receivers to restore native audio
+        # Notify receivers to unmute native audio BEFORE stopping mixer.
+        # This ensures the audio child resumes playback while the mixer is
+        # still draining its ring buffer, eliminating the silence gap.
         if self._dj_activate_callback:  # type: ignore[attr-defined]
             self._dj_activate_callback(False, None)  # type: ignore[attr-defined]
+        # Now stop the mixer — audio child is already playing so no gap
+        if mixer is not None:
+            mixer.stop()
+        self._dj_mixer = None
         logger.info("DJ mode deactivated")
 
     def _dj_trigger_smartfade(self) -> None:

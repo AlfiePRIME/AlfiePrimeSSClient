@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import threading
 import time
 import os
 import signal
@@ -254,6 +255,14 @@ async def _run_with_config(
                 receiver._dj_mixer = mixer
                 if airplay_receiver is not None:
                     airplay_receiver._dj_mixer = mixer
+            # Delay-mute the AirPlay native sink so the mixer ring buffer has
+            # time to fill (~60ms).  This prevents a silence gap on DJ enter.
+            if airplay_receiver is not None:
+                def _delayed_airplay_mute():
+                    time.sleep(0.06)
+                    airplay_receiver.set_sink_muted(True)
+                    logger.info("DJ enter: AirPlay sink muted (delayed)")
+                threading.Thread(target=_delayed_airplay_mute, daemon=True).start()
             logger.info("DJ mode: native audio muted, mixer connected (%s)", _dj)
         else:
             # Restore native audio — clear mixer on all receivers

@@ -161,14 +161,21 @@ def render_transport_controls(
         text.append(f" {label} ", style)
         buttons[name] = (start, text.cell_len)
 
+    has_shuffle = "shuffle" in cmds or "unshuffle" in cmds
+    has_prev = "previous" in cmds
+    has_next = "next" in cmds
+    has_repeat = "repeat_off" in cmds or "repeat" in cmds
+
     # Shuffle
-    shuf_color = th.accent if shuffle else th.primary_dim
-    _add_button("shuffle", "\u21c4", shuf_color, dim="shuffle" not in cmds and "unshuffle" not in cmds)
-    text.append(" ", _STYLE_EMPTY)
+    if has_shuffle:
+        shuf_color = th.accent if shuffle else th.primary_dim
+        _add_button("shuffle", "\u21c4", shuf_color)
+        text.append(" ", _STYLE_EMPTY)
 
     # Previous
-    _add_button("previous", "\u23ee", "#aaaaaa", dim="previous" not in cmds)
-    text.append(" ", _STYLE_EMPTY)
+    if has_prev:
+        _add_button("previous", "\u23ee", "#aaaaaa")
+        text.append(" ", _STYLE_EMPTY)
 
     # Play / Pause
     if is_playing:
@@ -178,26 +185,32 @@ def render_transport_controls(
     text.append(" ", _STYLE_EMPTY)
 
     # Next
-    _add_button("next", "\u23ed", "#aaaaaa", dim="next" not in cmds)
-    text.append(" ", _STYLE_EMPTY)
+    if has_next:
+        _add_button("next", "\u23ed", "#aaaaaa")
+        text.append(" ", _STYLE_EMPTY)
 
     # Repeat
-    if repeat_mode == "one":
-        rep_label, rep_color = "\u21bb\u00b9", th.accent
-    elif repeat_mode == "all":
-        rep_label, rep_color = "\u21bb", th.accent
-    else:
-        rep_label, rep_color = "\u21bb", th.primary_dim
-    _add_button("repeat", rep_label, rep_color, dim="repeat_off" not in cmds)
+    if has_repeat:
+        if repeat_mode == "one":
+            rep_label, rep_color = "\u21bb\u00b9", th.accent
+        elif repeat_mode == "all":
+            rep_label, rep_color = "\u21bb", th.accent
+        else:
+            rep_label, rep_color = "\u21bb", th.primary_dim
+        _add_button("repeat", rep_label, rep_color)
 
     # Key hints
     text.append("   ", _STYLE_EMPTY)
     _hs = hint_style_fn or (lambda _k, _a: _STYLE_HINT)
-    text.append("[S]huf ", _hs("s", shuffle))
-    text.append("[B]ack ", _hs("b", False))
+    if has_shuffle:
+        text.append("[S]huf ", _hs("s", shuffle))
+    if has_prev:
+        text.append("[B]ack ", _hs("b", False))
     text.append("[P]lay ", _hs("p", False))
-    text.append("[N]ext ", _hs("n", False))
-    text.append("[R]epeat ", _hs("r", repeat_mode != "off"))
+    if has_next:
+        text.append("[N]ext ", _hs("n", False))
+    if has_repeat:
+        text.append("[R]epeat ", _hs("r", repeat_mode != "off"))
     text.append("[↑↓]Vol ", _hs("vol", False))
     text.append("[M]ute ", _hs("m", muted))
     if dual_connected:

@@ -1157,15 +1157,13 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                     i += 1
                 i += 1  # skip the final char
             elif data[i:i + 1] == b"\x03":
-                # Ctrl+C
+                # Ctrl+C — just stop; SIGINT is sent after the exit animation
                 self.stop()
-                os.kill(os.getpid(), signal.SIGINT)
                 i += 1
             else:
                 ch = data[i:i + 1]
                 if (ch == b"q" or ch == b"Q") and not self._settings_open:
                     self.stop()
-                    os.kill(os.getpid(), signal.SIGINT)
                 else:
                     self._handle_key(ch.decode("ascii", errors="ignore"))
                 i += 1
@@ -1528,6 +1526,12 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
 
         finally:
             # ── CRT shutdown animation ──
+            # Use synchronous time.sleep() so the animation can't be
+            # cancelled by asyncio event loop shutdown (Windows SIGINT).
+            input_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await input_task
+
             term_w, term_h = self._get_terminal_size()
             last_segs = self._render_frame_gui()
             fps = max(30, self._config.fps_limit if self._config else 60)
@@ -1547,7 +1551,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 frame = self._crt_to_ansi(segs, term_w, term_h)
                 sys.stdout.write(f"\x1b[H{frame}")
                 sys.stdout.flush()
-                await asyncio.sleep(1 / fps)
+                time.sleep(1 / fps)
 
             # Phase 2: Hold on "Shutting down..." static until cleanup is done
             while not self._cleanup_done.wait(timeout=0):
@@ -1555,7 +1559,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 frame = self._crt_to_ansi(segs, term_w, term_h)
                 sys.stdout.write(f"\x1b[H{frame}")
                 sys.stdout.flush()
-                await asyncio.sleep(1 / 30)
+                time.sleep(1 / 30)
 
             # Phase 3: Line shrinks to dot and fades (progress 0.55-1.0)
             duration_p3 = 0.54  # 0.45 * 1.2s
@@ -1566,15 +1570,14 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 frame = self._crt_to_ansi(segs, term_w, term_h)
                 sys.stdout.write(f"\x1b[H{frame}")
                 sys.stdout.flush()
-                await asyncio.sleep(1 / fps)
+                time.sleep(1 / fps)
 
             self._running = False
             # Reset terminal title and leave alternate screen
             sys.stdout.write("\x1b]0;\x07\x1b[?25h\x1b[?1049l")
             sys.stdout.flush()
-            input_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await input_task
+            # Now signal the process to shut down (exits asyncio.gather)
+            os.kill(os.getpid(), signal.SIGINT)
 
     async def _run_gui(self) -> None:
         """Run inside a standalone tkinter window (separate process)."""

@@ -120,7 +120,8 @@ _SECTION_DEFS = [
     ("SUMMARY", _ART_SUMMARY, "#00ff88"),
 ]
 
-_TITLE_BANNER = " A L F I E P R I M E   S E T U P "
+_TITLE_BANNER_SETUP = " A L F I E P R I M E   S E T U P "
+_TITLE_BANNER_NORMAL = " A L F I E P R I M E   M U S I C I S E R "
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -179,8 +180,11 @@ def _hsv_to_rgb_simple(h: float, s: float, v: float) -> tuple[int, int, int]:
 def _build_intro_frame(
     progress: float, term_w: int, term_h: int,
     subtitle: str = "Interactive Setup Wizard",
+    title_banner: str = "",
 ) -> Group:
     """Intro splash: boom box materialises with title banner."""
+    if not title_banner:
+        title_banner = _TITLE_BANNER_NORMAL
     lines: list[Text] = []
     art_lines = _ART_INTRO.split("\n")
     art_h = len(art_lines)
@@ -189,13 +193,20 @@ def _build_intro_frame(
     start_y = max(0, (term_h - total_h) // 2)
     t = time.time()
 
+    # All elements center relative to the art block width
+    block_w = art_max_w
+    block_pad = max(0, (term_w - block_w) // 2)
+
+    def _center_in_block(text_len: int) -> int:
+        """Return left padding to center text within the art block."""
+        return block_pad + max(0, (block_w - text_len) // 2)
+
     for row in range(term_h):
         line = Text()
         rel_row = row - start_y
 
         if 0 <= rel_row < art_h:
             art_line = art_lines[rel_row]
-            pad = max(0, (term_w - art_max_w) // 2)
             if progress < 0.4:
                 p = progress / 0.4
                 result = []
@@ -208,7 +219,7 @@ def _build_intro_frame(
                         result.append(random.choice("░▒▓·"))
                 hue = (t * 0.3 + rel_row * 0.05) % 1.0
                 r, g, b = _hsv_to_rgb_simple(hue, 0.7, 0.4 + 0.4 * p)
-                line.append(" " * pad)
+                line.append(" " * block_pad)
                 line.append("".join(result), Style(color=_hex(r, g, b)))
             else:
                 p2 = min(1.0, (progress - 0.4) / 0.3)
@@ -216,15 +227,15 @@ def _build_intro_frame(
                 br = 0.7 + 0.3 * p2
                 flicker = 1.0 + 0.02 * math.sin(t * 5 + rel_row)
                 r, g, b = _hsv_to_rgb_simple(hue, 0.6, br * flicker)
-                line.append(" " * pad)
+                line.append(" " * block_pad)
                 line.append(art_line, Style(color=_hex(r, g, b)))
 
         elif rel_row == art_h + 1 and progress > 0.5:
             p3 = min(1.0, (progress - 0.5) / 0.3)
-            pad = max(0, (term_w - len(_TITLE_BANNER)) // 2)
-            chars_visible = int(len(_TITLE_BANNER) * p3)
+            pad = _center_in_block(len(title_banner))
+            chars_visible = int(len(title_banner) * p3)
             line.append(" " * pad)
-            for i, ch in enumerate(_TITLE_BANNER):
+            for i, ch in enumerate(title_banner):
                 if i < chars_visible:
                     hue = (t * 0.2 + i * 0.03) % 1.0
                     r, g, b = _hsv_to_rgb_simple(hue, 0.8, 0.9)
@@ -234,9 +245,9 @@ def _build_intro_frame(
 
         elif rel_row == art_h + 2 and progress > 0.7:
             p4 = min(1.0, (progress - 0.7) / 0.2)
-            bar_w = int(40 * p4)
+            bar_w = min(block_w, int(block_w * p4))
             bar = "━" * bar_w
-            pad = max(0, (term_w - 40) // 2)
+            pad = _center_in_block(block_w)
             hue = (t * 0.1) % 1.0
             r, g, b = _hsv_to_rgb_simple(hue, 0.5, 0.5)
             line.append(" " * pad)
@@ -244,7 +255,7 @@ def _build_intro_frame(
 
         elif rel_row == art_h + 4 and progress > 0.85:
             sub = subtitle
-            pad = max(0, (term_w - len(sub)) // 2)
+            pad = _center_in_block(len(sub))
             p5 = min(1.0, (progress - 0.85) / 0.15)
             line.append(" " * pad)
             line.append(sub, Style(color=_hex(120 * p5, 120 * p5, 120 * p5)))
@@ -516,7 +527,11 @@ class SetupWizard:
             pass
 
     def _play_intro(self) -> None:
-        self._play_animation(_build_intro_frame, duration=2.5, subtitle="Interactive Setup Wizard")
+        self._play_animation(
+            _build_intro_frame, duration=2.5,
+            subtitle="Interactive Setup Wizard",
+            title_banner=_TITLE_BANNER_SETUP,
+        )
 
     def _play_outro(self, color: str = "#00ff88") -> None:
         self._play_animation(_build_outro_frame, duration=0.8, color=color)
@@ -1112,7 +1127,11 @@ def play_intro_animation(subtitle: str | None = None) -> None:
                 if elapsed >= duration:
                     break
                 progress = min(1.0, elapsed / duration)
-                frame = _build_intro_frame(progress, tw, th, subtitle=subtitle)
+                frame = _build_intro_frame(
+                    progress, tw, th,
+                    subtitle=subtitle,
+                    title_banner=_TITLE_BANNER_NORMAL,
+                )
                 live.update(frame)
                 time.sleep(1.0 / fps)
     except Exception:

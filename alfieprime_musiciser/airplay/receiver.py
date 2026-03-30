@@ -1107,15 +1107,15 @@ class AirPlayReceiver:
             ap_playing = snap.get("is_playing", False)
 
         if want_pause and ap_playing:
-            self.set_sink_muted(True)
+            self._remote.send_to_audio("pause")
             if state.active_source == "airplay":
                 state.is_playing = False
                 state.playback_speed = 0.0
             else:
                 state.write_to_snapshot("airplay", is_playing=False, playback_speed=0.0)
-            logger.info("AirPlay: DJ pause (local mute)")
+            logger.info("AirPlay: DJ pause")
         elif not want_pause and not ap_playing:
-            self.set_sink_muted(False)
+            self._remote.send_to_audio("play-0")
             if state.active_source == "airplay":
                 state.is_playing = True
                 state.playback_speed = 1.0
@@ -1123,7 +1123,7 @@ class AirPlayReceiver:
             else:
                 state.write_to_snapshot("airplay", is_playing=True, playback_speed=1.0,
                                         progress_update_time=time.monotonic())
-            logger.info("AirPlay: DJ play (local unmute)")
+            logger.info("AirPlay: DJ play")
 
     def _on_airplay_command(self, command: str) -> None:
         """Route transport commands to the correct source."""
@@ -1163,12 +1163,10 @@ class AirPlayReceiver:
             return
 
         # Play/pause — local only: mute/unmute our speaker output.
-        # The iPhone keeps streaming; we just silence the sink to avoid
-        # disrupting the audio child's timing (sending "pause"/"play-0"
-        # resets the RTP anchor and causes glitches on resume).
+        # The iPhone keeps streaming; we just stop/start writing PCM.
         if command == "play_pause":
             if state.is_playing:
-                self.set_sink_muted(True)
+                self._remote.send_to_audio("pause")
                 state.is_playing = False
                 state.playback_speed = 0.0
                 # Only pause visualizer when DJ mixer isn't running
@@ -1176,7 +1174,7 @@ class AirPlayReceiver:
                     self._visualizer.set_paused(True)
                 logger.info("AirPlay: paused (local mute)")
             else:
-                self.set_sink_muted(False)
+                self._remote.send_to_audio("play-0")
                 state.is_playing = True
                 state.playback_speed = 1.0
                 state.progress_update_time = time.monotonic()

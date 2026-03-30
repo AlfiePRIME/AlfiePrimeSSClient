@@ -214,8 +214,8 @@ def render_transport_controls(
     text.append("[↑↓]Vol ", _hs("vol", False))
     text.append("[M]ute ", _hs("m", muted))
     if dual_connected:
-        _src_labels = {"sendspin": "SS", "airplay": "AP", "spotify": "SP"}
-        _src_label = _src_labels.get(active_source, "SS")
+        _src_labels = {"sendspin": "SendSpin", "airplay": "AirPlay", "spotify": "Spotify"}
+        _src_label = _src_labels.get(active_source, "SendSpin")
         text.append(f"[T]oggle({_src_label}) ", _hs("t", False))
     text.append("[A]rt ", _hs("a", art_mode))
     if art_mode:
@@ -1643,9 +1643,9 @@ def render_source_info(
         _dot("Src1", sendspin_connected, active_source == "sendspin")
         _dot("Src2", airplay_connected, active_source == "airplay")
     else:
-        _dot("SS", sendspin_connected, active_source == "sendspin")
-        _dot("AP", airplay_connected, active_source == "airplay")
-        _dot("SP", spotify_connected, active_source == "spotify")
+        _dot("SendSpin", sendspin_connected, active_source == "sendspin")
+        _dot("AirPlay", airplay_connected, active_source == "airplay")
+        _dot("Spotify", spotify_connected, active_source == "spotify")
 
     _total_connected = sum([sendspin_connected, airplay_connected, spotify_connected])
     if _total_connected >= 2:

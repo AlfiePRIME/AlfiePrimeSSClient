@@ -28,7 +28,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from alfieprime_musiciser.config import Config, run_setup, _test_connection
-from alfieprime_musiciser.setup_wizard import run_setup_wizard
+from alfieprime_musiciser.setup_wizard import run_setup_wizard, play_intro_animation
 from alfieprime_musiciser.receiver import SendSpinReceiver
 from alfieprime_musiciser.tui import BoomBoxTUI
 from alfieprime_musiciser.visualizer import AudioVisualizer
@@ -489,6 +489,10 @@ def main() -> None:
                     break  # after manual setup retry, launch directly
                 else:
                     return
+
+    # Play intro animation (setup has its own, so only play on normal start)
+    if not ran_setup:
+        play_intro_animation()
 
     # Run!
     try:

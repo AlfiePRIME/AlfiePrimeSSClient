@@ -20,6 +20,7 @@ from rich.style import Style
 from rich.text import Text
 
 from alfieprime_musiciser.config import Config
+from alfieprime_musiciser.tui_settings import _HELP_TEXT
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -486,6 +487,7 @@ class SetupWizard:
         self._edit_buf = ""
         self._section_done = False
         self._result: str = ""
+        self._help_key: str = ""
         self._console: Console | None = None
         self._console_size: tuple[int, int] = (0, 0)
 
@@ -669,7 +671,7 @@ class SetupWizard:
         # Key hints
         hints = Text()
         hint_c = _dim(color, 0.5)
-        hints.append(_center("↑↓ Navigate  ←→ Adjust  Enter Edit  Esc Skip", panel_w),
+        hints.append(_center("↑↓ Nav  ←→ Adjust  Enter Edit  ? Help  Esc Skip", panel_w),
                       Style(color=hint_c))
         panel_lines.append(hints)
 
@@ -755,11 +757,67 @@ class SetupWizard:
 
         return _compose_panel(bg, panel_lines, panel_w, term_w, term_h)
 
+    # ── Help dialog ──
+
+    def _build_help_frame(self, section_idx: int, term_w: int, term_h: int) -> Group:
+        """Render a help dialog overlay for the selected setting."""
+        _, _, color = _SECTION_DEFS[section_idx]
+        bg = _build_crt_bg(term_w, term_h, color)
+        panel_w = min(48, term_w - 6)
+
+        help_text = _HELP_TEXT.get(self._help_key, "No help available for this setting.")
+        # Find label
+        name = _SECTION_DEFS[section_idx][0]
+        items = _get_section_items(name, self.config)
+        label = self._help_key
+        for lbl, key, _, _ in items:
+            if key == self._help_key:
+                label = lbl
+                break
+
+        panel_lines: list[Text] = []
+
+        sep = Text()
+        sep.append(_center("━" * (panel_w - 4), panel_w), Style(color=color, bold=True))
+        panel_lines.append(sep)
+
+        header = Text()
+        header.append(_center(f" ? {label} ? ", panel_w), Style(color=color, bold=True))
+        panel_lines.append(header)
+
+        sep2 = Text()
+        sep2.append(_center("━" * (panel_w - 4), panel_w), Style(color=color, bold=True))
+        panel_lines.append(sep2)
+        panel_lines.append(Text(""))
+
+        for line_str in help_text.split("\n"):
+            line = Text()
+            line.append(f"  {line_str}", Style(color="#cccccc"))
+            panel_lines.append(line)
+
+        panel_lines.append(Text(""))
+        panel_lines.append(Text(""))
+
+        footer_sep = Text()
+        footer_sep.append(_center("━" * (panel_w - 4), panel_w), Style(color=_dim(color, 0.4)))
+        panel_lines.append(footer_sep)
+
+        hint = Text()
+        hint.append(_center("Press any key to close", panel_w), Style(color="#555555"))
+        panel_lines.append(hint)
+
+        return _compose_panel(bg, panel_lines, panel_w, term_w, term_h)
+
     # ── Key handling ──
 
     def _handle_key(self, k: str, section: str) -> None:
         items = _get_section_items(section, self.config)
         n_items = len(items)
+
+        # Help dialog — any key closes it
+        if self._help_key:
+            self._help_key = ""
+            return
 
         if self._editing:
             if k in ("\r", "\n"):
@@ -793,6 +851,11 @@ class SetupWizard:
                 if itype == "continue":
                     self._cursor = i
                     break
+
+        elif k == "?" and self._cursor < n_items:
+            config_key = items[self._cursor][1]
+            if config_key and config_key in _HELP_TEXT:
+                self._help_key = config_key
 
         elif k in ("\r", "\n", " "):
             if self._cursor >= n_items:
@@ -928,7 +991,9 @@ class SetupWizard:
 
             while not self._section_done and self._running:
                 tw, th = _term_size()
-                if is_summary:
+                if self._help_key:
+                    frame = self._build_help_frame(section_idx, tw, th)
+                elif is_summary:
                     frame = self._build_summary_frame(tw, th)
                 else:
                     frame = self._build_section_frame(section_idx, tw, th)
@@ -954,7 +1019,9 @@ class SetupWizard:
         try:
             while not self._section_done and self._running:
                 tw, th = _term_size()
-                if is_summary:
+                if self._help_key:
+                    frame = self._build_help_frame(section_idx, tw, th)
+                elif is_summary:
                     frame = self._build_summary_frame(tw, th)
                 else:
                     frame = self._build_section_frame(section_idx, tw, th)
@@ -1019,6 +1086,30 @@ class SetupWizard:
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
+
+def play_intro_animation() -> None:
+    """Play the intro splash animation (can be used standalone at app start)."""
+    from rich.live import Live
+    tw, th = _term_size()
+    fps = 24
+    duration = 2.5
+    try:
+        with Live(
+            console=Console(), refresh_per_second=fps,
+            transient=True, screen=True,
+        ) as live:
+            start = time.monotonic()
+            while True:
+                elapsed = time.monotonic() - start
+                if elapsed >= duration:
+                    break
+                progress = min(1.0, elapsed / duration)
+                frame = _build_intro_frame(progress, tw, th)
+                live.update(frame)
+                time.sleep(1.0 / fps)
+    except Exception:
+        pass
+
 
 def run_setup_wizard(console: Console | None = None, existing: Config | None = None) -> Config:
     """Run the animated setup wizard. Returns the final Config."""

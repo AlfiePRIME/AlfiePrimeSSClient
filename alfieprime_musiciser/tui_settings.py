@@ -19,6 +19,35 @@ from alfieprime_musiciser.config import Config
 
 _IS_WINDOWS = sys.platform == "win32"
 
+# ── Help text for each config key ────────────────────────────────────────────
+_HELP_TEXT: dict[str, str] = {
+    "auto_play": "Automatically start playback when a source connects.\nWhen OFF, the source connects but waits for you to\npress play.",
+    "auto_volume": "Set volume to a fixed level when a source connects.\nOFF = keep whatever volume was last used.\n0-100 = force this volume on every new connection.",
+    "fps_limit": "Maximum frames per second for the TUI renderer.\nLower values use less CPU. 30 is smooth for most\nterminals. Range: 5-120.",
+    "brightness": "Overall brightness of terminal colours.\n100% = normal. Lower = dimmer, higher = brighter.\nRange: 50-150%.",
+    "show_artwork": "Show braille album art in the normal boombox view.\nWhen OFF, the artwork area is replaced with the\nspectrum visualiser.",
+    "use_art_colors": "Extract colours from album artwork to theme the UI.\nWhen OFF, a static colour is used instead (or rainbow\nif no static colour is set).",
+    "static_color": "Override the UI accent colour with a fixed hex value.\nOnly used when Album Art Colours is OFF.\nClear to use rainbow cycling.",
+    "dj_source_mode": "Which audio sources feed the DJ mixer decks.\nMIXED = SendSpin + AirPlay.\nDUAL SS/AP/SP = two of the same source type.\nSS+SP / AP+SP = cross-source mixing.",
+    "sendspin_enabled": "Enable the SendSpin (Music Assistant) receiver.\nThis is the primary protocol for streaming from\nMusic Assistant servers.",
+    "airplay_enabled": "Enable the AirPlay 2 receiver.\nAllows casting from Apple devices (iPhone, Mac, etc).\nRequires the airplay dependencies.",
+    "swap_prompt": "Show a Y/N prompt when a second device tries to\nconnect to an already-occupied source slot.\nWhen OFF, the auto action is used instead.",
+    "swap_auto_action": "What to do when a second device connects and the\nswap prompt is disabled.\nACCEPT = swap to the new device.\nDENY = reject the new connection.",
+    "forget_airplay_devices": "Clear AirPlay pairing data when the app closes.\nDevices will need to re-pair on next launch.\nUseful for shared/public setups.",
+    "spotify_enabled": "Enable the Spotify Connect receiver.\nAppears as a castable device in Spotify apps.\nRequires librespot and spotipy.",
+    "spotify_bitrate": "Audio quality for Spotify streaming.\n160 kbps = standard quality, less bandwidth.\n320 kbps = high quality (recommended).",
+    "spotify_device_name": "How this device appears in Spotify's device list.\nLeave empty to use 'Musiciser@hostname'.",
+    "spotify_username": "Spotify username for librespot authentication.\nLeave empty to use zeroconf (recommended) which\nlets you auth by casting from the Spotify app.",
+    "spotify_client_id": "Spotify Web API client ID for metadata & controls.\nOptional — without it, transport controls and\nrich metadata are unavailable.",
+    "client_name": "How this player appears in Music Assistant.\nLeave empty to use your system hostname.\nChanging this may require re-pairing.",
+    "client_id": "Stable UUID so Music Assistant remembers this device\nacross restarts. Changing this makes the server\ntreat you as a new device.",
+    "run_setup": "Re-run the interactive setup wizard on next launch.\nThe app will close and the wizard will appear when\nyou start it again.",
+    "reset_config": "Delete all configuration and restart the app.\nYou will need to go through the setup wizard again.\nThis cannot be undone!",
+    "mode": "How to connect to the Music Assistant server.\nLISTEN = server discovers us via mDNS (recommended).\nCONNECT = we connect to a specific server URL.",
+    "server_url": "WebSocket URL of the SendSpin/Music Assistant server.\nOnly used in CONNECT mode.\nExample: ws://192.168.1.100:8097/sendspin",
+    "listen_port": "Port to listen on for incoming connections.\nOnly used in LISTEN mode. The server will connect\nto us on this port. Default: 8928.",
+}
+
 
 def _safe_hex(r: int | float, g: int | float, b: int | float) -> str:
     return f"#{max(0,min(255,int(r))):02x}{max(0,min(255,int(g))):02x}{max(0,min(255,int(b))):02x}"
@@ -275,6 +304,8 @@ class SettingsMixin:
 
     def _build_settings_layout(self) -> Group:
         """Render tab-based settings menu with animated CRT background."""
+        if self._help_key:
+            return self._build_help_dialog_layout()
         if self._settings_sub == "color_picker":
             return self._build_color_picker_layout()
         self._term_width, self._term_height = self._get_terminal_size()
@@ -503,7 +534,7 @@ class SettingsMixin:
                     item.append("  ◂▸", Style(color="#555555"))
             elif key in ("auto_play", "show_artwork", "use_art_colors",
                          "airplay_enabled", "sendspin_enabled", "spotify_enabled",
-                         "swap_prompt", "forget_airplay_devices"):
+                         "swap_prompt", "forget_airplay_devices", "run_setup"):
                 val_str = "ON" if value else "OFF"
                 val_color = cursor_c if value else "#666666"
                 item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))
@@ -529,17 +560,82 @@ class SettingsMixin:
             hint.append("[Enter] Save  ", Style(color="#555555"))
             hint.append("[Esc] Cancel", Style(color="#555555"))
         else:
-            hint_text = "[◂▸]Tab [↑↓]Nav [Enter]Edit [C]Close"
+            hint_text = "[◂▸]Tab [↑↓]Nav [Enter]Edit [?]Help [C]Close"
             hint.append(" " * max(0, (panel_w - len(hint_text)) // 2))
             hint.append("[◂▸]Tab ", Style(color="#555555"))
             hint.append("[↑↓]Nav ", Style(color="#555555"))
             hint.append("[Enter]Edit ", Style(color="#555555"))
+            hint.append("[?]Help ", Style(color="#555555"))
             hint.append("[C]Close", Style(color="#555555"))
         panel_lines.append(hint)
 
         panel_x = max(0, (term_w - panel_w - 2) // 2)
         panel_y = max(0, (term_h - len(panel_lines)) // 2)
         self._scatter_dancers_on_bg(bg_lines, term_w, term_h, panel_x, panel_y, panel_w, len(panel_lines))
+        return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
+
+    # ── Help dialog ────────────────────────────────────────────────────────
+
+    def _build_help_dialog_layout(self) -> Group:
+        """Render a help dialog overlay for the currently selected setting."""
+        self._term_width, self._term_height = self._get_terminal_size()
+        term_w = self._term_width
+        term_h = self._term_height
+        th = self.state.theme
+        t = time.time()
+
+        bg_lines = self._build_crt_background(term_w, term_h)
+        panel_w = 48
+
+        help_text = _HELP_TEXT.get(self._help_key, "No help available for this setting.")
+        # Find label from current tab items
+        tab_key = _TABS[self._settings_tab][0]
+        items = self._get_tab_items(tab_key)
+        label = self._help_key
+        for lbl, key, _ in items:
+            if key == self._help_key:
+                label = lbl
+                break
+
+        def _center_h(text: str) -> str:
+            pad = max(0, (panel_w - len(text)) // 2)
+            return " " * pad + text
+
+        panel_lines: list[Text] = []
+
+        # Title
+        title_sep = Text()
+        title_sep.append("━" * panel_w, Style(color=th.primary, bold=True))
+        panel_lines.append(title_sep)
+
+        header = Text()
+        header.append(_center_h(f" ? {label} ? "), Style(color=th.primary, bold=True))
+        panel_lines.append(header)
+
+        title_sep2 = Text()
+        title_sep2.append("━" * panel_w, Style(color=th.primary, bold=True))
+        panel_lines.append(title_sep2)
+        panel_lines.append(Text(""))
+
+        # Help text body
+        for line_str in help_text.split("\n"):
+            line = Text()
+            line.append(f"  {line_str}", Style(color="#cccccc"))
+            panel_lines.append(line)
+
+        panel_lines.append(Text(""))
+        panel_lines.append(Text(""))
+
+        # Close hint
+        footer_sep = Text()
+        footer_sep.append("━" * panel_w, Style(color=th.primary_dim))
+        panel_lines.append(footer_sep)
+
+        hint = Text()
+        hint_text = "Press any key to close"
+        hint.append(_center_h(hint_text), Style(color="#555555"))
+        panel_lines.append(hint)
+
         return self._compose_panel_on_bg(bg_lines, panel_lines, panel_w, term_w, term_h)
 
     # ── Reset confirm (preserved from original) ───────────────────────────
@@ -726,6 +822,11 @@ class SettingsMixin:
 
     def _handle_settings_main_key(self, k: str, raw_key: str = "") -> None:
         """Handle all settings key input (tab navigation + item interaction)."""
+        # ── Help dialog ── (any key closes it)
+        if self._help_key:
+            self._help_key = ""
+            return
+
         if k == "escape":
             self._start_menu_fade_out(lambda: setattr(self, '_settings_open', False))
             return
@@ -774,6 +875,13 @@ class SettingsMixin:
 
         tab_key = _TABS[self._settings_tab][0]
         items = self._get_tab_items(tab_key)
+
+        # ── Help dialog ── (? key opens help for current item)
+        if k == "?" and items and self._settings_cursor < len(items):
+            config_key = items[self._settings_cursor][1]
+            if config_key and config_key in _HELP_TEXT:
+                self._help_key = config_key
+            return
 
         # ── Tab navigation ──
         if k == "arrow_left" and not items:

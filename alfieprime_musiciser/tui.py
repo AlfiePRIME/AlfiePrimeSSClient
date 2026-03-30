@@ -198,6 +198,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
         self._advanced_editing: str = ""  # which field is being text-edited
         self._advanced_edit_buf: str = ""  # text input buffer
         self._advanced_confirm_reset: bool = False  # reset confirmation dialog
+        self._help_key: str = ""  # config key for which help dialog is open
         # Color picker state
         self._color_cursor: int = 0
         self._color_hex_editing: bool = False

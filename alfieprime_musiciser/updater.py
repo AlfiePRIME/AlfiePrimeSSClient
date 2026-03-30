@@ -409,7 +409,7 @@ class _UpdateTUI:
             panel_lines.append(hint)
 
             cmd = Text()
-            cmd_str = f"pipx install --force git+{_REPO_URL}"
+            cmd_str = "pipx upgrade alfieprime-musiciser"
             if len(cmd_str) > panel_w - 4:
                 cmd_str = cmd_str[:panel_w - 7] + "..."
             cmd.append(_center(cmd_str, panel_w), Style(color="#ffaa00"))
@@ -666,19 +666,31 @@ class _UpdateTUI:
             strategies: list[tuple[str, list[str]]] = []
 
             if sys.platform == "win32":
-                # Strategy 1: pipx as a standalone command (works if pipx is on PATH)
+                _pkg_name = "alfieprime-musiciser"
                 pipx_bin = shutil.which("pipx")
-                if pipx_bin:
-                    strategies.append(("pipx (direct)", [pipx_bin, "install", "--force", install_source]))
-
-                # Strategy 2: python -m pipx (various Python locations)
+                # Find a system Python for running pipx outside the venv
+                py_bin = None
                 for py_cmd in ("py", "python3", "python"):
                     py_bin = shutil.which(py_cmd)
                     if py_bin:
-                        strategies.append((f"pipx via {py_cmd}", [py_bin, "-m", "pipx", "install", "--force", install_source]))
                         break
 
-                # Strategy 3: pip from the venv's Python
+                # Strategy 1 & 2: pipx upgrade / reinstall (uses original source,
+                # no git on PATH needed — works for already-installed packages)
+                if pipx_bin:
+                    strategies.append(("pipx upgrade", [pipx_bin, "upgrade", _pkg_name]))
+                    strategies.append(("pipx reinstall", [pipx_bin, "reinstall", _pkg_name]))
+                elif py_bin:
+                    strategies.append(("pipx upgrade", [py_bin, "-m", "pipx", "upgrade", _pkg_name]))
+                    strategies.append(("pipx reinstall", [py_bin, "-m", "pipx", "reinstall", _pkg_name]))
+
+                # Strategy 3: pipx install --force (fresh install, needs git for git+ URLs)
+                if pipx_bin:
+                    strategies.append(("pipx install", [pipx_bin, "install", "--force", install_source]))
+                elif py_bin:
+                    strategies.append(("pipx install", [py_bin, "-m", "pipx", "install", "--force", install_source]))
+
+                # Strategy 4: pip from the venv's Python
                 strategies.append(("pip (venv)", [sys.executable, "-m", "pip", "install",
                                                   "--force-reinstall", "--no-cache-dir", "--quiet",
                                                   install_source]))
@@ -702,7 +714,9 @@ class _UpdateTUI:
                     )
                     logger.info("Update: %s returned %d", label, result.returncode)
                     if result.stderr:
-                        logger.debug("Update: %s stderr: %s", label, result.stderr[:500])
+                        logger.info("Update: %s stderr: %s", label, result.stderr[:500])
+                    if result.stdout and result.returncode != 0:
+                        logger.info("Update: %s stdout: %s", label, result.stdout[:500])
                     if result.returncode == 0:
                         self._progress = 1.0
                         success_flag[0] = True

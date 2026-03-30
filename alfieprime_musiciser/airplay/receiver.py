@@ -1228,11 +1228,41 @@ class AirPlayReceiver:
                     break
 
         if not mac_addr:
-            # Generate a fake MAC if we can't find one
-            mac_addr = "AA:BB:CC:%02X:%02X:%02X" % (
-                random.randint(0, 255), random.randint(0, 255), random.randint(0, 255),
-            )
-            logger.warning("Could not detect MAC address, using generated: %s", mac_addr)
+            # Try uuid.getnode() which works on most platforms including Windows
+            try:
+                import uuid as _uuid
+                node = _uuid.getnode()
+                # getnode() returns a random if it can't find a real MAC
+                # (bit 0 of first octet is set for random/multicast MACs)
+                if not (node >> 40) & 1:  # not a random MAC
+                    mac_addr = ":".join(f"{(node >> (8 * i)) & 0xFF:02X}" for i in range(5, -1, -1))
+                    logger.info("MAC from uuid.getnode(): %s", mac_addr)
+            except Exception:
+                pass
+
+        if not mac_addr:
+            # Load or generate a persistent MAC so the device identity
+            # stays stable across restarts (critical for iOS discovery)
+            mac_file = os.path.join(_LOG_DIR, "device_mac.txt")
+            try:
+                if os.path.isfile(mac_file):
+                    saved = open(mac_file).read().strip()
+                    if len(saved) == 17 and saved.count(":") == 5:
+                        mac_addr = saved
+                        logger.info("Loaded persistent MAC: %s", mac_addr)
+            except Exception:
+                pass
+            if not mac_addr:
+                mac_addr = "AA:BB:CC:%02X:%02X:%02X" % (
+                    random.randint(0, 255), random.randint(0, 255), random.randint(0, 255),
+                )
+                try:
+                    os.makedirs(_LOG_DIR, exist_ok=True)
+                    with open(mac_file, "w") as f:
+                        f.write(mac_addr)
+                except Exception:
+                    pass
+                logger.warning("Could not detect MAC, generated persistent: %s", mac_addr)
 
         # Pack addresses to binary for mDNS registration
         ip4_bin = socket.inet_pton(socket.AF_INET, ipv4_addr)

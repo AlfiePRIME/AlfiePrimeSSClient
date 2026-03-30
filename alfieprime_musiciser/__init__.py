@@ -1,3 +1,3 @@
 """AlfiePRIME Musiciser - A boom box themed SendSpin receiver for Music Assistant."""
 
-__version__ = "1.5.1"
+__version__ = "1.5.2"

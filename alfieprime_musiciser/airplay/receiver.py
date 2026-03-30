@@ -247,6 +247,7 @@ class _MetadataHook:
         self._last_title = ""
         self.source_label = ""  # e.g. "Source 2" — set by AirPlayReceiver
         self._sink_volume = None  # set after sink_volume is created
+        self._rainbow_timer: threading.Timer | None = None  # delayed theme reset
 
     def _is_active(self) -> bool:
         return self._state.active_source in ("airplay", "")
@@ -284,16 +285,32 @@ class _MetadataHook:
             s.connected = True
             if s.title != old_title and s.title:
                 logger.info("AirPlay now playing: %s - %s [%s]", s.artist, s.title, s.album)
-                # Reset theme to rainbow until artwork arrives (if any)
-                from alfieprime_musiciser.colors import ColorTheme
-                s.theme = ColorTheme()
-                s.artwork_data = b""
+                # Schedule a delayed reset to rainbow — gives artwork time
+                # to arrive first (it can come before or after metadata).
+                # If on_artwork is called before the timer fires, it cancels it.
+                if self._rainbow_timer is not None:
+                    self._rainbow_timer.cancel()
+
+                def _reset_to_rainbow():
+                    from alfieprime_musiciser.colors import ColorTheme
+                    if self._is_active():
+                        s.theme = ColorTheme()
+                        s.artwork_data = b""
+                        logger.debug("AirPlay: no artwork received, reset to rainbow")
+
+                self._rainbow_timer = threading.Timer(3.0, _reset_to_rainbow)
+                self._rainbow_timer.daemon = True
+                self._rainbow_timer.start()
         else:
             s.write_to_snapshot("airplay", **fields)
 
     def on_artwork(self, data: bytes) -> None:
         if not data:
             return
+        # Cancel the delayed rainbow reset — real artwork has arrived
+        if self._rainbow_timer is not None:
+            self._rainbow_timer.cancel()
+            self._rainbow_timer = None
         logger.info("AirPlay artwork received (%d bytes)", len(data))
 
         def _extract_and_apply() -> None:

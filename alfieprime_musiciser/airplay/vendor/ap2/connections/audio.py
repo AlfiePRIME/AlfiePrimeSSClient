@@ -997,7 +997,6 @@ class AudioBuffered(Audio):
     def play(self, rtspconn, serverconn):
         playing = False
         buffer_ready = False
-        reanchoring = False
         p_write_avg = deque(maxlen=20)
         p_write = p_write_a = None
         pkt_time_one = ((self.spf / self.sample_rate) * 1e3)
@@ -1036,15 +1035,8 @@ class AudioBuffered(Audio):
                     message = rtspconn.recv()
                     if isinstance(message, str):
                         if str.startswith(message, "play"):
+                            self.anchorMonotonicNanosLocal = time.monotonic_ns()
                             self.anchorRTPTimestamp = int(str.split(message, "-")[1])
-                            if not playing:
-                                # Defer monotonic anchor until first packet
-                                # plays — avoids timing gap after pause/resume
-                                reanchoring = True
-                                p_write_avg.clear()
-                                p_write = p_write_a = None
-                            else:
-                                self.anchorMonotonicNanosLocal = time.monotonic_ns()
                             playing = True
 
                         elif message == "pause":
@@ -1055,7 +1047,6 @@ class AudioBuffered(Audio):
                             flush_from, flush_to = map(int, str.split(message, "-")[-2:])
                             serverconn.send(message)
                             playing = False
-                            buffer_ready = False
 
                 except (OSError, EOFError, BrokenPipeError) as e:
                     pass
@@ -1065,11 +1056,6 @@ class AudioBuffered(Audio):
             if playing and buffer_ready:
                 rtp = self.rtp_buffer.pop()
                 if rtp:
-                    if reanchoring:
-                        # Anchor monotonic clock to first packet after
-                        # resume — prevents timing gap glitches.
-                        self.anchorMonotonicNanosLocal = time.monotonic_ns()
-                        reanchoring = False
                     if p_write_a:
                         msec_to_playout = self.msec_to_playout(rtp.timestamp) - p_write_a
                         if i % 1000 == 0:

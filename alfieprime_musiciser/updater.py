@@ -662,47 +662,60 @@ class _UpdateTUI:
             self._progress = 0.5
             install_source = str(git_dir_inner) if git_dir_inner else f"git+{_REPO_URL}"
 
-            # Try pipx first (use system Python, not venv Python)
-            pipx_python = "python" if sys.platform == "win32" else sys.executable
-            try:
-                self._update_status = "Installing via pipx..."
-                self._progress = 0.6
-                result = subprocess.run(
-                    [pipx_python, "-m", "pipx", "install", "--force", install_source],
-                    capture_output=True,
-                    text=True,
-                    timeout=180,
-                )
-                if result.returncode == 0:
-                    self._progress = 1.0
-                    success_flag[0] = True
-                    update_done.set()
-                    return
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-                pass
+            # Build a list of install strategies to try in order
+            strategies: list[tuple[str, list[str]]] = []
 
-            # Fall back to pip — use --force-reinstall so new files
-            # (like __main__.py) are written even if the version looks
-            # the same to pip.
-            try:
-                self._update_status = "Installing via pip..."
-                self._progress = 0.7
-                result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install",
-                     "--force-reinstall", "--no-cache-dir", "--quiet",
-                     install_source],
-                    capture_output=True,
-                    text=True,
-                    timeout=180,
-                )
-                if result.returncode == 0:
-                    self._progress = 1.0
-                    success_flag[0] = True
-                    update_done.set()
-                    return
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-                pass
+            if sys.platform == "win32":
+                # Strategy 1: pipx as a standalone command (works if pipx is on PATH)
+                pipx_bin = shutil.which("pipx")
+                if pipx_bin:
+                    strategies.append(("pipx (direct)", [pipx_bin, "install", "--force", install_source]))
 
+                # Strategy 2: python -m pipx (various Python locations)
+                for py_cmd in ("py", "python3", "python"):
+                    py_bin = shutil.which(py_cmd)
+                    if py_bin:
+                        strategies.append((f"pipx via {py_cmd}", [py_bin, "-m", "pipx", "install", "--force", install_source]))
+                        break
+
+                # Strategy 3: pip from the venv's Python
+                strategies.append(("pip (venv)", [sys.executable, "-m", "pip", "install",
+                                                  "--force-reinstall", "--no-cache-dir", "--quiet",
+                                                  install_source]))
+            else:
+                # Unix: pipx via current Python, then pip fallback
+                strategies.append(("pipx", [sys.executable, "-m", "pipx", "install", "--force", install_source]))
+                strategies.append(("pip", [sys.executable, "-m", "pip", "install",
+                                           "--force-reinstall", "--no-cache-dir", "--quiet",
+                                           install_source]))
+
+            for i, (label, cmd) in enumerate(strategies):
+                try:
+                    self._update_status = f"Installing via {label}..."
+                    self._progress = 0.5 + 0.4 * (i / max(1, len(strategies)))
+                    logger.info("Update: trying %s: %s", label, " ".join(cmd))
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=180,
+                    )
+                    logger.info("Update: %s returned %d", label, result.returncode)
+                    if result.stderr:
+                        logger.debug("Update: %s stderr: %s", label, result.stderr[:500])
+                    if result.returncode == 0:
+                        self._progress = 1.0
+                        success_flag[0] = True
+                        update_done.set()
+                        return
+                except FileNotFoundError:
+                    logger.debug("Update: %s not found", label)
+                except subprocess.TimeoutExpired:
+                    logger.warning("Update: %s timed out", label)
+                except OSError as e:
+                    logger.debug("Update: %s error: %s", label, e)
+
+            logger.error("Update: all install strategies failed")
             update_done.set()
 
         update_thread = threading.Thread(target=_do_update, daemon=True)

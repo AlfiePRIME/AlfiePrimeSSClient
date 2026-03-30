@@ -246,6 +246,7 @@ class _MetadataHook:
         self._visualizer = visualizer
         self._last_title = ""
         self.source_label = ""  # e.g. "Source 2" — set by AirPlayReceiver
+        self._sink_volume = None  # set after sink_volume is created
 
     def _is_active(self) -> bool:
         return self._state.active_source in ("airplay", "")
@@ -283,6 +284,10 @@ class _MetadataHook:
             s.connected = True
             if s.title != old_title and s.title:
                 logger.info("AirPlay now playing: %s - %s [%s]", s.artist, s.title, s.album)
+                # Reset theme to rainbow until artwork arrives (if any)
+                from alfieprime_musiciser.colors import ColorTheme
+                s.theme = ColorTheme()
+                s.artwork_data = b""
         else:
             s.write_to_snapshot("airplay", **fields)
 
@@ -321,6 +326,9 @@ class _MetadataHook:
         # Map -30 dB → 0 %, 0 dB → 100 %  (clamped)
         pct = max(0, min(100, int((volume_db + 30) / 30 * 100)))
         self._state.set_source_volume("airplay", pct, muted=False)
+        # Update audio child PCM scaling so actual playback volume changes
+        if self._sink_volume is not None:
+            self._sink_volume.value = pct / 100.0
         logger.info("AirPlay volume: %d%% (from %.2f dB)", pct, volume_db)
 
     def on_progress(self, start_ts: int, current_ts: int, stop_ts: int, sample_rate: int = 44100) -> None:
@@ -1005,6 +1013,12 @@ class AirPlayReceiver:
             self._sink_muted.value = muted
             logger.info("AirPlay: audio child sink %s (explicit)", "MUTED" if muted else "UNMUTED")
 
+    def _update_sink_volume(self, volume_pct: int, muted: bool) -> None:
+        """Update the audio child's PCM volume scaling (0.0–1.0)."""
+        if hasattr(self, "_sink_volume") and self._sink_volume is not None:
+            self._sink_volume.value = 0.0 if muted else (volume_pct / 100.0)
+            logger.debug("AirPlay: sink volume = %.2f", self._sink_volume.value)
+
     @property
     def pin(self) -> str | None:
         """The current 4-digit pairing PIN, or None if not yet generated."""
@@ -1067,6 +1081,7 @@ class AirPlayReceiver:
             cur_vol, cur_muted = state.get_source_volume("airplay")
             new_vol = min(100, cur_vol + 5)
             state.set_source_volume("airplay", new_vol, False if cur_muted else None)
+            self._update_sink_volume(new_vol, False)
             if cur_muted:
                 logger.info("AirPlay unmuted via volume up")
             logger.info("AirPlay volume up: %d%%", new_vol)
@@ -1075,14 +1090,17 @@ class AirPlayReceiver:
             cur_vol, cur_muted = state.get_source_volume("airplay")
             new_vol = max(0, cur_vol - 5)
             state.set_source_volume("airplay", new_vol, False if cur_muted else None)
+            self._update_sink_volume(new_vol, False)
             if cur_muted:
                 logger.info("AirPlay unmuted via volume down")
             logger.info("AirPlay volume down: %d%%", new_vol)
             return
         elif command == "mute":
             cur_vol, cur_muted = state.get_source_volume("airplay")
-            state.set_source_muted("airplay", not cur_muted)
-            logger.info("AirPlay mute %s", "on" if not cur_muted else "off")
+            new_muted = not cur_muted
+            state.set_source_muted("airplay", new_muted)
+            self._update_sink_volume(cur_vol, new_muted)
+            logger.info("AirPlay mute %s", "on" if new_muted else "off")
             return
 
         # Play/pause — local only: mute/unmute our speaker output.
@@ -1410,6 +1428,10 @@ class AirPlayReceiver:
         # Shared flag to mute the audio child's native sink when DJ mixer owns output
         sink_muted: multiprocessing.Value = multiprocessing.Value("b", False)
         self._sink_muted = sink_muted
+        # Shared volume level (0.0–1.0) for PCM scaling in the audio child
+        sink_volume: multiprocessing.Value = multiprocessing.Value("f", 1.0)
+        self._sink_volume = sink_volume
+        meta_hook._sink_volume = sink_volume
         pcm_consumer = _PCMConsumer(pcm_queue, self._visualizer, state=self._state)
         self._pcm_consumer = pcm_consumer
         # Propagate DJ mixer if it was already set before pcm_consumer existed
@@ -1487,7 +1509,8 @@ class AirPlayReceiver:
         def _patched_stream_init(self_stream, *args, **kwargs):
             kwargs.setdefault("pcm_queue", pcm_queue)
             kwargs.setdefault("sink_muted", sink_muted)
-            logger.debug("Stream.__init__ patched: pcm_queue=%r sink_muted=%r injected", pcm_queue, sink_muted)
+            kwargs.setdefault("sink_volume", sink_volume)
+            logger.debug("Stream.__init__ patched: pcm_queue=%r sink_muted=%r sink_volume=%r injected", pcm_queue, sink_muted, sink_volume)
             _original_stream_init(self_stream, *args, **kwargs)
 
         Stream.__init__ = _patched_stream_init

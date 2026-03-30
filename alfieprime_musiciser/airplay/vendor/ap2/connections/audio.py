@@ -446,10 +446,26 @@ class Audio:
         self.set_audio_params(self, audio_format)
         self._pcm_queue = None  # optional multiprocessing.Queue for PCM tap
         self._sink_muted = None  # optional multiprocessing.Value('b') — skip sink.write when True
+        self._sink_volume = None  # optional multiprocessing.Value('f') — 0.0..1.0 volume scale
 
         """ variables we get via RTCP from Control class """
         self.senderRtpTimestamp, self.playAtRtpTimestamp = None, None
         self.remoteClockMonotonic_ts, self.remoteClockId = None, None
+
+    def _apply_volume(self, audio: bytes) -> bytes:
+        """Scale 16-bit PCM audio by the shared volume value (0.0–1.0)."""
+        vol = self._sink_volume
+        if vol is None:
+            return audio
+        v = vol.value
+        if v >= 1.0:
+            return audio
+        if v <= 0.0:
+            return b'\x00' * len(audio)
+        import numpy as np
+        samples = np.frombuffer(audio, dtype=np.int16)
+        scaled = np.clip(samples * v, -32768, 32767).astype(np.int16)
+        return scaled.tobytes()
 
     def init_audio_sink(self):
         codecLatencySec = 0
@@ -646,6 +662,12 @@ class Audio:
 
     def run(self, rcvr_cmd_pipe, control_conns):
         import sys, traceback, os, logging as _logging
+        # Close stdin in the child process to prevent it from stealing
+        # terminal input from the parent TUI on Windows.
+        try:
+            sys.stdin.close()
+        except Exception:
+            pass
         # Suppress ALSA lib error/warning messages on Linux.
         # PyAudio's PortAudio backend probes every ALSA device and spews
         # harmless "cannot open" / "Unknown PCM" errors to stderr.
@@ -723,6 +745,7 @@ class Audio:
             aud_params: AudioSetup = None,
             pcm_queue=None,
             sink_muted=None,
+            sink_volume=None,
     ):
         audio = cls(
             addr,
@@ -736,6 +759,7 @@ class Audio:
         )
         audio._pcm_queue = pcm_queue
         audio._sink_muted = sink_muted
+        audio._sink_volume = sink_volume
         # This pipe is reachable from receiver
         rcvr_cmd_pipe, audio.command_chan = multiprocessing.Pipe()
         audio_proc = multiprocessing.Process(target=audio.run, args=(rcvr_cmd_pipe, control_conns))
@@ -901,7 +925,7 @@ class AudioRealtime(Audio):
                                 if _muted is not None and _muted.value:
                                     self.sink.write(b'\x00' * len(audio))
                                 else:
-                                    self.sink.write(audio)
+                                    self.sink.write(self._apply_volume(audio))
                                 lastPlayedSeqNo = rtp.sequence_no
                                 post_write = time.monotonic_ns()
                                 p_write = (post_write - pre_write) * 1e-6
@@ -1056,7 +1080,7 @@ class AudioBuffered(Audio):
                         if _muted is not None and _muted.value:
                             self.sink.write(b'\x00' * len(audio))
                         else:
-                            self.sink.write(audio)
+                            self.sink.write(self._apply_volume(audio))
                         post_proc = time.monotonic_ns()
                         p_write = post_proc - pre_proc
                         p_write_avg.append(p_write * 1e-6)

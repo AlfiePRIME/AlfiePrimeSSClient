@@ -1,5 +1,5 @@
 """Allow running with ``python -m alfieprime_musiciser``."""
 
-from alfieprime_musiciser.main import main
-
-main()
+if __name__ == "__main__":
+    from alfieprime_musiciser.main import main
+    main()

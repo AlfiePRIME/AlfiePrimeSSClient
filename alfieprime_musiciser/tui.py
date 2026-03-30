@@ -527,6 +527,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
     def _build_airplay_hints(self, term_w: int) -> Text:
         """Build a hint-only line for AirPlay/Spotify mode (no transport buttons)."""
         hint_parts = [
+            ("[P]ause " if self.state.is_playing else "[P]lay ", "p", False),
             ("[↑↓]Vol ", "vol", False),
             ("[M]ute ", "m", self.state.muted),
         ]

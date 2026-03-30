@@ -1186,20 +1186,25 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
             b"K": "arrow_left",
         }
         loop = asyncio.get_event_loop()
+        _log = logging.getLogger(__name__)
         while self._running:
-            has_key = await loop.run_in_executor(None, msvcrt.kbhit)
-            if has_key:
-                data = await loop.run_in_executor(None, msvcrt.getch)
-                if data in (b"\xe0", b"\x00"):
-                    # Special key prefix — read the second byte for the actual key
-                    data2 = await loop.run_in_executor(None, msvcrt.getch)
-                    arrow = _ARROW_MAP.get(data2)
-                    if arrow:
-                        self._handle_key(arrow)
-                elif data:
-                    self._parse_input(data)
-            else:
-                await asyncio.sleep(0.05)
+            try:
+                has_key = await loop.run_in_executor(None, msvcrt.kbhit)
+                if has_key:
+                    data = await loop.run_in_executor(None, msvcrt.getch)
+                    if data in (b"\xe0", b"\x00"):
+                        # Special key prefix — read the second byte for the actual key
+                        data2 = await loop.run_in_executor(None, msvcrt.getch)
+                        arrow = _ARROW_MAP.get(data2)
+                        if arrow:
+                            self._handle_key(arrow)
+                    elif data:
+                        self._parse_input(data)
+                else:
+                    await asyncio.sleep(0.05)
+            except Exception:
+                _log.debug("Windows input error", exc_info=True)
+                await asyncio.sleep(0.1)
 
     async def _input_loop_unix(self) -> None:
         """Unix keyboard input using termios/tty."""

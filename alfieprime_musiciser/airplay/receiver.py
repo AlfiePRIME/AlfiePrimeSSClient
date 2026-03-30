@@ -1019,6 +1019,39 @@ class AirPlayReceiver:
             self._sink_volume.value = 0.0 if muted else (volume_pct / 100.0)
             logger.debug("AirPlay: sink volume = %.2f", self._sink_volume.value)
 
+    @staticmethod
+    def _patch_windows_mp_spawn() -> None:
+        """Patch multiprocessing on Windows to spawn child processes without a console.
+
+        Without this, the audio child process attaches to our console and
+        disrupts msvcrt keyboard input in the TUI.
+        """
+        try:
+            import multiprocessing.popen_spawn_win32 as _mpw
+            import _winapi
+            _OrigPopen = _mpw.Popen
+
+            class _NoConsolePopen(_OrigPopen):
+                def __init__(self, process_obj):
+                    # Temporarily patch CreateProcess to add CREATE_NO_WINDOW
+                    _orig_create = _winapi.CreateProcess
+
+                    def _patched_create(exe, cmd, psa, tsa, inherit, flags, env, cwd, si):
+                        CREATE_NO_WINDOW = 0x08000000
+                        return _orig_create(exe, cmd, psa, tsa, inherit,
+                                            flags | CREATE_NO_WINDOW, env, cwd, si)
+
+                    _winapi.CreateProcess = _patched_create
+                    try:
+                        super().__init__(process_obj)
+                    finally:
+                        _winapi.CreateProcess = _orig_create
+
+            _mpw.Popen = _NoConsolePopen
+            logger.info("AirPlay: patched Windows multiprocessing to use CREATE_NO_WINDOW")
+        except Exception:
+            logger.debug("AirPlay: Windows multiprocessing patch failed", exc_info=True)
+
     @property
     def pin(self) -> str | None:
         """The current 4-digit pairing PIN, or None if not yet generated."""
@@ -1146,6 +1179,12 @@ class AirPlayReceiver:
 
     def _run_server(self) -> None:
         """Blocking server start – runs in a thread."""
+        # On Windows, prevent audio child processes from attaching to our
+        # console — they would disrupt msvcrt keyboard input.  Patch the
+        # multiprocessing Popen to use CREATE_NO_WINDOW.
+        if sys.platform == "win32":
+            self._patch_windows_mp_spawn()
+
         # Enable file logging first so everything is captured
         setup_file_logging()
 

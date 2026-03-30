@@ -831,10 +831,22 @@ def check_for_updates(console: Console) -> None:
     if result == "update":
         success = tui.run_update()
         if success:
-            # On Windows with pipx, sys.argv[0] is a .exe entry point
-            # that can't be passed to python.exe as a script.  Use -m
-            # to re-launch the package instead.
             if sys.platform == "win32":
-                os.execv(sys.executable, [sys.executable, "-m", "alfieprime_musiciser"] + sys.argv[1:])
+                # On Windows with pipx, sys.argv[0] is the .exe entry
+                # point (e.g. alfieprime-musiciser.exe).  After update,
+                # re-launch it directly via subprocess and exit — os.execv
+                # is unreliable on Windows since it emulates fork+exec.
+                import subprocess as _sp
+                exe = sys.argv[0]
+                # Ensure the .exe extension is present
+                if not exe.lower().endswith(".exe"):
+                    exe += ".exe"
+                if os.path.isfile(exe):
+                    _sp.Popen([exe] + sys.argv[1:])
+                    sys.exit(0)
+                else:
+                    # Fallback: try the entry point name from PATH
+                    _sp.Popen(["alfieprime-musiciser"] + sys.argv[1:], shell=True)
+                    sys.exit(0)
             else:
                 os.execv(sys.executable, [sys.executable] + sys.argv)

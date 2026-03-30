@@ -64,21 +64,31 @@ def _last_check_file() -> Path:
 
 
 def _should_check() -> bool:
-    """Return True if enough time has passed since the last check."""
+    """Return True if enough time has passed since the last check.
+
+    Also re-checks if the local version changed (e.g. after an update),
+    since there may be another newer version available.
+    """
     check_file = _last_check_file()
     if not check_file.exists():
         return True
     try:
-        last = float(check_file.read_text().strip())
+        content = check_file.read_text().strip()
+        parts = content.split("|", 1)
+        last = float(parts[0])
+        checked_version = parts[1] if len(parts) > 1 else ""
+        # Re-check if local version changed since last check
+        if checked_version != _get_local_version():
+            return True
         return (time.time() - last) >= _CHECK_INTERVAL
     except (ValueError, OSError):
         return True
 
 
 def _record_check() -> None:
-    """Record that we just checked for updates."""
+    """Record that we just checked for updates (with current version)."""
     try:
-        _last_check_file().write_text(str(time.time()))
+        _last_check_file().write_text(f"{time.time()}|{_get_local_version()}")
     except OSError:
         pass
 

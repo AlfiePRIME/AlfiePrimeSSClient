@@ -812,8 +812,20 @@ class _UpdateTUI:
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def check_for_updates(console: Console) -> None:
-    """Check for updates with animated TUI and prompt user to upgrade."""
+    """Check for updates; only show the TUI if an update is available."""
+    local_version = _get_local_version()
+    remote_version = _fetch_remote_version()
+
+    if remote_version is None:
+        return
+    if _parse_version(remote_version) <= _parse_version(local_version):
+        return
+
+    # Update available — launch TUI
     tui = _UpdateTUI()
+    tui._local_version = local_version
+    tui._remote_version = remote_version
+    tui._phase = "available"
     result = tui.run_check()
 
     if result == "update":

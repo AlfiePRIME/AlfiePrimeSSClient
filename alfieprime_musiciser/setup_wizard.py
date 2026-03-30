@@ -1147,8 +1147,9 @@ def play_intro_animation() -> None:
         return "\n".join(lines)
 
     try:
-        # Enter alternate screen + hide cursor
-        sys.stdout.write("\x1b[?1049h\x1b[?25l")
+        # Clear the main screen and hide cursor (no alternate screen —
+        # the TUI will enter its own alt screen cleanly afterwards).
+        sys.stdout.write("\x1b[2J\x1b[H\x1b[?25l")
         sys.stdout.flush()
 
         start = time.monotonic()
@@ -1167,13 +1168,11 @@ def play_intro_animation() -> None:
             sys.stdout.flush()
             time.sleep(1.0 / fps)
 
-        # Stay in alternate screen — the TUI will take over seamlessly.
-        # Just clear it and show cursor briefly.
+        # Clear screen and restore cursor — TUI enters alt screen next
         sys.stdout.write("\x1b[2J\x1b[H\x1b[?25h")
         sys.stdout.flush()
     except Exception:
-        # Restore terminal state on any error
-        sys.stdout.write("\x1b[?25h\x1b[?1049l")
+        sys.stdout.write("\x1b[2J\x1b[H\x1b[?25h")
         sys.stdout.flush()
 
 

@@ -1107,35 +1107,77 @@ class SetupWizard:
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def play_intro_animation() -> None:
-    """Play the intro splash animation with a random quote as the title."""
+    """Play the intro splash animation with a random quote as the title.
+
+    Uses manual alternate-screen management so the main terminal stays
+    clear when the animation ends — preventing a flash of prior output
+    before the TUI enters its own alternate screen.
+    """
     from alfieprime_musiciser.tui_animations import _STANDBY_PHRASES
     from alfieprime_musiciser import __version__
     quote = random.choice(_STANDBY_PHRASES)
 
-    from rich.live import Live
     tw, th = _term_size()
     fps = 24
     duration = 2.5
+
+    # Render helper (same pattern as SetupWizard._render_to_ansi)
+    _console: Console | None = None
+
+    def _render(group: Group) -> str:
+        nonlocal _console
+        buf = _io.StringIO()
+        if _console is None:
+            _console = Console(
+                file=buf, width=tw, height=th,
+                force_terminal=True, color_system="truecolor", no_color=False,
+            )
+        else:
+            _console._file = buf  # type: ignore[attr-defined]
+        _console.print(group)
+        rendered = buf.getvalue()
+        lines = rendered.split("\n")
+        while lines and lines[-1] == "":
+            lines.pop()
+        n = len(lines)
+        if n > th:
+            lines = lines[:th]
+        elif n < th:
+            lines.extend([" " * tw] * (th - n))
+        return "\n".join(lines)
+
     try:
-        with Live(
-            console=Console(), refresh_per_second=fps,
-            transient=True, screen=True,
-        ) as live:
-            start = time.monotonic()
-            while True:
-                elapsed = time.monotonic() - start
-                if elapsed >= duration:
-                    break
-                progress = min(1.0, elapsed / duration)
-                frame = _build_intro_frame(
-                    progress, tw, th,
-                    subtitle=f"v{__version__}",
-                    title_banner=quote,
-                )
-                live.update(frame)
-                time.sleep(1.0 / fps)
+        # Enter alternate screen + hide cursor
+        sys.stdout.write("\x1b[?1049h\x1b[?25l")
+        sys.stdout.flush()
+
+        start = time.monotonic()
+        while True:
+            elapsed = time.monotonic() - start
+            if elapsed >= duration:
+                break
+            progress = min(1.0, elapsed / duration)
+            frame = _build_intro_frame(
+                progress, tw, th,
+                subtitle=f"v{__version__}",
+                title_banner=quote,
+            )
+            rendered = _render(frame)
+            sys.stdout.write(f"\x1b[H{rendered}")
+            sys.stdout.flush()
+            time.sleep(1.0 / fps)
+
+        # Exit alternate screen + show cursor
+        sys.stdout.write("\x1b[?25h\x1b[?1049l")
+        sys.stdout.flush()
+
+        # Clear the main screen so nothing flashes before the TUI
+        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.flush()
     except Exception:
-        pass
+        # Restore terminal state on any error
+        sys.stdout.write("\x1b[?25h\x1b[?1049l")
+        sys.stdout.flush()
 
 
 def run_setup_wizard(console: Console | None = None, existing: Config | None = None) -> Config:

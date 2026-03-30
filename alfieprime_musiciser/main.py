@@ -465,24 +465,27 @@ def main() -> None:
             config.save()
 
     if not ran_setup:
+        # Check for updates before anything else
+        if config.auto_update:
+            check_for_updates(console)
+
+        # Play intro animation (setup has its own, so only play on normal start)
+        play_intro_animation()
+
         # Connection test + retry loop (skip after setup — go straight to launch)
         while True:
-            console.print(f"[dim]Mode:[/] [bright_cyan]{config.mode}[/]", highlight=False)
-            if config.mode == "connect":
-                console.print(f"[dim]Server:[/] [bright_cyan]{config.server_url}[/]", highlight=False)
-            else:
-                console.print(f"[dim]Listen port:[/] [bright_cyan]{config.listen_port}[/]", highlight=False)
-            console.print(f"[dim]Client name:[/] [bright_cyan]{config.client_name}[/]", highlight=False)
-            console.print()
-
-            console.print("[dim]Testing connection...[/]")
             error = _test_connection(config, console)
 
             if error is None:
-                console.print("[bright_green]OK![/] Starting party...\n")
                 break
             else:
                 console.print(f"\n[bold red]Connection failed:[/] {error}\n")
+                console.print(f"[dim]Mode:[/] [bright_cyan]{config.mode}[/]", highlight=False)
+                if config.mode == "connect":
+                    console.print(f"[dim]Server:[/] [bright_cyan]{config.server_url}[/]", highlight=False)
+                else:
+                    console.print(f"[dim]Listen port:[/] [bright_cyan]{config.listen_port}[/]", highlight=False)
+                console.print()
                 choice = Prompt.ask(
                     "What would you like to do?",
                     choices=["retry", "setup", "quit"],
@@ -496,14 +499,6 @@ def main() -> None:
                     break  # after manual setup retry, launch directly
                 else:
                     return
-
-    # Check for updates before launching
-    if not ran_setup and config.auto_update:
-        check_for_updates(console)
-
-    # Play intro animation (setup has its own, so only play on normal start)
-    if not ran_setup:
-        play_intro_animation()
 
     # Run!
     try:

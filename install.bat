@@ -88,19 +88,44 @@ if not defined PYTHON_CMD (
 echo  [OK] Found Python !PY_VER! (!PYTHON_CMD!)
 echo.
 
+:: --- Check for git ---
+where git >nul 2>&1
+if %errorlevel% neq 0 (
+    echo  [X] git is required but was not found.
+    echo.
+    echo  Opening the Git download page...
+    echo  Please install Git and re-run this installer.
+    echo.
+    start https://git-scm.com/downloads/win
+    echo  Press any key to exit...
+    pause >nul
+    exit /b 1
+)
+echo  [OK] Found git
+
 :: --- Determine install source ---
 :: If this script is next to pyproject.toml, install from local source.
-:: Otherwise, prompt for a path or git URL.
+:: Otherwise, auto-clone the repo.
 set "INSTALL_SOURCE="
 if exist "%~dp0pyproject.toml" (
     set "INSTALL_SOURCE=%~dp0."
     echo  [OK] Found project source in: %~dp0
 ) else (
-    echo  [!] pyproject.toml not found next to this installer.
-    echo      Place this script in the AlfiePRIME-Musiciser folder,
-    echo      or enter the path/git URL below.
-    echo.
-    set /p "INSTALL_SOURCE=  Install source (path or git URL): "
+    echo  [*] Cloning AlfiePRIME Musiciser...
+    set "CLONE_DIR=%LOCALAPPDATA%\alfieprime-musiciser-src"
+    if exist "!CLONE_DIR!\.git" (
+        echo      Updating existing clone...
+        git -C "!CLONE_DIR!" pull --quiet 2>nul
+    ) else (
+        git clone --quiet https://github.com/AlfiePRIME/AlfiePRIME-Musiciser.git "!CLONE_DIR!"
+    )
+    if %errorlevel% neq 0 (
+        echo  [X] Failed to clone repository.
+        pause
+        exit /b 1
+    )
+    set "INSTALL_SOURCE=!CLONE_DIR!"
+    echo  [OK] Source ready
 )
 
 if not defined INSTALL_SOURCE (

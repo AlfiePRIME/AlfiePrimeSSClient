@@ -40,23 +40,35 @@ A party-themed TUI/GUI music player and multi-protocol audio receiver for [Music
 
 ## Installation
 
-### From source (recommended)
+### Linux / macOS (one-liner)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AlfiePRIME/AlfiePRIME-Musiciser/main/install.sh | bash
+```
+
+or with wget:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/AlfiePRIME/AlfiePRIME-Musiciser/main/install.sh | bash
+```
+
+Checks for Python 3.12+, git, and pipx. Clones the repo and installs via pipx. Run again to update.
+
+### Windows (one-liner)
+
+```powershell
+powershell -c "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/AlfiePRIME/AlfiePRIME-Musiciser/main/install.bat' -OutFile '$env:TEMP\install.bat'; Start-Process '$env:TEMP\install.bat'"
+```
+
+Checks for Python 3.12+ and git. Clones the repo, installs via pipx, and creates desktop/Start Menu shortcuts. Run `uninstall.bat` to remove.
+
+### Manual install
 
 ```bash
 git clone https://github.com/AlfiePRIME/AlfiePRIME-Musiciser.git
 cd AlfiePRIME-Musiciser
-pip install .
+pipx install .
 ```
-
-### Global install with pipx
-
-```bash
-pipx install git+https://github.com/AlfiePRIME/AlfiePRIME-Musiciser.git
-```
-
-### Windows one-click installer
-
-Run `install.bat` — installs dependencies via pipx and creates desktop/Start Menu shortcuts. Uninstall with `uninstall.bat`.
 
 ## Usage
 
@@ -178,60 +190,27 @@ A two-channel software audio mixer for live crossfading between sources. Enter w
 
 Tab-based overlay opened with `/`. Animated CRT scanline background with fade transitions and scattered dancing easter egg.
 
-Navigate tabs with `←`/`→`, `Tab`, or number keys `1`-`5`.
+Navigate tabs with `←`/`→`, `Tab`, or number keys `1`-`6`. Press `?` on any setting for a help description.
 
-**General**
+**General** — Auto Play, Auto Volume, FPS Limit, Brightness, Show Artwork, Album Art Colours, Static Colour
 
-| Setting | Description |
-|---------|-------------|
-| Auto Play | Send play command on connect |
-| Auto Volume | Set volume to target level on connect |
-| FPS Limit | Render frame rate (5-120), also used for animation smoothness |
-| Brightness | Display brightness multiplier (50-150%) |
-| Show Artwork | Toggle braille album art panel |
-| Album Art Colours | Use album art palette for UI theming |
-| Static Colour | Fixed UI colour (16 presets + custom hex) |
-| DJ Source Mode | Channel assignment for DJ mixer |
+**SendSpin** — SendSpin Receiver, Device Swap Prompt, Auto Action
 
-**SendSpin**
+**AirPlay** — AirPlay Receiver, Remember Devices
 
-| Setting | Description |
-|---------|-------------|
-| SendSpin Receiver | Enable/disable SendSpin |
-| Device Swap Prompt | Prompt when a new device connects while one is active |
-| Auto Action | Accept or deny new connections automatically (when prompt is off) |
+**Spotify** *(Linux/macOS only)* — Spotify Connect, Bitrate, Device Name, Remember Devices, Username, Web API Client ID
 
-**AirPlay**
+**DJ Mode** — DJ Source Mode, Open DJ on Start, Album Art Colours
 
-| Setting | Description |
-|---------|-------------|
-| AirPlay Receiver | Enable/disable AirPlay 2 |
-| Forget Devices | Clear paired AirPlay devices on exit |
-
-**Spotify**
-
-| Setting | Description |
-|---------|-------------|
-| Spotify Connect | Enable/disable Spotify Connect (requires librespot) |
-| Bitrate | Streaming quality: 96, 160, or 320 kbps |
-| Device Name | Name shown in Spotify app (default: `Musiciser@hostname`) |
-| Username | Spotify account username for librespot auth |
-| Web API Client ID | Spotify Developer app client ID for rich metadata and transport controls |
-
-**Advanced**
-
-| Setting | Description |
-|---------|-------------|
-| Client Name | Display name for Music Assistant |
-| Client UUID | Unique identifier (auto-generated) |
-| Reset Config | Factory reset with CRT danger warning |
+**Advanced** — Client Name, Client UUID, Re-run Setup, Reset Config
 
 | Key | Action |
 |-----|--------|
 | `←` / `→` | Switch tab (or adjust value on adjustable items) |
-| `1`-`5` / `Tab` | Jump to tab |
+| `1`-`6` / `Tab` | Jump to tab |
 | `↑` / `↓` | Navigate items |
 | `Enter` | Toggle / edit |
+| `?` | Help for selected setting |
 | `Esc` / `C` | Close settings |
 
 ---

@@ -498,7 +498,7 @@ def main() -> None:
                     return
 
     # Check for updates before launching
-    if not ran_setup:
+    if not ran_setup and config.auto_update:
         check_for_updates(console)
 
     # Play intro animation (setup has its own, so only play on normal start)

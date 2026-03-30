@@ -44,6 +44,7 @@ _HELP_TEXT: dict[str, str] = {
     "spotify_client_id": "Spotify Web API client ID for metadata & controls.\nOptional — without it, transport controls and\nrich metadata are unavailable.",
     "client_name": "How this player appears in Music Assistant.\nLeave empty to use your system hostname.\nChanging this may require re-pairing.",
     "client_id": "Stable UUID so Music Assistant remembers this device\nacross restarts. Changing this makes the server\ntreat you as a new device.",
+    "auto_update": "Automatically check for updates on startup.\nWhen ON, the app checks GitHub for a newer version\nonce per day and offers to update.",
     "run_setup": "Re-run the interactive setup wizard on next launch.\nThe app will close and the wizard will appear when\nyou start it again.",
     "reset_config": "Delete all configuration and restart the app.\nYou will need to go through the setup wizard again.\nThis cannot be undone!",
     "mode": "How to connect to the Music Assistant server.\nLISTEN = server discovers us via mDNS (recommended).\nCONNECT = we connect to a specific server URL.",
@@ -305,6 +306,7 @@ class SettingsMixin:
             from alfieprime_musiciser import __version__
             return [
                 ("Version", "version_display", __version__),
+                ("Auto Update", "auto_update", cfg.auto_update),
                 ("Client Name", "client_name", cfg.client_name),
                 ("Client UUID", "client_id", cfg.client_id),
                 ("Re-run Setup", "run_setup", cfg.run_setup),
@@ -571,7 +573,7 @@ class SettingsMixin:
                          "airplay_enabled", "sendspin_enabled", "spotify_enabled",
                          "swap_prompt", "remember_airplay_devices",
                          "remember_spotify_devices", "dj_default",
-                         "dj_use_art_colors", "run_setup"):
+                         "dj_use_art_colors", "auto_update", "run_setup"):
                 val_str = "ON" if value else "OFF"
                 val_color = cursor_c if value else "#666666"
                 item.append(f"{val_str:>8}", Style(color=val_color, bold=selected))

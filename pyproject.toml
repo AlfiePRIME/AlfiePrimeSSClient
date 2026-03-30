@@ -1,6 +1,6 @@
 [project]
 name = "alfieprime-musiciser"
-version = "1.3.4"
+version = "1.3.5"
 description = "Party-themed AirPlay 2 and SendSpin receiver with boom box UI and audio visualizer"
 requires-python = ">=3.12"
 dependencies = [

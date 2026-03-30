@@ -58,6 +58,8 @@ class Config:
     dj_source_mode: str = "mixed"
     dj_default: bool = False  # open DJ mode on startup
     dj_use_art_colors: bool = True  # use album art colours in DJ mode
+    # Auto-update checker
+    auto_update: bool = True
     # Re-run the setup wizard on next launch
     run_setup: bool = False
 

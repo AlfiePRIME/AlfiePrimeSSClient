@@ -453,11 +453,7 @@ class Audio:
         self.remoteClockMonotonic_ts, self.remoteClockId = None, None
 
     def _apply_volume(self, audio: bytes) -> bytes:
-        """Scale 16-bit PCM audio by the shared volume value (0.0–1.0).
-
-        Uses stdlib ``struct`` to avoid numpy allocations/GC in the
-        realtime audio loop.
-        """
+        """Scale 16-bit PCM audio by the shared volume value (0.0–1.0)."""
         vol = self._sink_volume
         if vol is None:
             return audio
@@ -466,12 +462,10 @@ class Audio:
             return audio
         if v <= 0.0:
             return b'\x00' * len(audio)
-        import struct
-        n = len(audio) // 2
-        fmt = f'<{n}h'
-        factor = int(v * 256)
-        samples = struct.unpack(fmt, audio)
-        return struct.pack(fmt, *(max(-32768, min(32767, (s * factor) >> 8)) for s in samples))
+        import numpy as _np
+        samples = _np.frombuffer(audio, dtype=_np.int16).astype(_np.float32)
+        samples *= v
+        return _np.clip(samples, -32768, 32767).astype(_np.int16).tobytes()
 
     def init_audio_sink(self):
         codecLatencySec = 0

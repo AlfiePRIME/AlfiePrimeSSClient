@@ -144,6 +144,9 @@ class _DebugLogHandler(logging.Handler):
             pass
 
 
+_BRIGHTNESS_RE = re.compile(r"([34]8;2;)(\d+);(\d+);(\d+)")
+
+
 class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
     """The party-themed boom box terminal UI."""
 
@@ -1260,7 +1263,7 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 g = min(255, int(int(m.group(3)) * br))
                 b = min(255, int(int(m.group(4)) * br))
                 return f"{prefix}{r};{g};{b}"
-            rendered = re.sub(r"([34]8;2;)(\d+);(\d+);(\d+)", _scale, rendered)
+            rendered = _BRIGHTNESS_RE.sub(_scale, rendered)
 
         # Trim/pad lines to exactly term_h — use rsplit to avoid full copy
         lines = rendered.split("\n")
@@ -1507,9 +1510,13 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                 self._start_dj_mode()
 
             # ── Main render loop ──
+            _is_win = sys.platform == "win32"
+            _frame_budget = 0.0
+            _last_frame_time = 0.0
             while self._running:
                 fps = self._config.fps_limit if self._config else 30
                 fps = max(5, min(120, fps))
+                _frame_budget = 1.0 / fps
                 self._update_terminal_title()
                 if self._check_standby():
                     term_w, term_h = self._get_terminal_size()
@@ -1519,10 +1526,20 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
                     sys.stdout.flush()
                     await asyncio.sleep(1 / max(5, fps // 2))  # slower in standby
                 else:
+                    _t0 = time.monotonic()
+                    # On Windows, skip frame if the previous one overran budget
+                    # to prevent snowballing render lag.
+                    if _is_win and _last_frame_time > _frame_budget * 1.5:
+                        _last_frame_time *= 0.5  # decay so we don't skip forever
+                        await asyncio.sleep(_frame_budget)
+                        continue
                     frame = self._render_frame()
                     sys.stdout.write(f"\x1b[H{frame}")
                     sys.stdout.flush()
-                    await asyncio.sleep(1 / fps)
+                    _last_frame_time = time.monotonic() - _t0
+                    # Subtract render time from sleep to maintain target FPS
+                    remaining = _frame_budget - _last_frame_time
+                    await asyncio.sleep(max(0.001, remaining))
 
         finally:
             # ── CRT shutdown animation ──

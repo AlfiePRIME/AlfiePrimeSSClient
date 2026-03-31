@@ -658,8 +658,8 @@ def render_binary_background(
     rng = _rng.Random(epoch)
     buf = bytearray(audio_bytes[:needed_bytes])
     # XOR with a random mask to shuffle the pattern each epoch
-    for i in range(len(buf)):
-        buf[i] ^= rng.randint(0, 255)
+    mask = bytearray(rng.getrandbits(8) for _ in range(len(buf)))
+    buf = bytearray(a ^ b for a, b in zip(buf, mask))
 
     bit_idx = 0
     pr, pg, pb = _hex_to_rgb(th.primary)
@@ -667,9 +667,16 @@ def render_binary_background(
 
     # Smooth transition factor within each 3-second epoch (0→1)
     epoch_frac = (t / 3) - epoch
+    pulse = 0.5 + 0.5 * math.sin(epoch_frac * math.pi)
+    brightness_scale = 0.7 + 0.3 * pulse
+
+    # Precompute per-column wave offsets (shared across rows)
+    _sin = math.sin
+    col_phase = [t * 1.2 + col * 0.15 for col in range(width)]
 
     for row in range(height):
         line = Text()
+        row_phase = row * 0.2
         for col in range(width):
             byte_pos = bit_idx // 8
             bit_pos = bit_idx % 8
@@ -679,21 +686,19 @@ def render_binary_background(
                 bit = 0
             bit_idx += 1
 
-            ch = "1" if bit else "0"
-            # Vary brightness with a travelling wave + epoch-based pulse
-            wave = 0.5 + 0.5 * math.sin(t * 1.2 + col * 0.15 + row * 0.2)
-            pulse = 0.5 + 0.5 * math.sin(epoch_frac * math.pi)
-            brightness = 0.06 + 0.09 * wave * (0.7 + 0.3 * pulse)
+            wave = 0.5 + 0.5 * _sin(col_phase[col] + row_phase)
+            brightness = 0.06 + 0.09 * wave * brightness_scale
             if bit:
-                r = int(min(255, ar * brightness))
-                g = int(min(255, ag * brightness))
-                b = int(min(255, ab * brightness))
+                r = int(ar * brightness)
+                g = int(ag * brightness)
+                b = int(ab * brightness)
+                line.append("1", _cached_style(_fast_rgb_hex_int(r, g, b)))
             else:
-                r = int(min(255, pr * brightness * 0.5))
-                g = int(min(255, pg * brightness * 0.5))
-                b = int(min(255, pb * brightness * 0.5))
-            color = _fast_rgb_hex_int(r, g, b)
-            line.append(ch, _cached_style(color))
+                brightness *= 0.5
+                r = int(pr * brightness)
+                g = int(pg * brightness)
+                b = int(pb * brightness)
+                line.append("0", _cached_style(_fast_rgb_hex_int(r, g, b)))
         lines.append(line)
 
     return lines

@@ -332,7 +332,11 @@ async def _run_with_config(
                            receiver._audio_handler is not None,
                            tui.state._source_volumes, tui.state.active_source)
             if receiver._audio_handler is not None:
-                if tui.state.active_source == "sendspin":
+                # Use ("sendspin", "") to match _sendspin_is_active() —
+                # active_source may be "" if no explicit switch occurred.
+                if tui.state.active_source in ("sendspin", ""):
+                    if tui.state.active_source == "":
+                        tui.state.active_source = "sendspin"
                     sv = tui.state._source_volumes.get("sendspin")
                     if sv is not None:
                         ss_vol = sv["volume"]

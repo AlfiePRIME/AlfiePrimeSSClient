@@ -52,7 +52,7 @@ SAMPLE_WIDTH = 2  # 16-bit
 FRAME_SIZE = CHANNELS * SAMPLE_WIDTH  # 4 bytes per frame
 CHUNK_FRAMES = 1024  # ~21ms at 48kHz
 CHUNK_BYTES = CHUNK_FRAMES * FRAME_SIZE
-RING_SIZE = SAMPLE_RATE * CHANNELS  # 1 second of stereo float32
+RING_SIZE = SAMPLE_RATE * CHANNELS * 2  # 2 seconds of stereo float32
 
 
 # ── Biquad filter for EQ ────────────────────────────────────────────────────

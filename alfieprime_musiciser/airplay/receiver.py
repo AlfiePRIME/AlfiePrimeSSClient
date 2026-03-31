@@ -182,7 +182,7 @@ class _PCMConsumer:
         import queue as _queue_mod
         while self._running:
             try:
-                data = self._queue.get(timeout=0.02)
+                data = self._queue.get(timeout=0.005)
             except _queue_mod.Empty:
                 continue
             except (OSError, EOFError):
@@ -1485,7 +1485,7 @@ class AirPlayReceiver:
         # Create a multiprocessing queue for PCM audio from child processes.
         # The vendored audio.py writes decoded PCM to this queue; a consumer
         # thread in the parent feeds it to the visualizer.
-        pcm_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=32)
+        pcm_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=128)
         # Shared flag to mute the audio child's native sink when DJ mixer owns output
         sink_muted: multiprocessing.Value = multiprocessing.Value("b", False)
         self._sink_muted = sink_muted

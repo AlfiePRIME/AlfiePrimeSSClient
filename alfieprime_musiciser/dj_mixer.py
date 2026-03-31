@@ -271,6 +271,13 @@ class _InputRing:
             avail = (self._write - self._read) % self._size
             if avail <= 0 and self._write != self._read:
                 avail = self._size
+            # Skip ahead if buffer has accumulated too much latency
+            # (more than ~200ms of stereo audio at 48kHz = 19200 samples).
+            _max_latency = SAMPLE_RATE * CHANNELS // 5  # 200ms
+            if avail > _max_latency:
+                skip = avail - _max_latency
+                self._read = (self._read + skip) % self._size
+                avail = _max_latency
             n = min(n, avail)
             if n <= 0:
                 return np.zeros(0, dtype=np.float32)

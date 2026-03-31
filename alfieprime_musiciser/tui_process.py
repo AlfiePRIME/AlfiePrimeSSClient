@@ -154,10 +154,14 @@ def _state_receiver(
             if f in data:
                 setattr(state, f, data[f])
 
-        # Re-base progress_update_time to local monotonic clock
+        # Re-base progress_update_time to local monotonic clock — but only
+        # when the remote value actually changes (e.g. play/pause/seek), not
+        # on every state tick, otherwise elapsed time resets to ~0 each frame
+        # and get_interpolated_progress() never advances.
         remote_mono = data.get("_progress_update_mono", 0.0)
-        if remote_mono > 0:
+        if remote_mono > 0 and remote_mono != getattr(state, "_last_remote_mono", 0.0):
             state.progress_update_time = time.monotonic()
+            state._last_remote_mono = remote_mono
 
         # ColorTheme
         td = data.get("theme_dict")

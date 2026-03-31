@@ -917,14 +917,20 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
             title_align="center", border_style=th.border_party, padding=(0, 0),
         ))
 
-        # Party scene animation
+        # Party scene animation — throttled to ~20 fps to reduce CPU
         beat_count, beat_intensity = self._visualizer.get_beat()
         current_bpm = self._visualizer.get_bpm()
-        party_lines = render_party_scene(
-            flush_inner, vu_left, vu_right, beat_count, beat_intensity,
-            theme=th, height=dance_height, bpm=current_bpm,
-            is_playing=self.state.is_playing,
-        )
+        _party_counter = getattr(self, "_party_frame_counter", 0) + 1
+        self._party_frame_counter = _party_counter
+        if _party_counter % 3 == 0 or not hasattr(self, "_party_cache"):
+            party_lines = render_party_scene(
+                flush_inner, vu_left, vu_right, beat_count, beat_intensity,
+                theme=th, height=dance_height, bpm=current_bpm,
+                is_playing=self.state.is_playing,
+            )
+            self._party_cache = party_lines
+        else:
+            party_lines = self._party_cache
         parts.append(Panel(
             Group(*party_lines),
             title=" \u266b DANCE FLOOR \u266b ",

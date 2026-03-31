@@ -173,16 +173,22 @@ class _PCMReader:
                     state.is_playing = True
                 continue
 
-            # Only feed master visualizer when Spotify is active source
+            # Only feed when Spotify is active source
             if state and state.active_source != "spotify":
                 continue
 
-            self._visualizer.set_format(self.SAMPLE_RATE, self.SAMPLE_SIZE, self.CHANNELS)
-            if self._visualizer._paused:
-                self._visualizer.set_paused(False)
             if state and not state.is_playing:
                 state.is_playing = True
-            self._visualizer.feed_audio(data, immediate=True)
+            # Write PCM to shared ring for TUI visualizer
+            ring = getattr(self, "_pcm_ring", None)
+            if ring is not None:
+                ring.set_format(self.SAMPLE_RATE, self.SAMPLE_SIZE, self.CHANNELS)
+                ring.write_bytes_s16(data, channels=self.CHANNELS)
+            else:
+                self._visualizer.set_format(self.SAMPLE_RATE, self.SAMPLE_SIZE, self.CHANNELS)
+                if self._visualizer._paused:
+                    self._visualizer.set_paused(False)
+                self._visualizer.feed_audio(data, immediate=True)
 
         logger.info("Spotify PCM reader stopped")
 
@@ -441,6 +447,7 @@ class SpotifyConnectReceiver:
 
         # Start PCM reader on stdout
         self._pcm_reader = _PCMReader(self._visualizer, self._state)
+        self._pcm_reader._pcm_ring = getattr(self, "_pcm_ring", None)
         if self.__dj_mixer is not None:
             self._pcm_reader.dj_mixer = self.__dj_mixer
             self._pcm_reader.dj_feed_channel = self._dj_feed_channel

@@ -525,11 +525,16 @@ class SendSpinReceiver:
                 mixer.set_format_a(pcm.sample_rate, pcm.bit_depth, pcm.channels)
                 mixer.feed_a(raw_pcm)
 
-        # Feed visualizer only when SendSpin is the active source
-        # and DJ mixer is NOT running (mixer owns the master viz in DJ mode)
+        # Write PCM to shared ring for TUI visualizer (when SendSpin is active
+        # and DJ mixer is NOT running — mixer writes its own rings).
         if mixer is None and (not self._state.active_source or self._state.active_source == "sendspin"):
-            self._visualizer.set_format(pcm.sample_rate, pcm.bit_depth, pcm.channels)
-            self._visualizer.feed_audio(raw_pcm)
+            ring = getattr(self, "_pcm_ring", None)
+            if ring is not None:
+                ring.set_format(pcm.sample_rate, pcm.bit_depth, pcm.channels)
+                ring.write_bytes_s16(raw_pcm, channels=pcm.channels)
+            else:
+                self._visualizer.set_format(pcm.sample_rate, pcm.bit_depth, pcm.channels)
+                self._visualizer.feed_audio(raw_pcm)
 
     def _sendspin_is_active(self) -> bool:
         return self._state.active_source in ("sendspin", "")

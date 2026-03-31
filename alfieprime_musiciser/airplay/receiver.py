@@ -155,6 +155,7 @@ class _PCMConsumer:
         sample_rate: int = 44100,
         sample_size: int = 16,
         channels: int = 2,
+        pcm_ring=None,
     ):
         self._queue = pcm_queue
         self._visualizer = visualizer
@@ -165,6 +166,7 @@ class _PCMConsumer:
         self._running = False
         self._thread: threading.Thread | None = None
         self.dj_mixer = None  # Set externally when DJ mode activates
+        self._pcm_ring = pcm_ring  # SharedPCMRing for TUI visualizer
         self.dj_feed_channel = "b"  # Which mixer channel to feed
 
     def start(self) -> None:
@@ -206,29 +208,26 @@ class _PCMConsumer:
                         mixer.set_format_b(self.sample_rate, 16, self.channels)
                         mixer.feed_b(data)
 
-                # Only feed visualizer when AirPlay is the active source
-                # and DJ mixer is NOT running (mixer owns the master viz in DJ mode)
+                # Only feed when AirPlay is the active source and DJ mixer
+                # is NOT running (mixer writes its own rings in DJ mode).
                 if mixer is not None:
-                    # Ensure is_playing stays True while receiving audio
                     if self._state and not self._state.is_playing:
                         self._state.is_playing = True
                     continue
                 if self._state and self._state.active_source != "airplay":
                     continue
-                # PCM from AirPlay child is always s16 (resampled), use 16-bit
-                self._visualizer.set_format(
-                    self.sample_rate, 16, self.channels,
-                )
-                # Ensure visualizer is unpaused — SendSpin may have left it
-                # paused before we switched to AirPlay.
-                if self._visualizer._paused:
-                    self._visualizer.set_paused(False)
-                # Ensure is_playing stays True while we're receiving audio —
-                # some AirPlay senders don't always send SETRATEANCHORTIME
-                # with rate > 0, leaving is_playing False while music plays.
+                # Ensure is_playing stays True while we're receiving audio
                 if self._state and not self._state.is_playing:
                     self._state.is_playing = True
-                self._visualizer.feed_audio(data, immediate=True)
+                # Write PCM to shared ring for TUI visualizer
+                if self._pcm_ring is not None:
+                    self._pcm_ring.set_format(self.sample_rate, 16, self.channels)
+                    self._pcm_ring.write_bytes_s16(data, channels=self.channels)
+                else:
+                    self._visualizer.set_format(self.sample_rate, 16, self.channels)
+                    if self._visualizer._paused:
+                        self._visualizer.set_paused(False)
+                    self._visualizer.feed_audio(data, immediate=True)
             except Exception:
                 logger.warning("PCM consumer feed error", exc_info=True)
 
@@ -1494,7 +1493,10 @@ class AirPlayReceiver:
         sink_volume: multiprocessing.Value = multiprocessing.Value("f", 1.0)
         self._sink_volume = sink_volume
         meta_hook._sink_volume = sink_volume
-        pcm_consumer = _PCMConsumer(pcm_queue, self._visualizer, state=self._state)
+        pcm_consumer = _PCMConsumer(
+            pcm_queue, self._visualizer, state=self._state,
+            pcm_ring=getattr(self, "_pcm_ring", None),
+        )
         self._pcm_consumer = pcm_consumer
         # Propagate DJ mixer if it was already set before pcm_consumer existed
         if self.__dj_mixer is not None:

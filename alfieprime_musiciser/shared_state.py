@@ -228,11 +228,14 @@ class MixerDiagProxy:
 
 # ── State packing (control process side) ─────────────────────────────────────
 
-def pack_state(state, visualizer, dj_mixer=None,
-               dj_viz_a=None, dj_viz_b=None,
+def pack_state(state, dj_mixer=None,
                dj_active: bool = False,
                source_b_data: dict | None = None) -> dict:
-    """Pack current state into a dict for sending to the TUI process."""
+    """Pack current state into a dict for sending to the TUI process.
+
+    Visualizer data is NOT included — the TUI process runs its own
+    AudioVisualizer, fed from SharedPCMRings.
+    """
     data: dict = {}
 
     # Scalar PlayerState fields
@@ -251,27 +254,8 @@ def pack_state(state, visualizer, dj_mixer=None,
     data["_source_volumes"] = dict(state._source_volumes)
     data["_source_snapshots"] = dict(state._source_snapshots)
 
-    # Visualizer
-    bands, peaks, vu_l, vu_r = visualizer.get_spectrum()
-    beat_count, beat_intensity = visualizer.get_beat()
-    data["bands"] = bands
-    data["peaks"] = peaks
-    data["vu_left"] = vu_l
-    data["vu_right"] = vu_r
-    data["beat_count"] = beat_count
-    data["beat_intensity"] = beat_intensity
-    data["bpm"] = visualizer.get_bpm()
-
     # DJ mode
     data["dj_active"] = dj_active
-    if dj_active and dj_viz_a is not None:
-        a_b, a_p, a_vl, a_vr = dj_viz_a.get_spectrum()
-        a_bc, a_bi = dj_viz_a.get_beat()
-        data["dj_viz_a"] = (a_b, a_p, a_vl, a_vr, a_bc, a_bi)
-    if dj_active and dj_viz_b is not None:
-        b_b, b_p, b_vl, b_vr = dj_viz_b.get_spectrum()
-        b_bc, b_bi = dj_viz_b.get_beat()
-        data["dj_viz_b"] = (b_b, b_p, b_vl, b_vr, b_bc, b_bi)
     if dj_active and dj_mixer is not None:
         data["dj_diag"] = (
             dj_mixer._feed_a_count, dj_mixer._feed_b_count,

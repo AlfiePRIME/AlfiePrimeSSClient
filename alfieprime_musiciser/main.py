@@ -38,6 +38,7 @@ from alfieprime_musiciser.tui import BoomBoxTUI
 from alfieprime_musiciser.visualizer import AudioVisualizer
 from alfieprime_musiciser.state import PlayerState
 from alfieprime_musiciser.shared_state import SharedDJState, DJ_ARRAY_SIZE, pack_state
+from alfieprime_musiciser.shared_pcm import SharedPCMRing
 
 # Optional AirPlay support
 try:
@@ -403,13 +404,43 @@ async def _run_with_config(
         shared_dj = SharedDJState()  # creates Array with defaults
         dj_array = shared_dj._arr
 
+        # ── Shared PCM rings (one per source + 3 for DJ output) ──────────
+        _pid = os.getpid()
+        ring_names: dict[str, str] = {
+            "sendspin": f"musiciser_ss_{_pid}",
+            "airplay": f"musiciser_ap_{_pid}",
+            "spotify": f"musiciser_sp_{_pid}",
+        }
+        dj_ring_names: dict[str, str] = {
+            "a": f"musiciser_dj_a_{_pid}",
+            "b": f"musiciser_dj_b_{_pid}",
+            "mix": f"musiciser_dj_mix_{_pid}",
+        }
+        # Create source rings (producer = receivers in this process)
+        _pcm_rings: dict[str, SharedPCMRing] = {}
+        for src, rname in ring_names.items():
+            _pcm_rings[src] = SharedPCMRing(rname, capacity=48000, create=True)
+        # DJ output rings are created on DJ activate (short-lived)
+        _dj_pcm_rings: dict[str, SharedPCMRing | None] = {"a": None, "b": None, "mix": None}
+
+        # Wire PCM rings to receivers
+        receiver._pcm_ring = _pcm_rings["sendspin"]
+        if airplay_receiver is not None:
+            airplay_receiver._pcm_ring = _pcm_rings["airplay"]
+        if spotify_receiver is not None:
+            spotify_receiver._pcm_ring = _pcm_rings["spotify"]
+        if receiver_b is not None:
+            # Second receiver writes to whichever ring matches its source type
+            receiver_b._pcm_ring = _pcm_rings.get("sendspin")
+
         # Serialize config for the TUI process
         config_dict = dataclasses.asdict(config)
 
         # Launch TUI subprocess
         tui_proc = multiprocessing.Process(
             target=tui_main,
-            args=(state_pipe_r, cmd_queue, dj_array, config_dict),
+            args=(state_pipe_r, cmd_queue, dj_array, config_dict,
+                  ring_names, dj_ring_names),
             daemon=True,
         )
         tui_proc.start()
@@ -417,13 +448,11 @@ async def _run_with_config(
 
         # DJ mixer state (lives in control process)
         _dj_mixer = None
-        _dj_viz_a = None
-        _dj_viz_b = None
         _dj_active = False
 
-        # ── State publisher thread ───────────────────────────────────────
+        # ── State publisher thread (metadata only — no viz data) ─────────
         def _publish_state():
-            fps = max(5, min(120, config.fps_limit))
+            fps = max(5, min(60, config.fps_limit))
             _last_art_hash = 0
             _last_snap_hash = 0
             _last_src_b_art_hash = 0
@@ -452,16 +481,13 @@ async def _run_with_config(
                                 "sample_rate": getattr(_st, "sample_rate", 48000),
                                 "bit_depth": getattr(_st, "bit_depth", 16),
                             }
-                            # Only include source-B artwork when changed
                             sb_art = _st.artwork_data
                             sb_art_h = hash(sb_art) if sb_art else 0
                             if sb_art_h != _last_src_b_art_hash:
                                 source_b["artwork_data"] = sb_art
                                 _last_src_b_art_hash = sb_art_h
 
-                    # Detect background source changes (e.g. AirPlay auto-connect
-                    # sets active_source directly) and trigger mute/unmute so
-                    # the old source's audio handler doesn't keep playing.
+                    # Detect background source changes (e.g. AirPlay auto-connect)
                     cur_src = tui.state.active_source
                     if cur_src and cur_src != _last_active_source:
                         logger.info("Background source change: %s → %s",
@@ -470,29 +496,27 @@ async def _run_with_config(
                         _last_active_source = cur_src
 
                     data = pack_state(
-                        tui.state, visualizer,
-                        dj_mixer=_dj_mixer, dj_viz_a=_dj_viz_a, dj_viz_b=_dj_viz_b,
+                        tui.state,
+                        dj_mixer=_dj_mixer,
                         dj_active=_dj_active, source_b_data=source_b,
                     )
 
-                    # Only include artwork when it changes (can be large)
+                    # Only include artwork when it changes
                     art = tui.state.artwork_data
                     art_hash = hash(art) if art else 0
                     if art_hash != _last_art_hash:
                         data["artwork_data"] = art
                         _last_art_hash = art_hash
 
-                    # Only include snapshots when they change (contain artwork)
+                    # Only include snapshots when they change
                     snaps = tui.state._source_snapshots
-                    snap_keys = frozenset(snaps.keys())
-                    # Quick hash: track keys + titles as change proxy
-                    snap_h = hash((snap_keys,) + tuple(
-                        (k, s.get("title"), s.get("artist"), hash(s.get("artwork_data", b"") or b""))
+                    snap_h = hash(tuple(
+                        (k, s.get("title"), s.get("artist"),
+                         hash(s.get("artwork_data", b"") or b""))
                         for k, s in snaps.items()
                     ))
                     if snap_h != _last_snap_hash:
                         _last_snap_hash = snap_h
-                        # data already has snapshots from pack_state
                     else:
                         data.pop("_source_snapshots", None)
 
@@ -508,12 +532,11 @@ async def _run_with_config(
 
         # ── Command dispatcher ───────────────────────────────────────────
         async def _dispatch_commands():
-            nonlocal _dj_mixer, _dj_viz_a, _dj_viz_b, _dj_active, _running
+            nonlocal _dj_mixer, _dj_active, _running
             while _running:
                 try:
                     cmd = await loop.run_in_executor(None, lambda: cmd_queue.get(timeout=0.5))
                 except Exception:
-                    # Queue.get timeout — check _running flag
                     continue
                 try:
                     kind = cmd[0]
@@ -541,15 +564,18 @@ async def _run_with_config(
                         tui.state.swap_response = cmd[1]
                     elif kind == "dj_activate":
                         if cmd[1]:
-                            # DJ enter — create mixer in control process
-                            _dj_viz_a = AudioVisualizer()
-                            _dj_viz_b = AudioVisualizer()
+                            # DJ enter — create mixer with PCM ring outputs
+                            for key, rname in dj_ring_names.items():
+                                _dj_pcm_rings[key] = SharedPCMRing(
+                                    rname, capacity=48000, create=True,
+                                )
                             _dj_mixer = DJMixer(
-                                shared_dj, visualizer,
-                                viz_a=_dj_viz_a, viz_b=_dj_viz_b,
+                                shared_dj,
+                                pcm_ring_a=_dj_pcm_rings["a"],
+                                pcm_ring_b=_dj_pcm_rings["b"],
+                                pcm_ring_mix=_dj_pcm_rings["mix"],
                             )
                             _dj_mixer.start()
-                            visualizer.set_paused(False)
                             _dj_active = True
                             _on_dj_activate(True, _dj_mixer)
                         else:
@@ -558,9 +584,14 @@ async def _run_with_config(
                             if _dj_mixer is not None:
                                 _dj_mixer.stop()
                             _dj_mixer = None
-                            _dj_viz_a = None
-                            _dj_viz_b = None
                             _dj_active = False
+                            # Cleanup DJ rings
+                            for key in list(_dj_pcm_rings):
+                                r = _dj_pcm_rings[key]
+                                if r is not None:
+                                    r.close()
+                                    r.unlink()
+                                    _dj_pcm_rings[key] = None
                     elif kind == "quit":
                         _running = False
                         _cleanup_receivers()
@@ -585,6 +616,14 @@ async def _run_with_config(
             await asyncio.gather(*tasks)
         finally:
             _running = False
+            # Cleanup shared memory
+            for r in _pcm_rings.values():
+                r.close()
+                r.unlink()
+            for r in _dj_pcm_rings.values():
+                if r is not None:
+                    r.close()
+                    r.unlink()
             tui_proc.join(timeout=3)
             if tui_proc.is_alive():
                 tui_proc.terminate()

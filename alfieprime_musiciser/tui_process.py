@@ -1,8 +1,9 @@
 """TUI subprocess entry point.
 
-Launches BoomBoxTUI in its own process so rendering never competes
-with the audio pipeline for the GIL.  Receives state updates via a
-pipe and sends user commands back via a queue.
+Launches BoomBoxTUI in its own process with its own AudioVisualizer.
+PCM audio arrives via SharedPCMRings (zero-copy shared memory).
+Metadata arrives via a pipe from the control process.
+User commands go back via a multiprocessing Queue.
 """
 from __future__ import annotations
 
@@ -10,11 +11,115 @@ import asyncio
 import logging
 import multiprocessing
 import multiprocessing.connection
-import sys
 import threading
 import time
 
 logger = logging.getLogger(__name__)
+
+
+# ── PCM consumer thread ─────────────────────────────────────────────────────
+
+def _pcm_consumer(
+    ring_names: dict[str, str],
+    dj_ring_names: dict[str, str],
+    tui,
+    viz_master,
+    viz_dj_a,
+    viz_dj_b,
+) -> None:
+    """Background thread: read PCM from SharedPCMRings and feed visualizers.
+
+    In normal mode, reads from the active source's ring.
+    In DJ mode, reads from the three DJ output rings.
+    """
+    from alfieprime_musiciser.shared_pcm import SharedPCMRing
+
+    # Open source rings (one per receiver)
+    rings: dict[str, SharedPCMRing] = {}
+    for src, name in ring_names.items():
+        try:
+            rings[src] = SharedPCMRing(name, create=False)
+        except Exception:
+            logger.warning("Could not open PCM ring '%s' for source '%s'", name, src)
+
+    # Open DJ output rings (created by control process when DJ activates)
+    dj_rings: dict[str, SharedPCMRing | None] = {"a": None, "b": None, "mix": None}
+
+    def _open_dj_rings() -> bool:
+        """Try to open DJ rings.  Returns True if all opened."""
+        for key in ("a", "b", "mix"):
+            if dj_rings[key] is None and key in dj_ring_names:
+                try:
+                    dj_rings[key] = SharedPCMRing(dj_ring_names[key], create=False)
+                except Exception:
+                    pass
+        return all(dj_rings[k] is not None for k in ("a", "b", "mix") if k in dj_ring_names)
+
+    def _close_dj_rings() -> None:
+        for key in list(dj_rings):
+            if dj_rings[key] is not None:
+                try:
+                    dj_rings[key].close()
+                except Exception:
+                    pass
+                dj_rings[key] = None
+
+    _dj_rings_open = False
+    _last_format: dict[str, tuple] = {}
+
+    while getattr(tui, "_running", True):
+        try:
+            if tui._dj_mode:
+                # DJ mode: read from mixer output rings
+                if not _dj_rings_open:
+                    _dj_rings_open = _open_dj_rings()
+                    if not _dj_rings_open:
+                        time.sleep(0.05)
+                        continue
+
+                for key, viz in (("a", viz_dj_a), ("b", viz_dj_b), ("mix", viz_master)):
+                    ring = dj_rings.get(key)
+                    if ring is None:
+                        continue
+                    if ring.consume_format_change():
+                        sr, bd, ch = ring.get_format()
+                        viz.set_format(sr, bd, ch)
+                    data = ring.read(8192)
+                    if len(data) > 0:
+                        viz.feed_audio_float32(data)
+            else:
+                # Normal mode: read from active source ring
+                if _dj_rings_open:
+                    _close_dj_rings()
+                    _dj_rings_open = False
+
+                src = tui.state.active_source
+                ring = rings.get(src)
+                if ring is None:
+                    time.sleep(0.02)
+                    continue
+                # Check format change
+                if ring.consume_format_change():
+                    sr, bd, ch = ring.get_format()
+                    viz_master.set_format(sr, bd, ch)
+                data = ring.read(8192)
+                if len(data) > 0:
+                    viz_master.set_paused(False)
+                    viz_master.feed_audio_float32(data)
+
+            time.sleep(0.005)  # ~200 Hz poll rate
+
+        except Exception:
+            logger.debug("PCM consumer error", exc_info=True)
+            time.sleep(0.02)
+
+    # Cleanup
+    for r in rings.values():
+        try:
+            r.close()
+        except Exception:
+            pass
+    _close_dj_rings()
 
 
 # ── State receiver thread ────────────────────────────────────────────────────
@@ -22,12 +127,9 @@ logger = logging.getLogger(__name__)
 def _state_receiver(
     pipe: multiprocessing.connection.Connection,
     tui,
-    viz: "VisualizerProxy",
-    dj_viz_a: "VisualizerProxy",
-    dj_viz_b: "VisualizerProxy",
     mixer_diag: "MixerDiagProxy",
 ) -> None:
-    """Background thread: drain state updates from control process."""
+    """Background thread: drain metadata updates from control process."""
     from alfieprime_musiciser.colors import ColorTheme
     from alfieprime_musiciser.shared_state import STATE_FIELDS
 
@@ -78,31 +180,8 @@ def _state_receiver(
         if ss is not None:
             state._source_snapshots = ss
 
-        # -- Update visualizer proxy --
-        viz._update(data)
-
-        # -- DJ mode --
-        dj_active = data.get("dj_active", False)
-        if dj_active:
-            va = data.get("dj_viz_a")
-            if va:
-                b, p, vl, vr, bc, bi = va
-                dj_viz_a._bands = b
-                dj_viz_a._peaks = p
-                dj_viz_a._vu_left = vl
-                dj_viz_a._vu_right = vr
-                dj_viz_a._beat_count = bc
-                dj_viz_a._beat_intensity = bi
-            vb = data.get("dj_viz_b")
-            if vb:
-                b, p, vl, vr, bc, bi = vb
-                dj_viz_b._bands = b
-                dj_viz_b._peaks = p
-                dj_viz_b._vu_left = vl
-                dj_viz_b._vu_right = vr
-                dj_viz_b._beat_count = bc
-                dj_viz_b._beat_intensity = bi
-            mixer_diag._update(data)
+        # DJ mixer diagnostics
+        mixer_diag._update(data)
 
         # Source B data for DJ screen
         sb = data.get("source_b_data")
@@ -117,32 +196,30 @@ def tui_main(
     cmd_queue: multiprocessing.Queue,
     dj_array: multiprocessing.Array,
     config_dict: dict,
+    ring_names: dict[str, str],
+    dj_ring_names: dict[str, str],
 ) -> None:
     """Entry point for the TUI subprocess.
 
     Called via ``multiprocessing.Process(target=tui_main, ...)``.
     """
-    # Late imports so only the TUI process pays the import cost
     from alfieprime_musiciser.config import Config
-    from alfieprime_musiciser.shared_state import (
-        MixerDiagProxy,
-        SharedDJState,
-        VisualizerProxy,
-    )
+    from alfieprime_musiciser.shared_state import MixerDiagProxy, SharedDJState
     from alfieprime_musiciser.tui import BoomBoxTUI
+    from alfieprime_musiciser.visualizer import AudioVisualizer
 
     # ── Build config ──
     config = Config(**config_dict)
 
-    # ── Create proxy objects ──
-    viz_proxy = VisualizerProxy()
-    dj_viz_a = VisualizerProxy()
-    dj_viz_b = VisualizerProxy()
+    # ── Create REAL visualizers (FFT runs in this process) ──
+    viz_master = AudioVisualizer()
+    viz_dj_a = AudioVisualizer()
+    viz_dj_b = AudioVisualizer()
     mixer_diag = MixerDiagProxy()
     shared_dj = SharedDJState(dj_array)
 
-    # ── Create TUI (uses proxy visualizer) ──
-    tui = BoomBoxTUI(viz_proxy, config=config)
+    # ── Create TUI with real visualizer ──
+    tui = BoomBoxTUI(viz_master, config=config)
 
     # Replace DJState with shared version
     tui._dj_state = shared_dj
@@ -159,15 +236,12 @@ def tui_main(
     tui._spotify_command_callback = lambda cmd: cmd_queue.put_nowait(("spotify_cmd", cmd))
 
     # ── Override DJ lifecycle to route through command queue ──
-    _orig_start_dj = tui._start_dj_mode
-    _orig_stop_dj = tui._stop_dj_mode
-
     def _start_dj_proxy() -> None:
-        tui._dj_viz_a = dj_viz_a
-        tui._dj_viz_b = dj_viz_b
+        tui._dj_viz_a = viz_dj_a
+        tui._dj_viz_b = viz_dj_b
         tui._dj_mixer = mixer_diag  # provides diagnostic counters
         tui._dj_mode = True
-        viz_proxy.set_paused(False)
+        viz_master.set_paused(False)
         cmd_queue.put_nowait(("dj_activate", True))
         logger.info("DJ mode activated (TUI process)")
 
@@ -184,6 +258,7 @@ def tui_main(
 
     # ── Override _dj_source_data to use cached source-B data ──
     _orig_dj_source_data = tui._dj_source_data
+    from alfieprime_musiciser.colors import ColorTheme
 
     def _dj_source_data_proxy(source: str) -> dict:
         if source.endswith("_b"):
@@ -196,12 +271,9 @@ def tui_main(
             }
         return _orig_dj_source_data(source)
 
-    from alfieprime_musiciser.colors import ColorTheme
     tui._dj_source_data = _dj_source_data_proxy
 
     # ── Override stop to signal control process ──
-    _orig_stop = tui.stop
-
     def _stop_proxy() -> None:
         if tui._dj_mode:
             _stop_dj_proxy()
@@ -209,14 +281,20 @@ def tui_main(
         cmd_queue.put_nowait(("quit",))
 
     tui.stop = _stop_proxy
-
-    # Set cleanup function for clean shutdown
     tui._cleanup_fn = lambda: cmd_queue.put_nowait(("quit",))
 
-    # ── Start state receiver thread ──
+    # ── Start PCM consumer thread (reads from SharedPCMRings) ──
+    pcm_thread = threading.Thread(
+        target=_pcm_consumer,
+        args=(ring_names, dj_ring_names, tui, viz_master, viz_dj_a, viz_dj_b),
+        daemon=True,
+    )
+    pcm_thread.start()
+
+    # ── Start state receiver thread (metadata only, no viz data) ──
     recv_thread = threading.Thread(
         target=_state_receiver,
-        args=(state_pipe, tui, viz_proxy, dj_viz_a, dj_viz_b, mixer_diag),
+        args=(state_pipe, tui, mixer_diag),
         daemon=True,
     )
     recv_thread.start()

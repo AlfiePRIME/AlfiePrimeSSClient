@@ -346,14 +346,22 @@ class DJMixer:
     def __init__(
         self,
         dj_state: DJState,
-        master_visualizer: AudioVisualizer,
+        master_visualizer: AudioVisualizer | None = None,
         viz_a: AudioVisualizer | None = None,
         viz_b: AudioVisualizer | None = None,
+        *,
+        pcm_ring_a=None,
+        pcm_ring_b=None,
+        pcm_ring_mix=None,
     ) -> None:
         self._dj = dj_state
         self._master_viz = master_visualizer
         self._viz_a = viz_a
         self._viz_b = viz_b
+        # SharedPCMRing outputs (replaces visualizer feeds when set)
+        self._pcm_ring_a = pcm_ring_a
+        self._pcm_ring_b = pcm_ring_b
+        self._pcm_ring_mix = pcm_ring_mix
         self._ring_a = _InputRing()
         self._ring_b = _InputRing()
         self._eq_a = _ChannelEQ()
@@ -495,12 +503,17 @@ class DJMixer:
             self._running = False
             return
 
-        # Set visualizer format
-        self._master_viz.set_format(SAMPLE_RATE, 16, 2)
+        # Set visualizer format (when using in-process visualizers)
+        if self._master_viz:
+            self._master_viz.set_format(SAMPLE_RATE, 16, 2)
         if self._viz_a:
             self._viz_a.set_format(SAMPLE_RATE, 16, 2)
         if self._viz_b:
             self._viz_b.set_format(SAMPLE_RATE, 16, 2)
+        # Set ring format metadata
+        for ring in (self._pcm_ring_a, self._pcm_ring_b, self._pcm_ring_mix):
+            if ring is not None:
+                ring.set_format(SAMPLE_RATE, 16, 2)
 
         chunk_stereo = CHUNK_FRAMES * CHANNELS  # float32 samples per chunk
         # Pre-allocate silence buffer to avoid np.pad allocations in hot path
@@ -584,15 +597,22 @@ class DJMixer:
                         _peak_a, _peak_b, _peak_mix,
                         dj.crossfader, gain_a, gain_b, ch_b.volume,
                         self._rate_b, self._bit_depth_b, self._channels_b,
-                        self._master_viz._paused,
+                        self._master_viz._paused if self._master_viz else False,
                     )
 
-                # Feed visualizers directly with float32 (no s16 conversion)
-                if self._viz_a:
+                # Feed per-channel and mixed PCM to shared rings (for TUI viz)
+                if self._pcm_ring_a is not None:
+                    self._pcm_ring_a.write(pcm_a)
+                elif self._viz_a:
                     self._viz_a.feed_audio_float32(pcm_a)
-                if self._viz_b:
+                if self._pcm_ring_b is not None:
+                    self._pcm_ring_b.write(pcm_b)
+                elif self._viz_b:
                     self._viz_b.feed_audio_float32(pcm_b)
-                self._master_viz.feed_audio_float32(mixed)
+                if self._pcm_ring_mix is not None:
+                    self._pcm_ring_mix.write(mixed)
+                elif self._master_viz:
+                    self._master_viz.feed_audio_float32(mixed)
 
                 # Convert to s16 ONCE for audio output
                 out_bytes = _float32_to_s16(mixed)

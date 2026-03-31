@@ -427,6 +427,7 @@ async def _run_with_config(
             _last_art_hash = 0
             _last_snap_hash = 0
             _last_src_b_art_hash = 0
+            _last_active_source = tui.state.active_source
             while _running and tui_proc.is_alive():
                 try:
                     # Get source-B data for DJ screen
@@ -457,6 +458,16 @@ async def _run_with_config(
                             if sb_art_h != _last_src_b_art_hash:
                                 source_b["artwork_data"] = sb_art
                                 _last_src_b_art_hash = sb_art_h
+
+                    # Detect background source changes (e.g. AirPlay auto-connect
+                    # sets active_source directly) and trigger mute/unmute so
+                    # the old source's audio handler doesn't keep playing.
+                    cur_src = tui.state.active_source
+                    if cur_src and cur_src != _last_active_source:
+                        logger.info("Background source change: %s → %s",
+                                    _last_active_source, cur_src)
+                        _on_source_switch(cur_src)
+                        _last_active_source = cur_src
 
                     data = pack_state(
                         tui.state, visualizer,

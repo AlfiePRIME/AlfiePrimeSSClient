@@ -709,6 +709,12 @@ class Audio:
             _logging.getLogger().addHandler(_fh)
             _logging.getLogger().setLevel(_logging.DEBUG)
         _log = _logging.getLogger("ap2.audio.child")
+        # Disable cyclic GC in the audio child — periodic collection pauses
+        # cause audible glitches. CPython still reference-counts, so most
+        # objects are freed instantly; only cycles leak, and our audio loop
+        # doesn't create any.
+        import gc as _gc
+        _gc.disable()
         _log.info("Audio child process started, _pcm_queue=%r", self._pcm_queue)
         try:
             # This pipe is between player (read data) and server (write data)

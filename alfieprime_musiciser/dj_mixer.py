@@ -503,27 +503,26 @@ class DJMixer:
     ) -> np.ndarray:
         """Read PCM for one channel from a SharedPCMRing or internal ring.
 
-        When a source_ring (SharedPCMRing) is set, reads from it and
-        resamples to the mixer's SAMPLE_RATE.  Otherwise falls back to
-        the internal _InputRing (fed via feed_a/feed_b).
+        When a source_ring (SharedPCMRing) is set, drains ALL available
+        data from it, resamples to the mixer rate, and writes into the
+        internal _InputRing.  Then reads a fixed-size chunk from the
+        internal ring.  This lets the internal ring act as a jitter
+        buffer, smoothing out bursty PCM arrivals (e.g. AirPlay's
+        4-frame batching delivers ~32 ms bursts vs the mixer's ~21 ms
+        read cycle).
         """
-        if source_ring is None:
-            return internal_ring.read(chunk_stereo)
+        if source_ring is not None:
+            # Drain all available data from source ring
+            raw = source_ring.read(0)  # 0 = read all available
+            if len(raw) > 0:
+                sr, _bd, _ch = source_ring.get_format()
+                if sr == 0:
+                    sr = 44100
+                if sr != SAMPLE_RATE:
+                    raw = _resample_linear(raw, sr, SAMPLE_RATE, CHANNELS)
+                internal_ring.write(raw)
 
-        # Read format from the source ring header
-        sr, _bd, _ch = source_ring.get_format()
-        if sr == 0:
-            sr = 44100  # sensible default
-
-        if sr != SAMPLE_RATE:
-            # Calculate how many source samples we need for one mixer chunk
-            src_samples = int(chunk_stereo * sr / SAMPLE_RATE) + 4
-            raw = source_ring.read(src_samples)
-            if len(raw) == 0:
-                return raw
-            return _resample_linear(raw, sr, SAMPLE_RATE, CHANNELS)
-        else:
-            return source_ring.read(chunk_stereo)
+        return internal_ring.read(chunk_stereo)
 
     def _mix_loop(self) -> None:
         """Main mixer thread: read, process, output."""

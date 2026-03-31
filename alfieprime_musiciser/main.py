@@ -425,6 +425,8 @@ async def _run_with_config(
         def _publish_state():
             fps = max(5, min(120, config.fps_limit))
             _last_art_hash = 0
+            _last_snap_hash = 0
+            _last_src_b_art_hash = 0
             while _running and tui_proc.is_alive():
                 try:
                     # Get source-B data for DJ screen
@@ -439,7 +441,7 @@ async def _run_with_config(
                         if _st is not None:
                             source_b = {
                                 "title": _st.title, "artist": _st.artist,
-                                "album": _st.album, "artwork_data": _st.artwork_data,
+                                "album": _st.album,
                                 "theme": _st.theme,
                                 "is_playing": _st.is_playing,
                                 "progress_ms": _st.get_interpolated_progress() if hasattr(_st, "get_interpolated_progress") else _st.progress_ms,
@@ -449,6 +451,12 @@ async def _run_with_config(
                                 "sample_rate": getattr(_st, "sample_rate", 48000),
                                 "bit_depth": getattr(_st, "bit_depth", 16),
                             }
+                            # Only include source-B artwork when changed
+                            sb_art = _st.artwork_data
+                            sb_art_h = hash(sb_art) if sb_art else 0
+                            if sb_art_h != _last_src_b_art_hash:
+                                source_b["artwork_data"] = sb_art
+                                _last_src_b_art_hash = sb_art_h
 
                     data = pack_state(
                         tui.state, visualizer,
@@ -462,6 +470,20 @@ async def _run_with_config(
                     if art_hash != _last_art_hash:
                         data["artwork_data"] = art
                         _last_art_hash = art_hash
+
+                    # Only include snapshots when they change (contain artwork)
+                    snaps = tui.state._source_snapshots
+                    snap_keys = frozenset(snaps.keys())
+                    # Quick hash: track keys + titles as change proxy
+                    snap_h = hash((snap_keys,) + tuple(
+                        (k, s.get("title"), s.get("artist"), hash(s.get("artwork_data", b"") or b""))
+                        for k, s in snaps.items()
+                    ))
+                    if snap_h != _last_snap_hash:
+                        _last_snap_hash = snap_h
+                        # data already has snapshots from pack_state
+                    else:
+                        data.pop("_source_snapshots", None)
 
                     state_pipe_w.send(data)
                 except (BrokenPipeError, OSError):
@@ -493,6 +515,10 @@ async def _run_with_config(
                         if spotify_receiver:
                             spotify_receiver._on_transport_command(cmd[1])
                     elif kind == "source_switch":
+                        old_src = tui.state.active_source
+                        tui.state.save_snapshot(old_src)
+                        tui.state.active_source = cmd[1]
+                        tui.state.restore_snapshot(cmd[1])
                         _on_source_switch(cmd[1])
                     elif kind == "airplay_dj_pp":
                         if airplay_receiver:

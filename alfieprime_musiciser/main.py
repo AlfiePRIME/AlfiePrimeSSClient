@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import logging
+import multiprocessing
 import threading
 import time
 import os
@@ -34,6 +36,8 @@ from alfieprime_musiciser.updater import check_for_updates
 from alfieprime_musiciser.receiver import SendSpinReceiver
 from alfieprime_musiciser.tui import BoomBoxTUI
 from alfieprime_musiciser.visualizer import AudioVisualizer
+from alfieprime_musiciser.state import PlayerState
+from alfieprime_musiciser.shared_state import SharedDJState, DJ_ARRAY_SIZE, pack_state
 
 # Optional AirPlay support
 try:
@@ -52,6 +56,32 @@ except ImportError:
 IS_WINDOWS = sys.platform == "win32"
 
 logger = logging.getLogger(__name__)
+
+
+class _TUIStub:
+    """Lightweight stand-in for BoomBoxTUI in the control process.
+
+    Receivers only need ``.state`` and ``set_command_callback()``.
+    """
+
+    def __init__(self) -> None:
+        self.state = PlayerState()
+        self._command_callback = None
+        self._visualizer = None  # set by caller
+        self._dj_receiver_b = None
+        self._cleanup_done = threading.Event()
+        self._cleanup_fn = None
+        self._running = False
+        self._dj_mode = False
+
+    def set_command_callback(self, cb):
+        self._command_callback = cb
+
+    def stop(self):
+        self._running = False
+        if self._cleanup_fn:
+            self._cleanup_fn()
+        self._cleanup_done.set()
 
 
 async def _run_with_config(
@@ -86,7 +116,15 @@ async def _run_with_config(
         await asyncio.gather(receiver.start(), stop_event.wait())
         return
 
-    tui = BoomBoxTUI(visualizer, gui=gui, config=config)
+    # In GUI mode, keep the TUI in-process (no isolation needed).
+    # In terminal mode, run the TUI in a subprocess for GIL isolation.
+    _subprocess_tui = not gui and not demo
+
+    if _subprocess_tui:
+        tui = _TUIStub()
+        tui._visualizer = visualizer
+    else:
+        tui = BoomBoxTUI(visualizer, gui=gui, config=config)
 
     server_url = config.server_url if config.mode == "connect" else None
 
@@ -314,13 +352,18 @@ async def _run_with_config(
             tui._visualizer.set_paused(False)
             logger.info("DJ mode: native audio restored")
 
-    tui._dj_activate_callback = _on_dj_activate
-    tui._sendspin_command_callback = receiver._on_transport_command
-    if airplay_receiver is not None:
-        tui._airplay_dj_play_pause = airplay_receiver.dj_play_pause
-    if spotify_receiver is not None:
-        tui._spotify_dj_play_pause = spotify_receiver.dj_play_pause
-        tui._spotify_command_callback = spotify_receiver._on_transport_command
+    # ── Callback wiring (used by both in-process and subprocess TUI) ──
+    # In subprocess mode, these are invoked by the command dispatcher.
+    # In in-process mode, they're called directly by the TUI.
+
+    if not _subprocess_tui:
+        tui._dj_activate_callback = _on_dj_activate
+        tui._sendspin_command_callback = receiver._on_transport_command
+        if airplay_receiver is not None:
+            tui._airplay_dj_play_pause = airplay_receiver.dj_play_pause
+        if spotify_receiver is not None:
+            tui._spotify_dj_play_pause = spotify_receiver.dj_play_pause
+            tui._spotify_command_callback = spotify_receiver._on_transport_command
 
     loop = asyncio.get_running_loop()
 
@@ -335,9 +378,13 @@ async def _run_with_config(
         tui._cleanup_done.set()
 
     tui._cleanup_fn = _cleanup_receivers
+    _running = True
 
     def _stop_all():
-        tui.stop()
+        nonlocal _running
+        _running = False
+        if not _subprocess_tui:
+            tui.stop()
 
     if IS_WINDOWS:
         signal.signal(signal.SIGINT, lambda *_: _stop_all())
@@ -345,22 +392,184 @@ async def _run_with_config(
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, _stop_all)
 
-    tasks: list = [tui.run()]
-    if demo:
-        receiver._running = True
-        tasks.append(receiver._run_demo_mode())
-    else:
+    if _subprocess_tui:
+        # ── Subprocess TUI mode ──────────────────────────────────────────
+        from alfieprime_musiciser.tui_process import tui_main
+        from alfieprime_musiciser.dj_mixer import DJMixer
+
+        # IPC channels
+        state_pipe_r, state_pipe_w = multiprocessing.Pipe(duplex=False)
+        cmd_queue = multiprocessing.Queue()
+        shared_dj = SharedDJState()  # creates Array with defaults
+        dj_array = shared_dj._arr
+
+        # Serialize config for the TUI process
+        config_dict = dataclasses.asdict(config)
+
+        # Launch TUI subprocess
+        tui_proc = multiprocessing.Process(
+            target=tui_main,
+            args=(state_pipe_r, cmd_queue, dj_array, config_dict),
+            daemon=True,
+        )
+        tui_proc.start()
+        logger.info("TUI subprocess started (pid=%d)", tui_proc.pid)
+
+        # DJ mixer state (lives in control process)
+        _dj_mixer = None
+        _dj_viz_a = None
+        _dj_viz_b = None
+        _dj_active = False
+
+        # ── State publisher thread ───────────────────────────────────────
+        def _publish_state():
+            fps = max(5, min(120, config.fps_limit))
+            _last_art_hash = 0
+            while _running and tui_proc.is_alive():
+                try:
+                    # Get source-B data for DJ screen
+                    source_b = None
+                    if receiver_b is not None:
+                        _st = getattr(receiver_b, "_daemon_state", None) or getattr(receiver_b, "_state", None)
+                        if _st is None:
+                            try:
+                                _st = receiver_b._state
+                            except Exception:
+                                _st = None
+                        if _st is not None:
+                            source_b = {
+                                "title": _st.title, "artist": _st.artist,
+                                "album": _st.album, "artwork_data": _st.artwork_data,
+                                "theme": _st.theme,
+                                "is_playing": _st.is_playing,
+                                "progress_ms": _st.get_interpolated_progress() if hasattr(_st, "get_interpolated_progress") else _st.progress_ms,
+                                "duration_ms": _st.duration_ms,
+                                "server_name": getattr(_st, "sendspin_server_name", "") or getattr(_st, "airplay_server_name", "") or "",
+                                "codec": getattr(_st, "codec", "pcm"),
+                                "sample_rate": getattr(_st, "sample_rate", 48000),
+                                "bit_depth": getattr(_st, "bit_depth", 16),
+                            }
+
+                    data = pack_state(
+                        tui.state, visualizer,
+                        dj_mixer=_dj_mixer, dj_viz_a=_dj_viz_a, dj_viz_b=_dj_viz_b,
+                        dj_active=_dj_active, source_b_data=source_b,
+                    )
+
+                    # Only include artwork when it changes (can be large)
+                    art = tui.state.artwork_data
+                    art_hash = hash(art) if art else 0
+                    if art_hash != _last_art_hash:
+                        data["artwork_data"] = art
+                        _last_art_hash = art_hash
+
+                    state_pipe_w.send(data)
+                except (BrokenPipeError, OSError):
+                    break
+                except Exception:
+                    logger.debug("State publisher error", exc_info=True)
+                time.sleep(1.0 / fps)
+
+        pub_thread = threading.Thread(target=_publish_state, daemon=True)
+        pub_thread.start()
+
+        # ── Command dispatcher ───────────────────────────────────────────
+        async def _dispatch_commands():
+            nonlocal _dj_mixer, _dj_viz_a, _dj_viz_b, _dj_active, _running
+            while _running:
+                try:
+                    cmd = await loop.run_in_executor(None, lambda: cmd_queue.get(timeout=0.5))
+                except Exception:
+                    # Queue.get timeout — check _running flag
+                    continue
+                try:
+                    kind = cmd[0]
+                    if kind == "transport":
+                        if tui._command_callback:
+                            tui._command_callback(cmd[1])
+                    elif kind == "sendspin_cmd":
+                        receiver._on_transport_command(cmd[1])
+                    elif kind == "spotify_cmd":
+                        if spotify_receiver:
+                            spotify_receiver._on_transport_command(cmd[1])
+                    elif kind == "source_switch":
+                        _on_source_switch(cmd[1])
+                    elif kind == "airplay_dj_pp":
+                        if airplay_receiver:
+                            airplay_receiver.dj_play_pause(cmd[1])
+                    elif kind == "spotify_dj_pp":
+                        if spotify_receiver:
+                            spotify_receiver.dj_play_pause(cmd[1])
+                    elif kind == "swap_response":
+                        tui.state.swap_response = cmd[1]
+                    elif kind == "dj_activate":
+                        if cmd[1]:
+                            # DJ enter — create mixer in control process
+                            _dj_viz_a = AudioVisualizer()
+                            _dj_viz_b = AudioVisualizer()
+                            _dj_mixer = DJMixer(
+                                shared_dj, visualizer,
+                                viz_a=_dj_viz_a, viz_b=_dj_viz_b,
+                            )
+                            _dj_mixer.start()
+                            visualizer.set_paused(False)
+                            _dj_active = True
+                            _on_dj_activate(True, _dj_mixer)
+                        else:
+                            # DJ exit
+                            _on_dj_activate(False, None)
+                            if _dj_mixer is not None:
+                                _dj_mixer.stop()
+                            _dj_mixer = None
+                            _dj_viz_a = None
+                            _dj_viz_b = None
+                            _dj_active = False
+                    elif kind == "quit":
+                        _running = False
+                        _cleanup_receivers()
+                        break
+                except Exception:
+                    logger.warning("Command dispatch error", exc_info=True)
+
+        # ── Gather tasks ─────────────────────────────────────────────────
+        tasks: list = [_dispatch_commands()]
         if config.sendspin_enabled:
             tasks.append(receiver.start())
         else:
             logger.info("SendSpin receiver disabled by config")
-    if airplay_receiver:
-        tasks.append(airplay_receiver.start())
-    if spotify_receiver:
-        tasks.append(spotify_receiver.start())
-    if receiver_b is not None:
-        tasks.append(receiver_b.start())
-    await asyncio.gather(*tasks)
+        if airplay_receiver:
+            tasks.append(airplay_receiver.start())
+        if spotify_receiver:
+            tasks.append(spotify_receiver.start())
+        if receiver_b is not None:
+            tasks.append(receiver_b.start())
+
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            _running = False
+            tui_proc.join(timeout=3)
+            if tui_proc.is_alive():
+                tui_proc.terminate()
+
+    else:
+        # ── In-process TUI mode (GUI / demo) ────────────────────────────
+        tasks: list = [tui.run()]
+        if demo:
+            receiver._running = True
+            tasks.append(receiver._run_demo_mode())
+        else:
+            if config.sendspin_enabled:
+                tasks.append(receiver.start())
+            else:
+                logger.info("SendSpin receiver disabled by config")
+        if airplay_receiver:
+            tasks.append(airplay_receiver.start())
+        if spotify_receiver:
+            tasks.append(spotify_receiver.start())
+        if receiver_b is not None:
+            tasks.append(receiver_b.start())
+        await asyncio.gather(*tasks)
 
 
 def main() -> None:

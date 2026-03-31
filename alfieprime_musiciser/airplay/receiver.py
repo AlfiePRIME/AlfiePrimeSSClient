@@ -1018,12 +1018,9 @@ class AirPlayReceiver:
         global _dj_mixer_active
         self.__dj_mixer = mixer
         _dj_mixer_active = mixer is not None
-        # NOTE: _sink_muted is now managed by main.py (_on_dj_activate /
-        # _on_source_switch) which knows the active_source.  The setter only
-        # mutes on DJ *enter* (always safe); unmuting is left to the caller.
-        if mixer is not None and hasattr(self, "_sink_muted") and self._sink_muted is not None:
-            self._sink_muted.value = True
-            logger.info("AirPlay: audio child sink MUTED (DJ enter)")
+        # NOTE: sink muting is managed by main.py (_on_dj_activate) which
+        # delays the mute until the mixer's ring buffer has data, avoiding
+        # a silence gap on DJ enter.
         # Forward to PCM consumer if it exists
         if hasattr(self, "_pcm_consumer") and self._pcm_consumer is not None:
             self._pcm_consumer.dj_mixer = mixer

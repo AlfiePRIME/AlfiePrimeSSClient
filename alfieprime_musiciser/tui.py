@@ -1209,7 +1209,22 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
 
     async def _input_loop_unix(self) -> None:
         """Unix keyboard input using termios/tty."""
-        fd = sys.stdin.fileno()
+        # In a subprocess (e.g. multiprocessing with spawn/forkserver),
+        # sys.stdin may not be a real terminal.  Open /dev/tty directly.
+        tty_file = None
+        try:
+            fd = sys.stdin.fileno()
+            termios.tcgetattr(fd)  # probe — raises on non-terminal
+        except (termios.error, OSError, ValueError):
+            try:
+                tty_file = open("/dev/tty", "r+b", buffering=0)  # noqa: SIM115
+                fd = tty_file.fileno()
+            except OSError:
+                logger.warning("No terminal available for input")
+                # No terminal — just wait until stopped
+                while self._running:
+                    await asyncio.sleep(0.5)
+                return
         old_settings = termios.tcgetattr(fd)
         loop = asyncio.get_event_loop()
         try:
@@ -1230,6 +1245,8 @@ class BoomBoxTUI(SettingsMixin, AnimationsMixin, DJMixin):
             sys.stdout.write("\x1b[?1006l\x1b[?1000l")
             sys.stdout.flush()
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            if tty_file is not None:
+                tty_file.close()
 
     def _render_frame(self) -> str:
         """Render the full UI into an ANSI string (terminal mode)."""

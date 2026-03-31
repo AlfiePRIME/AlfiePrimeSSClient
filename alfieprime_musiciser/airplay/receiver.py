@@ -165,9 +165,7 @@ class _PCMConsumer:
         self.channels = channels
         self._running = False
         self._thread: threading.Thread | None = None
-        self.dj_mixer = None  # Set externally when DJ mode activates
-        self._pcm_ring = pcm_ring  # SharedPCMRing for TUI visualizer
-        self.dj_feed_channel = "b"  # Which mixer channel to feed
+        self._pcm_ring = pcm_ring  # SharedPCMRing for TUI visualizer + DJ mixer
 
     def start(self) -> None:
         self._running = True
@@ -182,7 +180,7 @@ class _PCMConsumer:
         import queue as _queue_mod
         while self._running:
             try:
-                data = self._queue.get(timeout=0.005)
+                data = self._queue.get(timeout=0.02)
             except _queue_mod.Empty:
                 continue
             except (OSError, EOFError):
@@ -197,37 +195,21 @@ class _PCMConsumer:
                     )
                     continue
 
-                # Feed DJ mixer when active — channel determined by dj_feed_channel
-                mixer = self.dj_mixer
-                if mixer is not None:
-                    # AirPlay child always resamples to s16, so use 16-bit
-                    if self.dj_feed_channel == "a":
-                        mixer.set_format_a(self.sample_rate, 16, self.channels)
-                        mixer.feed_a(data)
-                    else:
-                        mixer.set_format_b(self.sample_rate, 16, self.channels)
-                        mixer.feed_b(data)
-
-                # Only feed when AirPlay is the active source and DJ mixer
-                # is NOT running (mixer writes its own rings in DJ mode).
-                if mixer is not None:
-                    if self._state and not self._state.is_playing:
-                        self._state.is_playing = True
-                    continue
-                if self._state and self._state.active_source != "airplay":
-                    continue
-                # Ensure is_playing stays True while we're receiving audio
-                if self._state and not self._state.is_playing:
-                    self._state.is_playing = True
-                # Write PCM to shared ring for TUI visualizer
+                # Always write to SharedPCMRing — this serves both the
+                # boombox TUI visualizer (normal mode) and the DJ mixer
+                # (which reads from this ring directly in DJ mode).
                 if self._pcm_ring is not None:
                     self._pcm_ring.set_format(self.sample_rate, 16, self.channels)
                     self._pcm_ring.write_bytes_s16(data, channels=self.channels)
-                else:
+                elif self._state and self._state.active_source == "airplay":
                     self._visualizer.set_format(self.sample_rate, 16, self.channels)
                     if self._visualizer._paused:
                         self._visualizer.set_paused(False)
                     self._visualizer.feed_audio(data, immediate=True)
+
+                # Ensure is_playing stays True while we're receiving audio
+                if self._state and not self._state.is_playing:
+                    self._state.is_playing = True
             except Exception:
                 logger.warning("PCM consumer feed error", exc_info=True)
 
@@ -1029,17 +1011,7 @@ class AirPlayReceiver:
         global _dj_mixer_active
         self.__dj_mixer = mixer
         _dj_mixer_active = mixer is not None
-        # NOTE: sink muting is managed by main.py (_on_dj_activate) which
-        # delays the mute until the mixer's ring buffer has data, avoiding
-        # a silence gap on DJ enter.
-        # Forward to PCM consumer if it exists
-        if hasattr(self, "_pcm_consumer") and self._pcm_consumer is not None:
-            self._pcm_consumer.dj_mixer = mixer
-            self._pcm_consumer.dj_feed_channel = self._dj_feed_channel
-            logger.info("AirPlay: DJ mixer propagated to PCM consumer (ch=%s, mixer=%s)",
-                        self._dj_feed_channel, "ON" if mixer else "OFF")
-        else:
-            logger.warning("AirPlay: DJ mixer set but _pcm_consumer not available yet")
+        logger.info("AirPlay: DJ mixer active=%s", _dj_mixer_active)
 
     def set_sink_muted(self, muted: bool) -> None:
         """Explicitly mute/unmute the audio child's native sink output."""
@@ -1497,7 +1469,7 @@ class AirPlayReceiver:
         # Create a multiprocessing queue for PCM audio from child processes.
         # The vendored audio.py writes decoded PCM to this queue; a consumer
         # thread in the parent feeds it to the visualizer.
-        pcm_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=128)
+        pcm_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=32)
         # Shared flag to mute the audio child's native sink when DJ mixer owns output
         sink_muted: multiprocessing.Value = multiprocessing.Value("b", False)
         self._sink_muted = sink_muted
@@ -1510,10 +1482,6 @@ class AirPlayReceiver:
             pcm_ring=getattr(self, "_pcm_ring", None),
         )
         self._pcm_consumer = pcm_consumer
-        # Propagate DJ mixer if it was already set before pcm_consumer existed
-        if self.__dj_mixer is not None:
-            pcm_consumer.dj_mixer = self.__dj_mixer
-            pcm_consumer.dj_feed_channel = self._dj_feed_channel
         pcm_consumer.start()
 
         # Monkey-patch EventGeneric.spawn to use a thread instead of a

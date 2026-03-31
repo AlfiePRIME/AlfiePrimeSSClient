@@ -890,6 +890,8 @@ class AudioRealtime(Audio):
         one_pkt = (self.spf / self.sample_rate) * 1e3
         p_write_avg = deque(maxlen=20)
         p_write = p_write_a = None
+        _pcm_accum: list[bytes] = []
+        _pcm_frames = 0
 
         try:
             while True:
@@ -963,14 +965,18 @@ class AudioRealtime(Audio):
 
                                 playing = True
 
-                                # Send each PCM frame immediately to
-                                # avoid DJ mixer ring underruns (~8ms/frame
-                                # vs 21ms mixer chunk).
+                                # Batch 4 RTP frames (~32ms) before sending
+                                # to keep queue traffic low and timing smooth.
                                 if self._pcm_queue is not None:
-                                    try:
-                                        self._pcm_queue.put_nowait(audio)
-                                    except Exception:
-                                        pass
+                                    _pcm_accum.append(audio)
+                                    _pcm_frames += 1
+                                    if _pcm_frames >= 4:
+                                        try:
+                                            self._pcm_queue.put_nowait(b"".join(_pcm_accum))
+                                        except Exception:
+                                            pass
+                                        _pcm_accum.clear()
+                                        _pcm_frames = 0
                         else:
                             playing = False
 
@@ -1035,6 +1041,8 @@ class AudioBuffered(Audio):
         pkt_time_one = ((self.spf / self.sample_rate) * 1e3)
         synced = True
         i = 0
+        _pcm_accum: list[bytes] = []
+        _pcm_frames = 0
         while True:
             if not playing:
                 rtsp_cmd_receiver_timeout = None
@@ -1118,13 +1126,18 @@ class AudioBuffered(Audio):
 
                         i += 1
 
-                        # Send each PCM frame immediately to
-                        # avoid DJ mixer ring underruns.
+                        # Batch 4 RTP frames (~32ms) before sending
+                        # to keep queue traffic low and timing smooth.
                         if self._pcm_queue is not None:
-                            try:
-                                self._pcm_queue.put_nowait(audio)
-                            except Exception:
-                                pass
+                            _pcm_accum.append(audio)
+                            _pcm_frames += 1
+                            if _pcm_frames >= 4:
+                                try:
+                                    self._pcm_queue.put_nowait(b"".join(_pcm_accum))
+                                except Exception:
+                                    pass
+                                _pcm_accum.clear()
+                                _pcm_frames = 0
 
     # server fills the buffer, and admits packets within desired timestamp ranges.
     def serve(self, playerconn, control_recv, control_send):

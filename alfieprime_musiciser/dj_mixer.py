@@ -52,7 +52,7 @@ SAMPLE_WIDTH = 2  # 16-bit
 FRAME_SIZE = CHANNELS * SAMPLE_WIDTH  # 4 bytes per frame
 CHUNK_FRAMES = 1024  # ~21ms at 48kHz
 CHUNK_BYTES = CHUNK_FRAMES * FRAME_SIZE
-RING_SIZE = SAMPLE_RATE * CHANNELS * 2  # 2 seconds of stereo float32
+RING_SIZE = SAMPLE_RATE * CHANNELS  # 1 second of stereo float32
 
 
 # ── Biquad filter for EQ ────────────────────────────────────────────────────
@@ -271,13 +271,6 @@ class _InputRing:
             avail = (self._write - self._read) % self._size
             if avail <= 0 and self._write != self._read:
                 avail = self._size
-            # Skip ahead if buffer has accumulated too much latency
-            # (more than ~200ms of stereo audio at 48kHz = 19200 samples).
-            _max_latency = SAMPLE_RATE * CHANNELS // 5  # 200ms
-            if avail > _max_latency:
-                skip = avail - _max_latency
-                self._read = (self._read + skip) % self._size
-                avail = _max_latency
             n = min(n, avail)
             if n <= 0:
                 return np.zeros(0, dtype=np.float32)
@@ -360,6 +353,8 @@ class DJMixer:
         pcm_ring_a=None,
         pcm_ring_b=None,
         pcm_ring_mix=None,
+        source_ring_a=None,
+        source_ring_b=None,
     ) -> None:
         self._dj = dj_state
         self._master_viz = master_visualizer
@@ -369,6 +364,13 @@ class DJMixer:
         self._pcm_ring_a = pcm_ring_a
         self._pcm_ring_b = pcm_ring_b
         self._pcm_ring_mix = pcm_ring_mix
+        # SharedPCMRing *inputs* — read directly from a source's ring
+        # instead of using feed_a/feed_b + internal _InputRing.  This
+        # lets the DJ mixer share the same PCM stream that the boombox
+        # visualizer uses, avoiding timing/latency issues from a
+        # separate feed path.
+        self._source_ring_a = source_ring_a
+        self._source_ring_b = source_ring_b
         self._ring_a = _InputRing()
         self._ring_b = _InputRing()
         self._eq_a = _ChannelEQ()
@@ -493,6 +495,36 @@ class DJMixer:
 
         return samples
 
+    def _read_channel(
+        self,
+        source_ring,
+        internal_ring: _InputRing,
+        chunk_stereo: int,
+    ) -> np.ndarray:
+        """Read PCM for one channel from a SharedPCMRing or internal ring.
+
+        When a source_ring (SharedPCMRing) is set, reads from it and
+        resamples to the mixer's SAMPLE_RATE.  Otherwise falls back to
+        the internal _InputRing (fed via feed_a/feed_b).
+        """
+        if source_ring is None:
+            return internal_ring.read(chunk_stereo)
+
+        # Read format from the source ring header
+        sr, _bd, _ch = source_ring.get_format()
+        if sr == 0:
+            sr = 44100  # sensible default
+
+        if sr != SAMPLE_RATE:
+            # Calculate how many source samples we need for one mixer chunk
+            src_samples = int(chunk_stereo * sr / SAMPLE_RATE) + 4
+            raw = source_ring.read(src_samples)
+            if len(raw) == 0:
+                return raw
+            return _resample_linear(raw, sr, SAMPLE_RATE, CHANNELS)
+        else:
+            return source_ring.read(chunk_stereo)
+
     def _mix_loop(self) -> None:
         """Main mixer thread: read, process, output."""
         try:
@@ -541,9 +573,13 @@ class DJMixer:
                 self._eq_a.update(ch_a.eq_bass, ch_a.eq_mid, ch_a.eq_treble)
                 self._eq_b.update(ch_b.eq_bass, ch_b.eq_mid, ch_b.eq_treble)
 
-                # Read from ring buffers
-                pcm_a = self._ring_a.read(chunk_stereo)
-                pcm_b = self._ring_b.read(chunk_stereo)
+                # Read from ring buffers (source rings override internal rings)
+                pcm_a = self._read_channel(
+                    self._source_ring_a, self._ring_a, chunk_stereo,
+                )
+                pcm_b = self._read_channel(
+                    self._source_ring_b, self._ring_b, chunk_stereo,
+                )
                 self._mix_count += 1
                 if len(pcm_b) > 0:
                     self._ring_b_reads += 1

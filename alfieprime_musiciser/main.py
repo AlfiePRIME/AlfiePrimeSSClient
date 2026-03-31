@@ -256,18 +256,21 @@ async def _run_with_config(
             if receiver._audio_handler is not None:
                 receiver._audio_handler.clear_queue()
                 receiver._audio_handler.set_volume(0, muted=True)
-            # Wire mixer to the correct receivers based on DJ source mode
+            # Wire mixer to the correct receivers based on DJ source mode.
+            # AirPlay feeds via SharedPCMRing (source_ring_a/b) so it
+            # shares the same PCM stream as the boombox visualizer.
+            # Other sources use the feed_a/feed_b path.
             _dj = config.dj_source_mode
+            _ap_ring = _pcm_rings.get("airplay") if airplay_receiver else None
             if _dj == "dual_sendspin":
                 # A = primary SendSpin, B = second SendSpin
                 receiver._dj_mixer = mixer
                 if receiver_b is not None:
                     receiver_b._dj_mixer = mixer
             elif _dj == "dual_airplay":
-                # A = primary AirPlay, B = second AirPlay
-                if airplay_receiver is not None:
-                    airplay_receiver._dj_feed_channel = "a"
-                    airplay_receiver._dj_mixer = mixer
+                # A = primary AirPlay (via source ring), B = second AirPlay
+                if _ap_ring is not None:
+                    mixer._source_ring_a = _ap_ring
                 if receiver_b is not None:
                     receiver_b._dj_mixer = mixer
             elif _dj == "spotify_sendspin":
@@ -277,10 +280,9 @@ async def _run_with_config(
                     spotify_receiver._dj_feed_channel = "b"
                     spotify_receiver._dj_mixer = mixer
             elif _dj == "spotify_airplay":
-                # A = AirPlay, B = Spotify
-                if airplay_receiver is not None:
-                    airplay_receiver._dj_feed_channel = "a"
-                    airplay_receiver._dj_mixer = mixer
+                # A = AirPlay (via source ring), B = Spotify
+                if _ap_ring is not None:
+                    mixer._source_ring_a = _ap_ring
                 if spotify_receiver is not None:
                     spotify_receiver._dj_feed_channel = "b"
                     spotify_receiver._dj_mixer = mixer
@@ -292,8 +294,13 @@ async def _run_with_config(
             else:
                 # Mixed: A = SendSpin, B = AirPlay (default)
                 receiver._dj_mixer = mixer
-                if airplay_receiver is not None:
-                    airplay_receiver._dj_mixer = mixer
+                if _ap_ring is not None:
+                    mixer._source_ring_b = _ap_ring
+            # Toggle _dj_mixer_active flag on AirPlay receiver so visualizer
+            # pausing logic knows DJ mode is active (even though AirPlay no
+            # longer feeds the mixer directly — it reads from SharedPCMRing).
+            if airplay_receiver is not None:
+                airplay_receiver._dj_mixer = mixer
             # Delay-mute the AirPlay native sink so the mixer ring buffer has
             # time to fill (~60ms).  This prevents a silence gap on DJ enter.
             if airplay_receiver is not None:
@@ -307,8 +314,7 @@ async def _run_with_config(
             # Restore native audio — clear mixer on all receivers
             receiver._dj_mixer = None
             if airplay_receiver is not None:
-                airplay_receiver._dj_feed_channel = "b"  # restore default
-                airplay_receiver._dj_mixer = None
+                airplay_receiver._dj_mixer = None  # clears _dj_mixer_active flag
                 # Only unmute AirPlay sink if AirPlay is the active source;
                 # otherwise keep it muted so it doesn't bleed through.
                 if tui.state.active_source == "airplay":

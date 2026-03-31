@@ -261,11 +261,23 @@ class _MetadataHook:
                 self._state.progress_ms = self._state.get_interpolated_progress()
                 self._state.playback_speed = 0.0
                 self._state.progress_update_time = time.monotonic()
+            elif playing and not self._state.is_playing:
+                # Resume interpolation so the progress bar advances during
+                # playback (AirPlay only sends explicit progress on
+                # pause/seek, not continuously).
+                self._state.playback_speed = 1.0
+                self._state.progress_update_time = time.monotonic()
             self._state.is_playing = playing
             if self._visualizer and not _dj_mixer_active:
                 self._visualizer.set_paused(not playing)
         else:
-            self._state.write_to_snapshot("airplay", is_playing=playing)
+            snap: dict = {"is_playing": playing}
+            if playing:
+                snap["playback_speed"] = 1.0
+                snap["progress_update_time"] = time.monotonic()
+            else:
+                snap["playback_speed"] = 0.0
+            self._state.write_to_snapshot("airplay", **snap)
 
     def on_metadata(self, title: str, artist: str, album: str) -> None:
         s = self._state
